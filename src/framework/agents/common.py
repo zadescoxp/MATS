@@ -1,5 +1,4 @@
-from typing import Any
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -15,9 +14,7 @@ def submit_tool(name: str, model: type[ModelT], description: str) -> ToolDefinit
     return ToolDefinition(name=name, description=description, parameters=schema)
 
 
-def parse_tool_response(
-    response: LLMResponse, tool_name: str, model: type[ModelT]
-) -> ModelT:
+def parse_tool_response(response: LLMResponse, tool_name: str, model: type[ModelT]) -> ModelT:
     matches = [call for call in response.tool_calls if call.name == tool_name]
     if len(matches) != 1:
         raise ValueError(f"Expected exactly one {tool_name!r} tool call; received {len(matches)}")
