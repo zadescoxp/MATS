@@ -61,7 +61,7 @@ class LLMClient:
             raise ValueError("At least one tool schema is required for tool-calling requests")
 
         model_name = route.model
-        if route.provider and "/" not in model_name and route.provider != "openai":
+        if route.provider != "openai" and not model_name.startswith(f"{route.provider}/"):
             model_name = f"{route.provider}/{model_name}"
         kwargs: dict[str, Any] = {
             "model": model_name,
