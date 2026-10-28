@@ -130,9 +130,16 @@ class Database:
     ) -> bool:
         with self._lock, self.connection:
             cursor = self.connection.execute(
-                """INSERT OR IGNORE INTO agent_steps
+                """INSERT INTO agent_steps
                    (step_id, run_id, agent_name, input_json, status, started_at)
-                   VALUES (?, ?, ?, ?, 'running', ?)""",
+                   VALUES (?, ?, ?, ?, 'running', ?)
+                   ON CONFLICT(step_id) DO UPDATE SET
+                       input_json = excluded.input_json,
+                       status = 'running',
+                       error = NULL,
+                       started_at = excluded.started_at,
+                       finished_at = NULL
+                   WHERE agent_steps.status != 'completed'""",
                 (step_id, run_id, agent_name, json_dumps(input_data), _now()),
             )
             return cursor.rowcount == 1
@@ -170,6 +177,15 @@ class Database:
                 "SELECT status FROM agent_steps WHERE step_id = ?", (step_id,)
             ).fetchone()
         return bool(row and row["status"] == "completed")
+
+    def step_output(self, step_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT output_json FROM agent_steps
+                   WHERE step_id = ? AND status = 'completed'""",
+                (step_id,),
+            ).fetchone()
+        return json.loads(row["output_json"]) if row and row["output_json"] else None
 
     def checkpoint(self, run_id: str, node_name: str, phase: str, state: dict[str, Any]) -> None:
         with self._lock, self.connection:
@@ -209,7 +225,9 @@ class Database:
         with self._lock, self.connection:
             self.connection.execute(
                 """INSERT INTO strategies (strategy_id, run_id, definition_json, version)
-                   VALUES (?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(strategy_id) DO UPDATE SET
+                       definition_json = excluded.definition_json, version = excluded.version""",
                 (strategy_id, run_id, json_dumps(definition), version),
             )
 
@@ -225,7 +243,11 @@ class Database:
             self.connection.execute(
                 """INSERT INTO backtests
                    (backtest_id, strategy_id, report_json, equity_curve_json, costs_json)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(backtest_id) DO UPDATE SET
+                       report_json = excluded.report_json,
+                       equity_curve_json = excluded.equity_curve_json,
+                       costs_json = excluded.costs_json""",
                 (
                     backtest_id,
                     strategy_id,
@@ -247,7 +269,11 @@ class Database:
             self.connection.execute(
                 """INSERT INTO critiques
                    (critique_id, backtest_id, decision, issues_json, revision_instructions)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(critique_id) DO UPDATE SET
+                       decision = excluded.decision,
+                       issues_json = excluded.issues_json,
+                       revision_instructions = excluded.revision_instructions""",
                 (critique_id, backtest_id, decision, json_dumps(issues), instructions),
             )
 
@@ -257,7 +283,9 @@ class Database:
         with self._lock, self.connection:
             self.connection.execute(
                 """INSERT INTO executions (execution_id, run_id, orders_json, status)
-                   VALUES (?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(execution_id) DO UPDATE SET
+                       orders_json = excluded.orders_json, status = excluded.status""",
                 (execution_id, run_id, json_dumps(orders), status),
             )
 
