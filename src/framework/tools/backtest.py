@@ -7,7 +7,7 @@ import pandas as pd
 
 from framework.schemas.models import BacktestReport, OHLCVBar, StrategyDefinition, TradeRecord
 from framework.tools.cost_model import CostAssumptions, reprice_trade_list
-from framework.tools.technicals import ema
+from framework.tools.technicals import ema, rsi
 
 
 class BacktestTool:
@@ -41,6 +41,7 @@ class BacktestTool:
 
         fast = ema(frame["close"], strategy.fast_period)
         slow = ema(frame["close"], strategy.slow_period)
+        relative_strength = rsi(frame["close"])
         bullish_cross = (fast > slow) & (fast.shift(1) <= slow.shift(1))
         bearish_cross = (fast < slow) & (fast.shift(1) >= slow.shift(1))
         cash = self.initial_capital
@@ -64,6 +65,7 @@ class BacktestTool:
                 position is None
                 and index > 0
                 and bool(bullish_cross.iloc[index - 1])
+                and self._filters_pass(strategy, frame, slow, relative_strength, index - 1)
                 and cash > 0
             ):
                 market_price = float(bar["open"])
@@ -74,7 +76,9 @@ class BacktestTool:
                 max_notional = max(0, max_notional - self.costs.slippage_fixed)
                 quantity = max_notional / market_price
                 entry_fee = max_notional * self.costs.fee_rate
-                entry_slippage = max_notional * self.costs.slippage_percent + self.costs.slippage_fixed
+                entry_slippage = (
+                    max_notional * self.costs.slippage_percent + self.costs.slippage_fixed
+                )
                 if quantity > 0 and cash >= max_notional + entry_fee + entry_slippage:
                     cash -= max_notional + entry_fee + entry_slippage
                     position = {
@@ -100,9 +104,7 @@ class BacktestTool:
                         position = None
 
             marked_equity = cash + (position["quantity"] * float(bar["close"]) if position else 0)
-            equity_curve.append(
-                {"timestamp": _iso(bar["timestamp"]), "equity": marked_equity}
-            )
+            equity_curve.append({"timestamp": _iso(bar["timestamp"]), "equity": marked_equity})
 
         if position is not None:
             last = frame.iloc[-1]
@@ -115,17 +117,22 @@ class BacktestTool:
         repriced = reprice_trade_list(trades, self.costs)
         final_equity = float(equity_curve[-1]["equity"])
         equity_values = np.array([point["equity"] for point in equity_curve], dtype=float)
-        running_max = np.maximum.accumulate(equity_values)
+        drawdown_values = np.concatenate(([self.initial_capital], equity_values))
+        running_max = np.maximum.accumulate(drawdown_values)
         drawdowns = np.divide(
-            running_max - equity_values,
+            running_max - drawdown_values,
             running_max,
-            out=np.zeros_like(equity_values),
+            out=np.zeros_like(drawdown_values),
             where=running_max != 0,
         )
-        returns = pd.Series(equity_values).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+        returns = (
+            pd.Series(drawdown_values).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+        )
         sharpe = 0.0
         if len(returns) > 1 and returns.std(ddof=1) > 0:
-            sharpe = float(returns.mean() / returns.std(ddof=1) * _annualization(strategy.chosen_timeframe))
+            sharpe = float(
+                returns.mean() / returns.std(ddof=1) * _annualization(strategy.chosen_timeframe)
+            )
         wins = sum(trade.net_pnl > 0 for trade in repriced)
         total_fees = sum(trade.fees for trade in repriced)
         total_slippage = sum(trade.slippage for trade in repriced)
@@ -142,6 +149,7 @@ class BacktestTool:
             total_trades=len(repriced),
             total_fees=total_fees,
             total_slippage=total_slippage,
+            funding_cost=0.0,
             equity_curve=equity_curve,
             trades=repriced,
             metrics={
@@ -152,6 +160,27 @@ class BacktestTool:
                 "bars": len(frame),
             },
         )
+
+    @staticmethod
+    def _filters_pass(
+        strategy: StrategyDefinition,
+        frame: pd.DataFrame,
+        slow_ema: pd.Series,
+        relative_strength: pd.Series,
+        index: int,
+    ) -> bool:
+        for rule in strategy.filters:
+            if rule == "rsi_below_70" and (
+                pd.isna(relative_strength.iloc[index]) or relative_strength.iloc[index] >= 70
+            ):
+                return False
+            if rule == "price_above_slow_ema" and (
+                pd.isna(slow_ema.iloc[index]) or frame["close"].iloc[index] <= slow_ema.iloc[index]
+            ):
+                return False
+            if rule == "volume_positive" and frame["volume"].iloc[index] <= 0:
+                return False
+        return True
 
     def _exit_in_bar(
         self, position: dict[str, Any], bar: pd.Series
