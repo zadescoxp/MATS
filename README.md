@@ -65,13 +65,17 @@ Each symbol gets at most three strategy attempts total: one initial candidate an
 two critique-guided revisions (`MATS_MAX_REVISION_LOOPS=2`). Before spending a strategy
 call, the builder measures supported EMA candidates across configured timeframes using
 the available bars and actual fee/slippage settings. It only offers candidates with
-enough history and trades; insufficient history or no viable signal is recorded in
-`strategy_diagnostics` rather than hidden behind repeated critique loops.
+enough history and trades, with the selected stop/take-profit settings held to the
+measured values. It provides the best five costed candidates per timeframe to Muse.
+Insufficient history or no viable signal is recorded in `strategy_diagnostics` rather
+than hidden behind repeated critique loops.
 
 If a symbol has too little testnet history, you will see the reason in that symbol's
 JSON `errors` and `strategy_diagnostics.timeframe_coverage`. A zero net PnL with zero
 trades means no trades were opened; it is not evidence that trading costs erased an
 edge. Review `backtest_report.total_trades`, `total_fees`, and `total_slippage`.
+The CLI exits non-zero if any run ends in the failed state; its JSON output and SQLite
+records are still retained for diagnosis.
 
 Runs can also be started and resumed from Python:
 
