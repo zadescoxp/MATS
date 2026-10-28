@@ -1,7 +1,9 @@
 import pytest
+from pydantic import BaseModel
 
+from framework.agents.common import parse_tool_response
 from framework.config.settings import ModelRoute, Settings
-from framework.llm.client import LLMClient, ToolDefinition
+from framework.llm.client import LLMClient, LLMResponse, ToolCall, ToolDefinition
 
 
 def test_default_model_is_baseten_muse_for_every_role() -> None:
@@ -56,6 +58,7 @@ def test_llm_client_uses_openai_compatible_baseten_transport(monkeypatch) -> Non
     assert captured["model"] == "openai/meta-models/muse-spark-open-1026"
     assert captured["api_base"] == "https://inference.baseten.co/v1"
     assert captured["tool_choice"] == "required"
+    assert captured["parallel_tool_calls"] is False
 
 
 def test_shared_baseten_route_is_used_for_each_agent_role() -> None:
@@ -97,3 +100,30 @@ def test_llm_rejects_routes_without_tool_calling_support() -> None:
             ],
             "analyst",
         )
+
+
+def test_identical_duplicate_tool_calls_are_normalized() -> None:
+    class Echo(BaseModel):
+        ok: bool
+
+    response = LLMResponse(
+        tool_calls=[
+            ToolCall(id="first", name="echo", arguments={"ok": True}),
+            ToolCall(id="second", name="echo", arguments={"ok": True}),
+        ]
+    )
+    assert parse_tool_response(response, "echo", Echo) == Echo(ok=True)
+
+
+def test_conflicting_duplicate_tool_calls_are_rejected() -> None:
+    class Echo(BaseModel):
+        ok: bool
+
+    response = LLMResponse(
+        tool_calls=[
+            ToolCall(id="first", name="echo", arguments={"ok": True}),
+            ToolCall(id="second", name="echo", arguments={"ok": False}),
+        ]
+    )
+    with pytest.raises(ValueError, match="conflicting"):
+        parse_tool_response(response, "echo", Echo)
