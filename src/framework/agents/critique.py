@@ -99,7 +99,9 @@ class CritiqueNode:
                     status="failed",
                     errors=[
                         *state.errors,
-                        "Critique revision limit reached; strategy was not approved.",
+                        "Strategy attempt limit reached "
+                        f"({self.context.settings.max_revision_loops + 1} total attempts); "
+                        "strategy was not approved.",
                     ],
                 )
             else:
