@@ -44,7 +44,9 @@ class NodeRunner:
             for attempt in range(attempts):
                 try:
                     result = function(state)
-                    agent_result = result if isinstance(result, AgentResult) else AgentResult(result)
+                    agent_result = (
+                        result if isinstance(result, AgentResult) else AgentResult(result)
+                    )
                     updated = GraphState.model_validate(
                         {**state.model_dump(mode="python"), **agent_result.updates}
                     )
@@ -95,7 +97,7 @@ def _is_transient(error: Exception) -> bool:
     name = type(error).__name__.lower()
     module = type(error).__module__.lower()
     return (
-        isinstance(error, (TimeoutError, ConnectionError))
+        isinstance(error, TimeoutError | ConnectionError)
         or any(token in name for token in ("timeout", "network", "ratelimit", "connection"))
         or "httpx" in module
     )
