@@ -33,7 +33,8 @@ MATS_MODEL_ROUTES='{"analyst":{"provider":"baseten","model":"meta-models/muse-sp
 
 Do not commit `.env` or API credentials. The default shared LLM settings select
 Baseten Muse; configure an API key before starting a run. Every routed model must
-support tool calling.
+support tool calling. Baseten calls use the OpenAI-compatible Model API at
+`https://inference.baseten.co/v1`; the Muse model ID is passed unchanged.
 
 ## Run and resume
 
