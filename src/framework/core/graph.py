@@ -2,6 +2,7 @@ import json
 import threading
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -133,8 +134,23 @@ class TradingFramework:
             account_equity=options.get("account_equity"),
         )
         config_snapshot = self.settings.model_dump(
-            mode="json", exclude={"bybit_api_key", "bybit_api_secret"}
+            mode="json",
+            exclude={
+                "bybit_api_key",
+                "bybit_api_secret",
+                "llm_api_key",
+                "model_routes",
+            },
         )
+        config_snapshot["model_routes"] = {
+            role: {
+                "provider": route.provider,
+                "model": route.model,
+                "base_url": route.base_url,
+                "supports_tools": route.supports_tools,
+            }
+            for role, route in self.settings.model_routes.items()
+        }
         config_snapshot["timeframes_to_consider"] = list(timeframes)
         config_snapshot["account_equity"] = options.get("account_equity")
         self.database.create_run(run_id, symbol, config_snapshot)
@@ -157,6 +173,45 @@ class TradingFramework:
         state = GraphState.model_validate(raw_state)
         self.database.update_run_status(state.run_id, "running")
         return self._invoke(state, state.run_id)
+
+    def run_many(
+        self,
+        symbols: list[str] | None = None,
+        config: dict[str, Any] | None = None,
+        *,
+        max_workers: int | None = None,
+    ) -> list[GraphState]:
+        selected_symbols = self.settings.symbols if symbols is None else symbols
+        if not selected_symbols:
+            raise ValueError("At least one symbol is required")
+        if any(not symbol.strip() for symbol in selected_symbols):
+            raise ValueError("Symbols must not be empty")
+        if len(set(selected_symbols)) != len(selected_symbols):
+            raise ValueError("Symbols must be unique")
+        if not (self.settings.dry_run or self.settings.kill_switch):
+            raise ValueError(
+                "Concurrent multi-symbol runs require dry-run or the global kill switch; "
+                "live portfolio-wide exposure controls are not implemented."
+            )
+        worker_limit = self.settings.max_concurrent_symbols if max_workers is None else max_workers
+        if worker_limit < 1:
+            raise ValueError("max_workers must be positive")
+        with ThreadPoolExecutor(
+            max_workers=min(worker_limit, len(selected_symbols)),
+            thread_name_prefix="mats-symbol",
+        ) as executor:
+            futures = [
+                executor.submit(self._run_isolated_symbol, symbol, config)
+                for symbol in selected_symbols
+            ]
+            return [future.result() for future in futures]
+
+    def _run_isolated_symbol(self, symbol: str, config: dict[str, Any] | None) -> GraphState:
+        worker = TradingFramework(settings=self.settings, enable_coder=self.enable_coder)
+        try:
+            return worker.run(symbol, config)
+        finally:
+            worker.close()
 
     def _invoke(self, state: GraphState, run_id: str) -> GraphState:
         try:
@@ -186,19 +241,20 @@ class TradingFramework:
         symbols: list[str] | None = None,
         *,
         interval_seconds: float = 60,
+        max_workers: int | None = None,
         stop_event: threading.Event | None = None,
     ) -> Iterator[GraphState]:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
         event = stop_event or threading.Event()
-        configured_symbols = symbols or self.settings.symbols
+        configured_symbols = self.settings.symbols if symbols is None else symbols
         if not configured_symbols:
             raise ValueError("At least one symbol is required for continuous polling")
         while not event.is_set():
-            for symbol in configured_symbols:
+            for result in self.run_many(configured_symbols, max_workers=max_workers):
                 if event.is_set():
                     break
-                yield self.run(symbol)
+                yield result
             event.wait(interval_seconds)
 
     def close(self) -> None:
