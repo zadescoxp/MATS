@@ -26,9 +26,7 @@ def _series(candles: Sequence[OHLCVBar] | pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"OHLCV data is missing columns: {', '.join(sorted(missing))}")
     if frame.empty:
         raise ValueError("At least one OHLCV candle is required")
-    return frame.astype(
-        {name: "float64" for name in ("open", "high", "low", "close", "volume")}
-    )
+    return frame.astype({name: "float64" for name in ("open", "high", "low", "close", "volume")})
 
 
 def sma(close: pd.Series, period: int) -> pd.Series:
@@ -91,12 +89,14 @@ def adx(frame: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     plus_dm = up.where((up > down) & (up > 0), 0.0)
     minus_dm = down.where((down > up) & (down > 0), 0.0)
     average_range = atr(frame, period).replace(0, np.nan)
-    plus_di = 100 * plus_dm.ewm(
-        alpha=1 / period, adjust=False, min_periods=period
-    ).mean() / average_range
-    minus_di = 100 * minus_dm.ewm(
-        alpha=1 / period, adjust=False, min_periods=period
-    ).mean() / average_range
+    plus_di = (
+        100 * plus_dm.ewm(alpha=1 / period, adjust=False, min_periods=period).mean() / average_range
+    )
+    minus_di = (
+        100
+        * minus_dm.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+        / average_range
+    )
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     return pd.DataFrame(
         {
@@ -117,7 +117,6 @@ def supertrend(frame: pd.DataFrame, period: int = 10, multiplier: float = 3) -> 
     for index in range(1, len(frame)):
         if pd.isna(upper.iloc[index]) or pd.isna(lower.iloc[index]):
             continue
-        prior_trend = trend.iloc[index - 1]
         prior_direction = direction.iloc[index - 1] or 1
         if frame["close"].iloc[index] > upper.iloc[index - 1]:
             direction.iloc[index] = 1
@@ -223,7 +222,9 @@ def compute_indicators(
 def compute_multi_timeframe(
     data: dict[str, Sequence[OHLCVBar] | pd.DataFrame],
 ) -> dict[str, TechnicalSnapshot]:
-    return {timeframe: compute_indicators(candles, timeframe) for timeframe, candles in data.items()}
+    return {
+        timeframe: compute_indicators(candles, timeframe) for timeframe, candles in data.items()
+    }
 
 
 def _clean(value: Any) -> float | None:
