@@ -26,10 +26,13 @@ def main() -> None:
     arguments = parser.parse_args()
 
     framework = TradingFramework(enable_coder=arguments.enable_coder)
+    exit_code = 0
     try:
         if arguments.resume is not None:
             result = framework.resume(arguments.resume or None)
             print(result.model_dump_json(indent=2))
+            if result.status == "failed":
+                exit_code = 1
         elif arguments.loop:
             if arguments.all and arguments.symbols:
                 parser.error("--all and --symbol cannot be used together")
@@ -40,6 +43,8 @@ def main() -> None:
                 max_workers=arguments.workers,
             ):
                 print(result.model_dump_json(indent=2))
+                if result.status == "failed":
+                    exit_code = 1
         elif arguments.all or arguments.symbols and len(arguments.symbols) > 1:
             if arguments.all and arguments.symbols:
                 parser.error("--all and --symbol cannot be used together")
@@ -63,6 +68,8 @@ def main() -> None:
             print(
                 "[\n" + ",\n".join(result.model_dump_json(indent=2) for result in results) + "\n]"
             )
+            if any(result.status == "failed" for result in results):
+                exit_code = 1
         elif arguments.symbols:
             if arguments.all:
                 parser.error("--all and --symbol cannot be used together")
@@ -73,10 +80,14 @@ def main() -> None:
                 config["account_equity"] = arguments.account_equity
             result = framework.run(arguments.symbols[0], config)
             print(result.model_dump_json(indent=2))
+            if result.status == "failed":
+                exit_code = 1
         else:
             parser.error("--symbol, --all, or --resume is required unless --loop is selected")
     finally:
         framework.close()
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
