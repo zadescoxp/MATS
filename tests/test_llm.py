@@ -4,6 +4,59 @@ from framework.config.settings import ModelRoute, Settings
 from framework.llm.client import LLMClient, ToolDefinition
 
 
+def test_default_model_is_baseten_muse_for_every_role() -> None:
+    settings = Settings(model_routes={})
+    for role in ("analyst", "strategy", "critic", "coder", "dummy"):
+        route = settings.model_for(role)
+        assert route.provider == "baseten"
+        assert route.model == "meta-models/muse-spark-open-1026"
+        assert route.base_url == "https://inference.baseten.co/v1"
+
+
+def test_llm_client_uses_baseten_provider_prefix(monkeypatch) -> None:
+    import framework.llm.client as llm_module
+
+    captured = {}
+
+    class FakeResponse:
+        choices = [
+            type(
+                "Choice",
+                (),
+                {"message": type("Message", (), {"content": None, "tool_calls": []})()},
+            )()
+        ]
+        usage = None
+        _hidden_params = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(llm_module, "completion", fake_completion)
+    client = LLMClient(
+        Settings(
+            llm_provider="baseten",
+            llm_model="meta-models/muse-spark-open-1026",
+            llm_base_url="https://inference.baseten.co/v1",
+            model_routes={},
+        )
+    )
+    client.invoke_with_tools(
+        [{"role": "user", "content": "Call the tool."}],
+        [
+            ToolDefinition(
+                name="echo",
+                description="Echo.",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+        "analyst",
+    )
+    assert captured["model"] == "baseten/meta-models/muse-spark-open-1026"
+    assert captured["api_base"] == "https://inference.baseten.co/v1"
+
+
 def test_shared_baseten_route_is_used_for_each_agent_role() -> None:
     settings = Settings(
         llm_provider="baseten",
