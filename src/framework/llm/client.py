@@ -53,9 +53,7 @@ class LLMClient:
         model_config: ModelRoute | str,
     ) -> LLMResponse:
         route = (
-            self.settings.model_for(model_config)
-            if isinstance(model_config, str)
-            else model_config
+            self.settings.model_for(model_config) if isinstance(model_config, str) else model_config
         )
         if not route.supports_tools:
             raise ValueError(f"Model {route.model!r} is configured without tool-calling support")
@@ -81,7 +79,9 @@ class LLMClient:
         calls: list[ToolCall] = []
         for call in choice.tool_calls or []:
             raw_arguments = call.function.arguments
-            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            arguments = (
+                json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            )
             if not isinstance(arguments, dict):
                 raise ValueError(f"Tool {call.function.name!r} arguments must be a JSON object")
             calls.append(ToolCall(id=call.id, name=call.function.name, arguments=arguments))
