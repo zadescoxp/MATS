@@ -88,11 +88,12 @@ long-only spot; it does not open short positions or futures.
 ## Model routing
 
 `LLMClient.invoke_with_tools(messages, tools, model_config)` uses LiteLLM's
-OpenAI-compatible tool schema. Configure role-specific `ModelRoute` values in
-`Settings.model_routes` or `MATS_MODEL_ROUTES`. Each route includes provider, model,
-credentials, optional API base URL, and `supports_tools`; nodes reject routes without
-tool support before making a request. Token counts and reported model cost are written
-to `agent_steps`.
+OpenAI-compatible tool schema. Shared model settings come from `MATS_LLM_PROVIDER`,
+`MATS_LLM_MODEL`, `MATS_LLM_API_KEY`, `MATS_LLM_BASE_URL`, and
+`MATS_LLM_SUPPORTS_TOOLS`; role-specific `ModelRoute` values in `MATS_MODEL_ROUTES`
+override them. Each route includes provider, model, credentials, optional API base URL,
+and `supports_tools`; nodes reject routes without tool support before making a request.
+Token counts and reported model cost are written to `agent_steps`.
 
 ## Adding an agent
 
