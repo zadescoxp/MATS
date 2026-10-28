@@ -14,8 +14,7 @@ class ModelRoute(BaseModel):
 
 
 _DEFAULT_ROUTES = {
-    role: ModelRoute()
-    for role in ("analyst", "strategy", "critic", "coder", "dummy")
+    role: ModelRoute() for role in ("analyst", "strategy", "critic", "coder", "dummy")
 }
 
 
