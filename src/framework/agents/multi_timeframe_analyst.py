@@ -17,8 +17,7 @@ class MultiTimeframeAnalystNode:
             raise ValueError("Analyst requires OHLCV data for at least one timeframe")
         snapshots = compute_multi_timeframe(state.raw_data)
         snapshot_payload = {
-            timeframe: snapshot.model_dump(mode="json")
-            for timeframe, snapshot in snapshots.items()
+            timeframe: snapshot.model_dump(mode="json") for timeframe, snapshot in snapshots.items()
         }
         timeframe_order = sorted(state.raw_data, key=_timeframe_seconds)
         highest, lowest = timeframe_order[-1], timeframe_order[0]
@@ -56,8 +55,7 @@ class MultiTimeframeAnalystNode:
         finding = parse_tool_response(response, "submit_findings", MultiTimeframeFindings)
         if finding.higher_timeframe != highest or finding.lower_timeframe != lowest:
             raise ValueError("Analyst findings must use the highest and lowest supplied timeframes")
-        if set(finding.technical_snapshots) != set(snapshots):
-            finding = finding.model_copy(update={"technical_snapshots": snapshot_payload})
+        finding = finding.model_copy(update={"technical_snapshots": snapshot_payload})
         history = [
             *state.messages,
             {"role": "assistant", "content": response.content, "tool": "submit_findings"},
