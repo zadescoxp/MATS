@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MATS — Research Console</title>
+  <style>
+    :root {
+      --bg: #0a0d12;
+      --panel: #111720;
+      --panel-2: #151d28;
+      --line: #273241;
+      --muted: #8d9bad;
+      --text: #edf2f8;
+      --green: #70e0b1;
+      --red: #ff8290;
+      --blue: #83b9ff;
+      --amber: #f3c778;
+      --purple: #c1a6ff;
+      --radius: 16px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse at 82% -15%, rgba(80, 127, 198, .17), transparent 34rem),
+        radial-gradient(ellipse at -5% 30%, rgba(67, 144, 120, .08), transparent 30rem),
+        var(--bg);
+      min-height: 100vh;
+    }
+    button, select, input { font: inherit; }
+    button { color: inherit; }
+    .shell { max-width: 1440px; margin: auto; padding: 28px clamp(16px, 3vw, 42px) 48px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 32px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark {
+      width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center;
+      background: linear-gradient(145deg, #72e0b3, #3eaa9b); color: #071411; font-weight: 900; letter-spacing: -.08em;
+      box-shadow: 0 8px 26px rgba(67, 205, 158, .17);
+    }
+    .brand h1 { font-size: 15px; letter-spacing: .13em; margin: 0 0 3px; }
+    .brand p { color: var(--muted); font-size: 12px; margin: 0; }
+    .toolbar { display: flex; align-items: center; gap: 10px; }
+    .db-label { color: var(--muted); font-size: 12px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .button {
+      border: 1px solid var(--line); background: var(--panel-2); padding: 10px 14px; border-radius: 10px;
+      cursor: pointer; font-size: 12px; font-weight: 700; transition: .18s ease;
+    }
+    .button:hover { border-color: #536980; transform: translateY(-1px); }
+    .button.primary { background: var(--green); color: #06130f; border-color: var(--green); }
+    .button.primary:hover { background: #91edc5; }
+    .button:disabled { opacity: .5; cursor: wait; transform: none; }
+    #fileInput { display: none; }
+    .intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin: 0 0 22px; }
+    .eyebrow { color: var(--green); font-size: 10px; letter-spacing: .17em; font-weight: 800; text-transform: uppercase; }
+    .intro h2 { font-size: clamp(24px, 3vw, 34px); letter-spacing: -.045em; margin: 7px 0 7px; }
+    .intro p { color: var(--muted); margin: 0; font-size: 13px; line-height: 1.55; }
+    .privacy { color: #a9bacb; border: 1px solid var(--line); background: rgba(17, 23, 32, .75); padding: 10px 13px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
+    .privacy span { color: var(--green); margin-right: 7px; }
+    .dropzone {
+      min-height: 162px; border: 1px dashed #3c5267; border-radius: var(--radius); display: grid; place-items: center;
+      text-align: center; padding: 24px; margin: 0 0 20px; background: rgba(16, 23, 32, .65); cursor: pointer;
+    }
+    .dropzone:hover, .dropzone.dragging { border-color: var(--green); background: rgba(30, 65, 56, .22); }
+    .drop-icon { width: 36px; height: 36px; display: grid; place-items: center; margin: 0 auto 10px; border-radius: 11px; background: #1d2b35; color: var(--green); font-size: 19px; }
+    .dropzone strong { display: block; font-size: 14px; margin-bottom: 5px; }
+    .dropzone small { display: block; color: var(--muted); font-size: 11px; }
+    .notice { display: none; padding: 12px 15px; margin: 0 0 18px; border-radius: 10px; font-size: 12px; line-height: 1.5; }
+    .notice.error { display: block; color: #ffb6bc; background: rgba(105, 37, 47, .28); border: 1px solid rgba(255, 130, 144, .3); }
+    .notice.info { display: block; color: #b6d6ff; background: rgba(40, 67, 101, .26); border: 1px solid rgba(131, 185, 255, .25); }
+    .dashboard { display: none; }
+    .dashboard.visible { display: block; }
+    .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 15px; }
+    .card { background: linear-gradient(160deg, rgba(20, 28, 39, .96), rgba(15, 21, 29, .96)); border: 1px solid var(--line); border-radius: var(--radius); }
+    .kpi { padding: 17px 18px; min-height: 116px; position: relative; overflow: hidden; }
+    .kpi::after { content: ""; position: absolute; width: 75px; height: 75px; border-radius: 50%; right: -25px; top: -25px; background: var(--glow, rgba(131, 185, 255, .07)); filter: blur(1px); }
+    .kpi-label { color: var(--muted); font-size: 11px; letter-spacing: .035em; }
+    .kpi-value { margin-top: 15px; font-size: clamp(21px, 2.4vw, 29px); font-weight: 750; letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
+    .kpi-foot { color: #748396; font-size: 10px; margin-top: 5px; }
+    .positive { color: var(--green) !important; }
+    .negative { color: var(--red) !important; }
+    .neutral { color: var(--text) !important; }
+    .grid-two { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .85fr); gap: 15px; margin-bottom: 15px; }
+    .section { padding: 18px 19px; min-width: 0; }
+    .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+    .section-head h3 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
+    .section-head p { color: var(--muted); margin: 5px 0 0; font-size: 11px; }
+    .legend { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .legend i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin: 0 5px 0 12px; }
+    .legend i:first-child { margin-left: 0; }
+    canvas { display: block; width: 100%; }
+    .chart { height: 235px; }
+    .chart-small { height: 220px; }
+    .chart-wrap { position: relative; }
+    .chart-tooltip {
+      display: none; pointer-events: none; position: absolute; z-index: 4; border: 1px solid #39485a; background: #0a1018;
+      color: var(--text); border-radius: 8px; padding: 7px 9px; font-size: 10px; box-shadow: 0 8px 24px #0008;
+    }
+    .run-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+    .select, .search { background: #0c1118; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 11px; }
+    .search { width: 145px; }
+    .run-table-wrap { overflow: auto; max-height: 450px; }
+    table { border-collapse: collapse; width: 100%; font-size: 11px; }
+    th { color: #8292a5; text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; padding: 10px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; position: sticky; top: 0; background: #111720; }
+    td { padding: 11px 9px; border-bottom: 1px solid rgba(39, 50, 65, .66); color: #cbd4df; white-space: nowrap; }
+    tbody tr { cursor: pointer; transition: background .12s; }
+    tbody tr:hover, tbody tr.selected { background: rgba(131, 185, 255, .07); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 99px; padding: 4px 8px; font-size: 9px; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
+    .pill::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .pill.completed, .pill.approve, .pill.filled { color: var(--green); background: rgba(112, 224, 177, .09); }
+    .pill.failed, .pill.reject, .pill.rejected { color: var(--red); background: rgba(255, 130, 144, .09); }
+    .pill.running, .pill.dry_run, .pill.open { color: var(--amber); background: rgba(243, 199, 120, .1); }
+    .pill.unknown { color: #aab6c5; background: rgba(170, 182, 197, .08); }
+    .detail-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, .8fr); gap: 15px; margin-bottom: 15px; }
+    .detail-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-bottom: 17px; }
+    .mini { background: #0c121a; border: 1px solid rgba(39, 50, 65, .8); border-radius: 11px; padding: 11px 12px; min-width: 0; }
+    .mini span { display: block; color: var(--muted); font-size: 9px; margin-bottom: 7px; }
+    .mini strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+    .strategy-box { border: 1px solid rgba(131, 185, 255, .16); background: rgba(53, 89, 128, .1); border-radius: 11px; padding: 13px; }
+    .strategy-box strong { font-size: 12px; }
+    .strategy-box p { color: #b2c1d1; font-size: 11px; line-height: 1.55; margin: 7px 0 0; }
+    .flow { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 3px 0 12px; }
+    .flow-step { flex: 1 0 100px; min-width: 100px; position: relative; padding-right: 15px; }
+    .flow-step:not(:last-child)::after { content: ""; position: absolute; left: 18px; right: 3px; height: 1px; top: 13px; background: #344255; }
+    .flow-dot { position: relative; z-index: 1; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: #202b38; color: #9eacbd; font-size: 10px; border: 1px solid #344255; }
+    .flow-step.done .flow-dot { color: #07150f; background: var(--green); border-color: var(--green); }
+    .flow-step.failed .flow-dot { color: #21080c; background: var(--red); border-color: var(--red); }
+    .flow-name { font-size: 9px; color: #c5d0dc; margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .flow-meta { color: #75859a; font-size: 9px; margin-top: 4px; }
+    .two-column-lower { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 15px; margin-bottom: 15px; }
+    .text-list { display: grid; gap: 9px; }
+    .text-item { border-left: 2px solid #52677e; background: #0d131b; padding: 10px 12px; border-radius: 0 9px 9px 0; color: #bac6d3; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .text-item.good { border-color: var(--green); }
+    .text-item.bad { border-color: var(--red); }
+    .text-item small { color: #78889b; display: block; margin-top: 5px; font-size: 9px; }
+    .empty { color: #76869a; text-align: center; padding: 26px 8px; font-size: 11px; }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .footnote { text-align: center; color: #627184; font-size: 10px; margin: 25px 0 0; line-height: 1.6; }
+    @media (max-width: 900px) {
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .grid-two, .detail-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .shell { padding: 17px 13px 34px; }
+      .topbar { align-items: flex-start; flex-direction: column; margin-bottom: 25px; }
+      .toolbar { width: 100%; justify-content: space-between; }
+      .intro { align-items: flex-start; flex-direction: column; }
+      .privacy { white-space: normal; }
+      .kpis { gap: 8px; }
+      .kpi { padding: 14px; min-height: 104px; }
+      .kpi-value { margin-top: 12px; }
+      .section { padding: 15px 13px; }
+      .two-column-lower { grid-template-columns: 1fr; }
+      .detail-metrics { grid-template-columns: repeat(2, 1fr); }
+      .section-head { flex-direction: column; }
+      .run-controls { justify-content: flex-start; width: 100%; }
+      .search { flex: 1; }
+      .chart { height: 210px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div><h1>MATS RESEARCH CONSOLE</h1><p>Multi-agent trading system · run intelligence</p></div>
+      </div>
+      <div class="toolbar">
+        <span class="db-label" id="dbLabel">No database loaded</span>
+        <button class="button primary" id="chooseDb">＋ &nbsp;Load database</button>
+        <input id="fileInput" type="file" accept=".db,.sqlite,.sqlite3,application/octet-stream">
+      </div>
+    </header>
+
+    <section class="intro">
+      <div>
+        <div class="eyebrow">Research, not a trading terminal</div>
+        <h2>Understand every run.</h2>
+        <p>Follow the path from market research to backtest, critique, risk sizing, and execution.<br>Compare outcomes and spot where the process can improve.</p>
+      </div>
+      <div class="privacy"><span>●</span> Your database is opened locally in this browser</div>
+    </section>
+
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a SQLite database file">
+      <div><div class="drop-icon">↥</div><strong>Drop your SQLite database here</strong><small>or click to browse · data/state.db · .db / .sqlite / .sqlite3</small></div>
+    </div>
+    <div class="notice" id="notice" role="status"></div>
+
+    <section class="dashboard" id="dashboard">
+      <div class="kpis" id="kpis"></div>
+      <div class="grid-two">
+        <section class="card section">
+          <div class="section-head">
+            <div><h3>Latest backtest outcomes</h3><p>Net P&amp;L after fees and slippage · newest run per pair</p></div>
+            <div class="legend"><i style="background:var(--green)"></i>positive<i style="background:var(--red)"></i>negative</div>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="pnlChart" aria-label="Backtest net PnL chart"></canvas><div class="chart-tooltip"></div></div>
+        </section>
+        <section class="card section">
+          <div class="section-head"><div><h3>Run health</h3><p>Overall outcome distribution</p></div></div>
+          <div class="chart-wrap"><canvas class="chart-small" id="healthChart" aria-label="Run status chart"></canvas><div class="chart-tooltip"></div></div>
+        </section>
+      </div>
+      <section class="card section" style="margin-bottom:15px">
+        <div class="section-head">
+          <div><h3>Run history</h3><p>Select a run to inspect its strategy, evidence, and agent steps.</p></div>
+          <div class="run-controls">
+            <input id="runSearch" class="search" type="search" placeholder="Search pair or ID">
+            <select id="statusFilter" class="select" aria-label="Filter runs by status"><option value="">All statuses</option></select>
+          </div>
+        </div>
+        <div class="run-table-wrap"><table><thead><tr><th>Pair</th><th>Status</th><th>Started</th><th>Attempts</th><th>Latest net P&amp;L</th><th>Decision</th><th>Tokens</th></tr></thead><tbody id="runRows"></tbody></table></div>
+      </section>
+
+      <section class="detail-grid" id="runDetail"></section>
+      <section class="card section" id="timelineSection" style="margin-bottom:15px">
+        <div class="section-head"><div><h3>Agent workflow</h3><p>Per-node status, model tokens, cost, and duration for the selected run.</p></div><div id="stepTotals" class="legend"></div></div>
+        <div class="flow" id="stepFlow"></div>
+        <div class="run-table-wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Started</th><th>Tokens</th><th>Cost</th><th>Duration</th><th>Error</th></tr></thead><tbody id="stepRows"></tbody></table></div>
+      </section>
+      <div class="two-column-lower">
+        <section class="card section">
+          <div class="section-head"><div><h3>Cost &amp; trade breakdown</h3><p>Friction and result details from the selected backtest.</p></div></div>
+          <div class="chart-wrap"><canvas class="chart-small" id="costChart" aria-label="Backtest costs chart"></canvas><div class="chart-tooltip"></div></div>
+          <div class="run-table-wrap"><table><thead><tr><th>#</th><th>Entry → exit</th><th>Gross P&amp;L</th><th>Fees + slip</th><th>Net P&amp;L</th><th>Exit reason</th></tr></thead><tbody id="tradeRows"></tbody></table></div>
+        </section>
+        <section class="card section">
+          <div class="section-head"><div><h3>Critique &amp; system events</h3><p>Approval rationale, revision advice, and recoverable errors.</p></div></div>
+          <div class="text-list" id="eventList"></div>
+        </section>
+      </div>
+    </section>
+    <p class="footnote">Backtest results are historical simulations, not realized returns or a promise of future performance.<br>Dashboard parsing runs in your browser; the selected database is not uploaded.</p>
+  </main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+  <script>
+    (() => {
+      "use strict";
+      const $ = (selector) => document.querySelector(selector);
+      const el = (tag, className, text) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      };
+      const safeJson = (value, fallback = null) => {
+        if (value == null || value === "") return fallback;
+        try { return typeof value === "string" ? JSON.parse(value) : value; }
+        catch { return fallback; }
+      };
+      const num = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+      const money = (value, digits = 2) => `${num(value) < 0 ? "−" : ""}$${Math.abs(num(value)).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+      const pct = (value, asFraction = true) => `${(num(value) * (asFraction ? 100 : 1)).toFixed(2)}%`;
+      const dateText = (value) => {
+        if (!value) return "—";
+        const d = new Date(value);
+        return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      };
+      const slug = (value) => String(value || "unknown").toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+      const state = { db: null, runs: [], selectedId: null, byRun: new Map(), fileName: "" };
+
+      function query(sql, params = []) {
+        if (!state.db) return [];
+        const result = state.db.exec(sql, params);
+        if (!result.length) return [];
+        const { columns, values } = result[0];
+        return values.map((row) => Object.fromEntries(columns.map((key, index) => [key, row[index]])));
+      }
+
+      function hasTable(name) {
+        return query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", [name]).length > 0;
+      }
+
+      function showNotice(message, type = "error") {
+        const notice = $("#notice");
+        notice.className = `notice ${type}`;
+        notice.textContent = message;
+      }
+
+      function hideNotice() {
+        $("#notice").className = "notice";
+        $("#notice").textContent = "";
+      }
+
+      function loadRecords() {
+        const required = ["runs", "agent_steps", "strategies", "backtests", "critiques", "executions", "system_events"];
+        const missing = required.filter((name) => !hasTable(name));
+        if (missing.length) {
+          showNotice(`This file is missing expected MATS tables: ${missing.join(", ")}. Choose a MATS state.db file.`);
+          return false;
+        }
+        const runs = query("SELECT run_id, symbol, status, started_at, finished_at FROM runs ORDER BY started_at DESC");
+        const backtests = query(`
+          SELECT s.run_id, s.strategy_id, s.version, s.definition_json, b.backtest_id,
+                 b.report_json, b.equity_curve_json, b.costs_json, c.decision,
+                 c.issues_json, c.revision_instructions
+          FROM strategies s
+          LEFT JOIN backtests b ON b.strategy_id = s.strategy_id
+          LEFT JOIN critiques c ON c.backtest_id = b.backtest_id
+          ORDER BY s.run_id, s.version, b.backtest_id
+        `);
+        const steps = query("SELECT step_id, run_id, agent_name, status, error, tokens_used, cost, started_at, finished_at FROM agent_steps ORDER BY started_at");
+        const executions = query("SELECT execution_id, run_id, orders_json, status FROM executions");
+        const events = query("SELECT event_id, run_id, type, message, traceback, timestamp FROM system_events ORDER BY timestamp DESC");
+        const map = new Map(runs.map((run) => [run.run_id, { ...run, backtests: [], steps: [], executions: [], events: [] }]));
+        backtests.forEach((item) => {
+          const run = map.get(item.run_id);
+          if (run) run.backtests.push({
+            ...item,
+            strategy: safeJson(item.definition_json, {}),
+            report: safeJson(item.report_json, {}),
+            equity: safeJson(item.equity_curve_json, []),
+            costs: safeJson(item.costs_json, {}),
+            issues: safeJson(item.issues_json, [])
+          });
+        });
+        steps.forEach((item) => map.get(item.run_id)?.steps.push(item));
+        executions.forEach((item) => map.get(item.run_id)?.executions.push({ ...item, orders: safeJson(item.orders_json, []) }));
+        events.forEach((item) => { if (item.run_id) map.get(item.run_id)?.events.push(item); });
+        state.runs = runs.map((run) => map.get(run.run_id));
+        state.byRun = map;
+        return true;
+      }
+
+      function latestAttempt(run) {
+        return [...(run.backtests || [])].sort((a, b) => num(b.version) - num(a.version))[0] || null;
+      }
+
+      function backtestForRun(run) {
+        return [...(run.backtests || [])].reverse().find((item) => item.report && Object.keys(item.report).length) || latestAttempt(run);
+      }
+
+      function totals() {
+        const latestPerSymbol = new Map();
+        for (const run of state.runs) {
+          if (!latestPerSymbol.has(run.symbol)) latestPerSymbol.set(run.symbol, run);
+        }
+        const latestRuns = [...latestPerSymbol.values()];
+        const net = latestRuns.reduce((sum, run) => sum + num(backtestForRun(run)?.report?.net_pnl), 0);
+        const tokens = state.runs.reduce((sum, run) => sum + run.steps.reduce((n, step) => n + num(step.tokens_used), 0), 0);
+        return {
+          symbols: latestRuns.length, net, tokens,
+          complete: state.runs.filter((run) => run.status === "completed").length,
+          failed: state.runs.filter((run) => run.status === "failed").length,
+          latestRuns
+        };
+      }
+
+      function renderKpis() {
+        const t = totals();
+        const cards = [
+          ["Research pairs", t.symbols, "Latest run per distinct symbol", "rgba(131,185,255,.09)", "neutral"],
+          ["Latest net backtest P&L", money(t.net), "Newest run per pair · after modeled costs", "rgba(112,224,177,.1)", t.net >= 0 ? "positive" : "negative"],
+          ["Recorded model tokens", t.tokens.toLocaleString(), "Sum of saved agent-step usage", "rgba(193,166,255,.1)", "neutral"],
+          ["Completed runs", `${t.complete} / ${state.runs.length}`, `${t.failed} failed · ${state.runs.length - t.complete - t.failed} other`, "rgba(243,199,120,.09)", "neutral"]
+        ];
+        $("#kpis").replaceChildren(...cards.map(([label, value, foot, glow, color]) => {
+          const card = el("article", "card kpi");
+          card.style.setProperty("--glow", glow);
+          card.append(el("div", "kpi-label", label), el("div", `kpi-value ${color}`, value), el("div", "kpi-foot", foot));
+          return card;
+        }));
+      }
+
+      function canvasSetup(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+        canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+        const ctx = canvas.getContext("2d");
+        ctx.scale(ratio, ratio);
+        return { ctx, width: rect.width, height: rect.height, ratio };
+      }
+
+      function chartText(ctx, text, x, y, color = "#8292a5", align = "left") {
+        ctx.fillStyle = color; ctx.font = "10px system-ui, sans-serif"; ctx.textAlign = align; ctx.fillText(text, x, y);
+      }
+
+      function renderPnlChart() {
+        const canvas = $("#pnlChart");
+        const { ctx, width, height } = canvasSetup(canvas);
+        const items = [...totals().latestRuns].reverse().map((run) => ({ label: run.symbol, value: num(backtestForRun(run)?.report?.net_pnl) }));
+        const left = 60, right = 18, top = 14, bottom = 28, plotH = height - top - bottom, plotW = width - left - right;
+        ctx.clearRect(0, 0, width, height);
+        if (!items.length) { chartText(ctx, "Load a database to visualize runs", width / 2, height / 2, "#8292a5", "center"); return; }
+        const maxAbs = Math.max(10, ...items.map((item) => Math.abs(item.value))) * 1.18;
+        const zeroY = top + plotH / 2;
+        ctx.strokeStyle = "#293544"; ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+          const y = top + (plotH * i / 4);
+          ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width - right, y); ctx.stroke();
+          const value = maxAbs - (maxAbs * 2 * i / 4);
+          chartText(ctx, money(value, 0), left - 8, y + 3, "#78899c", "right");
+        }
+        const slot = plotW / items.length, barW = Math.min(42, slot * .48);
+        items.forEach((item, index) => {
+          const barH = Math.abs(item.value) / maxAbs * (plotH / 2);
+          const x = left + slot * index + (slot - barW) / 2;
+          const y = item.value >= 0 ? zeroY - barH : zeroY;
+          ctx.fillStyle = item.value >= 0 ? "#70e0b1" : "#ff8290";
+          ctx.beginPath(); ctx.roundRect(x, y, barW, Math.max(2, barH), 5); ctx.fill();
+          chartText(ctx, item.label, x + barW / 2, height - 8, "#aab7c6", "center");
+          chartText(ctx, money(item.value, 0), x + barW / 2, item.value >= 0 ? Math.max(top + 10, y - 6) : Math.min(height - bottom - 4, y + barH + 13), "#d8e1eb", "center");
+        });
+        ctx.strokeStyle = "#56677a"; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(left, zeroY); ctx.lineTo(width - right, zeroY); ctx.stroke(); ctx.setLineDash([]);
+      }
+
+      function renderHealthChart() {
+        const canvas = $("#healthChart");
+        const { ctx, width, height } = canvasSetup(canvas);
+        ctx.clearRect(0, 0, width, height);
+        const counts = [
+          { label: "Completed", value: state.runs.filter((run) => run.status === "completed").length, color: "#70e0b1" },
+          { label: "Failed", value: state.runs.filter((run) => run.status === "failed").length, color: "#ff8290" },
+          { label: "Running / other", value: state.runs.filter((run) => !["completed", "failed"].includes(run.status)).length, color: "#f3c778" }
+        ];
+        const total = Math.max(1, state.runs.length);
+        const cx = Math.min(100, width * .27), cy = height / 2, radius = Math.min(68, height * .32);
+        let start = -Math.PI / 2;
+        counts.forEach((item) => {
+          if (!item.value) return;
+          const end = start + (item.value / total) * Math.PI * 2;
+          ctx.beginPath(); ctx.arc(cx, cy, radius, start, end); ctx.arc(cx, cy, radius * .66, end, start, true); ctx.closePath();
+          ctx.fillStyle = item.color; ctx.fill(); start = end;
+        });
+        ctx.fillStyle = "#edf2f8"; ctx.font = "700 20px system-ui"; ctx.textAlign = "center"; ctx.fillText(String(state.runs.length), cx, cy + 6);
+        ctx.fillStyle = "#8292a5"; ctx.font = "9px system-ui"; ctx.fillText("RUNS", cx, cy + 21);
+        counts.forEach((item, i) => {
+          const y = cy - 25 + i * 27;
+          ctx.fillStyle = item.color; ctx.beginPath(); ctx.arc(cx + radius + 24, y - 3, 4, 0, Math.PI * 2); ctx.fill();
+          chartText(ctx, item.label, cx + radius + 36, y, "#b9c5d2");
+          chartText(ctx, `${item.value}  (${Math.round(item.value / total * 100)}%)`, width - 12, y, "#dce4ec", "right");
+        });
+      }
+
+      function renderRuns() {
+        const filter = $("#statusFilter").value;
+        const search = $("#runSearch").value.trim().toLowerCase();
+        const rows = state.runs.filter((run) =>
+          (!filter || run.status === filter) &&
+          (!search || `${run.symbol} ${run.run_id}`.toLowerCase().includes(search))
+        );
+        const body = $("#runRows");
+        if (!rows.length) {
+          body.replaceChildren(Object.assign(el("tr"), { innerHTML: '<td colspan="7" class="empty">No runs match this filter.</td>' }));
+          return;
+        }
+        body.replaceChildren(...rows.map((run) => {
+          const attempt = latestAttempt(run);
+          const report = backtestForRun(run)?.report || {};
+          const tr = el("tr", run.run_id === state.selectedId ? "selected" : "");
+          const cells = [
+            [run.symbol, "mono"], [run.status, ""], [dateText(run.started_at), ""],
+            [attempt ? `v${num(attempt.version) + 1}` : "—", ""],
+            [Object.keys(report).length ? money(report.net_pnl) : "—", num(report.net_pnl) > 0 ? "positive" : num(report.net_pnl) < 0 ? "negative" : ""],
+            [attempt?.decision || "—", ""],
+            [run.steps.reduce((sum, step) => sum + num(step.tokens_used), 0).toLocaleString(), ""]
+          ];
+          cells.forEach(([text, className], index) => {
+            const td = el("td");
+            if (index === 1 || index === 5) td.append(el("span", `pill ${slug(text)}`, text));
+            else td.className = className, td.textContent = text;
+            tr.append(td);
+          });
+          tr.addEventListener("click", () => selectRun(run.run_id));
+          return tr;
+        }));
+      }
+
+      function selectRun(runId) {
+        state.selectedId = runId;
+        renderRuns();
+        renderDetail();
+      }
+
+      function renderEquity(report) {
+        const canvas = $("#equityChart");
+        if (!canvas) return;
+        const points = Array.isArray(report?.equity_curve) ? report.equity_curve : [];
+        const { ctx, width, height } = canvasSetup(canvas);
+        ctx.clearRect(0, 0, width, height);
+        if (points.length < 2) { chartText(ctx, "No equity curve saved for this backtest", width / 2, height / 2, "#8292a5", "center"); return; }
+        const values = points.map((point) => num(point.equity));
+        const min = Math.min(...values), max = Math.max(...values);
+        const range = Math.max(1, max - min);
+        const left = 51, right = 12, top = 14, bottom = 25;
+        const plotW = width - left - right, plotH = height - top - bottom;
+        for (let i = 0; i <= 3; i++) {
+          const y = top + plotH * i / 3;
+          ctx.strokeStyle = "#293544"; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width - right, y); ctx.stroke();
+          chartText(ctx, money(max - range * i / 3, 0), left - 7, y + 3, "#78899c", "right");
+        }
+        const coords = values.map((value, i) => ({ x: left + (i / (values.length - 1)) * plotW, y: top + ((max - value) / range) * plotH }));
+        const gradient = ctx.createLinearGradient(0, top, 0, top + plotH);
+        gradient.addColorStop(0, "rgba(112,224,177,.22)"); gradient.addColorStop(1, "rgba(112,224,177,0)");
+        ctx.beginPath(); ctx.moveTo(coords[0].x, top + plotH); coords.forEach((point) => ctx.lineTo(point.x, point.y)); ctx.lineTo(coords.at(-1).x, top + plotH); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
+        ctx.beginPath(); coords.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
+        ctx.strokeStyle = "#70e0b1"; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
+        chartText(ctx, String(points[0].timestamp || "").slice(0, 10), left, height - 6);
+        chartText(ctx, String(points.at(-1).timestamp || "").slice(0, 10), width - right, height - 6, "#8292a5", "right");
+      }
+
+      function renderCosts(backtest) {
+        const canvas = $("#costChart");
+        const { ctx, width, height } = canvasSetup(canvas);
+        ctx.clearRect(0, 0, width, height);
+        const report = backtest?.report || {};
+        const items = [
+          { label: "Gross P&L", value: num(report.net_pnl) + num(report.total_fees) + num(report.total_slippage), color: "#83b9ff" },
+          { label: "Fees", value: num(report.total_fees), color: "#f3c778" },
+          { label: "Slippage", value: num(report.total_slippage), color: "#c1a6ff" },
+          { label: "Net P&L", value: num(report.net_pnl), color: num(report.net_pnl) >= 0 ? "#70e0b1" : "#ff8290" }
+        ];
+        const max = Math.max(1, ...items.map((item) => Math.abs(item.value)));
+        const baseY = height - 37, chartTop = 13, usable = baseY - chartTop, slot = width / items.length;
+        ctx.strokeStyle = "#293544"; ctx.beginPath(); ctx.moveTo(0, baseY); ctx.lineTo(width, baseY); ctx.stroke();
+        items.forEach((item, index) => {
+          const barH = Math.max(2, Math.abs(item.value) / max * usable);
+          const barW = Math.min(42, slot * .48), x = index * slot + (slot - barW) / 2;
+          ctx.fillStyle = item.color; ctx.beginPath(); ctx.roundRect(x, item.value >= 0 ? baseY - barH : baseY, barW, barH, 5); ctx.fill();
+          chartText(ctx, money(item.value, 0), x + barW / 2, item.value >= 0 ? Math.max(10, baseY - barH - 6) : baseY + barH + 12, "#d4dde7", "center");
+          chartText(ctx, item.label, x + barW / 2, height - 12, "#aab7c6", "center");
+        });
+      }
+
+      function renderDetail() {
+        const run = state.byRun.get(state.selectedId);
+        const container = $("#runDetail");
+        if (!run) { container.replaceChildren(); return; }
+        const attempt = backtestForRun(run);
+        const report = attempt?.report || {};
+        const strategy = attempt?.strategy || {};
+        const critique = attempt || {};
+        const execution = run.executions.at(-1);
+        const left = el("section", "card section");
+        const head = el("div", "section-head");
+        const title = el("div");
+        title.append(el("h3", "", `${run.symbol} · ${run.run_id.slice(0, 8)}`), el("p", "", `${dateText(run.started_at)} · ${run.status}${attempt ? ` · attempt ${num(attempt.version) + 1}` : ""}`));
+        head.append(title, el("span", `pill ${slug(run.status)}`, run.status));
+        left.append(head);
+        const metricGrid = el("div", "detail-metrics");
+        [
+          ["Net P&L", money(report.net_pnl), num(report.net_pnl) >= 0 ? "positive" : "negative"],
+          ["Net return", pct(report.net_return_pct), num(report.net_return_pct) >= 0 ? "positive" : "negative"],
+          ["Max drawdown", pct(report.max_drawdown_pct), "neutral"],
+          ["Trades", String(num(report.total_trades)), "neutral"],
+          ["Win rate", pct(report.win_rate), "neutral"],
+          ["Sharpe", num(report.sharpe_ratio).toFixed(2), "neutral"]
+        ].forEach(([label, value, color]) => {
+          const mini = el("div", "mini"); mini.append(el("span", "", label), el("strong", color, value)); metricGrid.append(mini);
+        });
+        left.append(metricGrid);
+        const strategyBox = el("div", "strategy-box");
+        const strategyTitle = strategy.name || "No strategy saved";
+        strategyBox.append(el("strong", "", strategyTitle));
+        const strategyDetails = [
+          strategy.chosen_timeframe ? `Timeframe: ${strategy.chosen_timeframe}` : "",
+          strategy.fast_period && strategy.slow_period ? `EMA ${strategy.fast_period}/${strategy.slow_period}` : "",
+          strategy.filters?.length ? `Filters: ${strategy.filters.join(", ")}` : "Filters: none",
+          strategy.stop_loss_pct != null ? `Stop: ${pct(strategy.stop_loss_pct)}` : "",
+          strategy.take_profit_pct != null ? `Take profit: ${pct(strategy.take_profit_pct)}` : "Take profit: none"
+        ].filter(Boolean).join("  ·  ");
+        strategyBox.append(el("p", "", strategyDetails || "Strategy definition was not saved for this attempt."));
+        if (strategy.description) strategyBox.append(el("p", "", strategy.description));
+        left.append(strategyBox);
+
+        const right = el("section", "card section");
+        const rightHead = el("div", "section-head");
+        rightHead.append(el("div", "", ""));
+        rightHead.firstChild.append(el("h3", "", "Equity curve"), el("p", "", "Backtest account value across historical bars"));
+        right.append(rightHead);
+        const chartWrap = el("div", "chart-wrap");
+        const canvas = el("canvas", "chart"); canvas.id = "equityChart"; canvas.setAttribute("aria-label", "Backtest equity curve");
+        chartWrap.append(canvas); right.append(chartWrap);
+        const statusRow = el("div", "legend");
+        statusRow.style.marginTop = "9px";
+        statusRow.textContent = `Critique: ${attempt?.decision || "not recorded"}   ·   Execution: ${execution?.status || "not recorded"}${execution?.status === "dry_run" ? " (no orders sent)" : ""}`;
+        right.append(statusRow);
+        container.replaceChildren(left, right);
+        renderEquity(report);
+
+        const steps = run.steps;
+        const tok = steps.reduce((sum, step) => sum + num(step.tokens_used), 0);
+        const cost = steps.reduce((sum, step) => sum + num(step.cost), 0);
+        $("#stepTotals").textContent = `${steps.length} steps  ·  ${tok.toLocaleString()} tokens  ·  ${money(cost, 4)} recorded cost`;
+        const flow = $("#stepFlow");
+        flow.replaceChildren(...steps.map((step, index) => {
+          const node = el("div", `flow-step ${step.status === "completed" ? "done" : step.status === "failed" ? "failed" : ""}`);
+          node.append(el("div", "flow-dot", step.status === "completed" ? "✓" : step.status === "failed" ? "!" : String(index + 1)));
+          node.append(el("div", "flow-name", step.agent_name.replaceAll("_", " ")), el("div", "flow-meta", `${num(step.tokens_used).toLocaleString()} tokens`));
+          return node;
+        }));
+        const stepRows = $("#stepRows");
+        stepRows.replaceChildren(...steps.map((step) => {
+          const duration = step.started_at && step.finished_at ? Math.max(0, (new Date(step.finished_at) - new Date(step.started_at)) / 1000) : null;
+          const tr = el("tr");
+          [step.agent_name.replaceAll("_", " "), step.status, dateText(step.started_at), num(step.tokens_used).toLocaleString(), money(step.cost, 4), duration == null ? "—" : `${duration.toFixed(1)}s`, step.error || "—"].forEach((value, index) => {
+            const td = el("td");
+            if (index === 1) td.append(el("span", `pill ${slug(value)}`, value));
+            else td.textContent = value, index === 6 && step.error && (td.className = "negative");
+            tr.append(td);
+          });
+          return tr;
+        }));
+        renderCosts(attempt);
+        const tradeBody = $("#tradeRows");
+        const trades = Array.isArray(report.trades) ? report.trades : [];
+        tradeBody.replaceChildren(...(trades.length ? trades : []).map((trade, index) => {
+          const tr = el("tr");
+          const when = `${String(trade.entry_time || "").slice(0, 10)} → ${String(trade.exit_time || "").slice(0, 10)}`;
+          [String(index + 1), when, money(trade.gross_pnl), money(num(trade.fees) + num(trade.slippage)), money(trade.net_pnl), trade.exit_reason || "—"].forEach((value, i) => {
+            const td = el("td", i === 4 ? (num(trade.net_pnl) >= 0 ? "positive" : "negative") : "");
+            td.textContent = value; tr.append(td);
+          });
+          return tr;
+        }));
+        if (!trades.length) tradeBody.append(Object.assign(el("tr"), { innerHTML: '<td colspan="6" class="empty">No trade records in the selected backtest.</td>' }));
+        renderEvents(run, critique);
+      }
+
+      function renderEvents(run, attempt) {
+        const list = $("#eventList");
+        const cards = [];
+        if (attempt?.decision) {
+          cards.push({ kind: attempt.decision === "APPROVE" ? "good" : "bad", text: `Critique ${attempt.decision}${attempt.issues?.length ? ` · ${attempt.issues.join(" · ")}` : ""}` });
+          if (attempt.revision_instructions) cards.push({ kind: "bad", text: attempt.revision_instructions });
+        }
+        const events = (run.events || []).slice(0, 8);
+        events.forEach((event) => cards.push({ kind: event.type.includes("fail") || event.type.includes("error") ? "bad" : "", text: `${event.message}${event.traceback ? `\n${event.traceback}` : ""}`, time: dateText(event.timestamp) }));
+        list.replaceChildren(...(cards.length ? cards.map((item) => {
+          const card = el("div", `text-item ${item.kind}`, item.text);
+          if (item.time) card.append(el("small", "", item.time));
+          return card;
+        }) : [el("div", "empty", "No critique or system events recorded for this run.")]));
+      }
+
+      function refresh() {
+        if (!loadRecords()) { $("#dashboard").classList.remove("visible"); return; }
+        hideNotice();
+        $("#dashboard").classList.add("visible");
+        $("#dbLabel").textContent = state.fileName;
+        renderKpis();
+        const statuses = [...new Set(state.runs.map((run) => run.status))];
+        const filter = $("#statusFilter");
+        const selected = filter.value;
+        filter.replaceChildren(el("option", "", "All statuses"));
+        filter.firstChild.value = "";
+        statuses.forEach((status) => {
+          const option = el("option", "", status); option.value = status; filter.append(option);
+        });
+        filter.value = statuses.includes(selected) ? selected : "";
+        renderPnlChart();
+        renderHealthChart();
+        if (!state.selectedId || !state.byRun.has(state.selectedId)) state.selectedId = state.runs[0]?.run_id || null;
+        renderRuns();
+        renderDetail();
+      }
+
+      async function openFile(file) {
+        if (!file) return;
+        if (!/(\.db|\.sqlite|\.sqlite3)$/i.test(file.name)) {
+          showNotice("Choose a SQLite database file ending in .db, .sqlite, or .sqlite3.");
+          return;
+        }
+        $("#chooseDb").disabled = true;
+        showNotice("Reading database locally…", "info");
+        try {
+          if (!window.initSqlJs) throw new Error("SQLite reader did not load. Check your internet connection and reload this page.");
+          const SQL = await window.initSqlJs({ locateFile: (name) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${name}` });
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const newDb = new SQL.Database(bytes);
+          const previous = state.db;
+          state.db = newDb;
+          state.fileName = file.name;
+          state.selectedId = null;
+          if (!loadRecords()) {
+            state.db.close();
+            state.db = previous;
+            return;
+          }
+          previous?.close();
+          refresh();
+        } catch (error) {
+          showNotice(`Could not open this database: ${error.message || error}`);
+        } finally {
+          $("#chooseDb").disabled = false;
+          $("#fileInput").value = "";
+        }
+      }
+
+      $("#chooseDb").addEventListener("click", () => $("#fileInput").click());
+      $("#dropzone").addEventListener("click", () => $("#fileInput").click());
+      $("#dropzone").addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") $("#fileInput").click(); });
+      $("#fileInput").addEventListener("change", (event) => openFile(event.target.files[0]));
+      $("#runSearch").addEventListener("input", renderRuns);
+      $("#statusFilter").addEventListener("change", renderRuns);
+      document.addEventListener("dragover", (event) => event.preventDefault());
+      document.addEventListener("drop", (event) => event.preventDefault());
+      const dropzone = $("#dropzone");
+      ["dragenter", "dragover"].forEach((name) => dropzone.addEventListener(name, (event) => { event.preventDefault(); dropzone.classList.add("dragging"); }));
+      ["dragleave", "drop"].forEach((name) => dropzone.addEventListener(name, (event) => { event.preventDefault(); dropzone.classList.remove("dragging"); }));
+      dropzone.addEventListener("drop", (event) => openFile(event.dataTransfer.files[0]));
+      window.addEventListener("resize", () => {
+        if (!state.db) return;
+        renderPnlChart(); renderHealthChart();
+        if (state.selectedId) renderDetail();
+      });
+    })();
+  </script>
+</body>
+</html>
