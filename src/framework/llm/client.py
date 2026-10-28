@@ -61,7 +61,11 @@ class LLMClient:
             raise ValueError("At least one tool schema is required for tool-calling requests")
 
         model_name = route.model
-        if route.provider != "openai" and not model_name.startswith(f"{route.provider}/"):
+        if route.provider == "baseten":
+            # Use Baseten's OpenAI-compatible Model API, not LiteLLM's
+            # deployment-specific Baseten adapter, which routes slash IDs to /predict.
+            model_name = f"openai/{route.model}"
+        elif route.provider != "openai" and not model_name.startswith(f"{route.provider}/"):
             model_name = f"{route.provider}/{model_name}"
         kwargs: dict[str, Any] = {
             "model": model_name,
