@@ -1,7 +1,7 @@
 from typing import Any
 
 import ccxt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from framework.config.settings import Settings
 from framework.schemas.models import OHLCVBar
@@ -52,7 +52,10 @@ class MarketDataTools:
             raise ValueError("limit must be positive")
         rows = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         candles = [OHLCVBar.from_ccxt(row) for row in rows]
-        if any(left.timestamp >= right.timestamp for left, right in zip(candles, candles[1:])):
+        if any(
+            left.timestamp >= right.timestamp
+            for left, right in zip(candles, candles[1:], strict=False)
+        ):
             raise ValueError("Exchange returned OHLCV candles that are not strictly time-ordered")
         return OHLCVResult(symbol=symbol, timeframe=timeframe, candles=candles)
 
