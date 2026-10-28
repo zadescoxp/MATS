@@ -7,7 +7,7 @@ name = "mats-trading-framework"
 version = "0.1.0"
 description = "A local, recoverable, model-agnostic crypto spot trading research framework."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 license = { file = "LICENSE" }
 dependencies = [
     "ccxt==4.5.4",
