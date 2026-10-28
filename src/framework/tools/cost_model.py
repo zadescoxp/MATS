@@ -28,9 +28,8 @@ def reprice_trade_list(
     for trade in trades:
         fees = (trade.entry_notional + trade.exit_notional) * assumptions.fee_rate
         slippage = (
-            (trade.entry_notional + trade.exit_notional) * assumptions.slippage_percent
-            + 2 * assumptions.slippage_fixed
-        )
+            trade.entry_notional + trade.exit_notional
+        ) * assumptions.slippage_percent + 2 * assumptions.slippage_fixed
         repriced.append(
             trade.model_copy(
                 update={
