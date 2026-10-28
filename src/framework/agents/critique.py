@@ -59,8 +59,27 @@ class CritiqueNode:
                 update={
                     "decision": "REJECT",
                     "issues": list(dict.fromkeys([*proposed.issues, *gate_issues])),
-                    "revision_instructions": proposed.revision_instructions
-                    or "Revise the strategy to satisfy: " + "; ".join(gate_issues),
+                    "revision_instructions": (
+                        proposed.revision_instructions.strip() + " "
+                        if proposed.revision_instructions.strip()
+                        else ""
+                    )
+                    + "Revise the strategy to satisfy: "
+                    + "; ".join(gate_issues),
+                }
+            )
+        if proposed.decision == "REJECT" and not proposed.revision_instructions.strip():
+            action = (
+                "; ".join(proposed.issues)
+                if proposed.issues
+                else "improve net-of-cost returns and control drawdown"
+            )
+            proposed = proposed.model_copy(
+                update={
+                    "revision_instructions": (
+                        f"Reassess the selected timeframe, EMA entry/exit periods, and stop "
+                        f"logic; make a concrete change to address: {action}."
+                    )
                 }
             )
         critique = Critique.model_validate(proposed)
