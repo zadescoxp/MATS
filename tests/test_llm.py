@@ -55,6 +55,7 @@ def test_llm_client_uses_openai_compatible_baseten_transport(monkeypatch) -> Non
     )
     assert captured["model"] == "openai/meta-models/muse-spark-open-1026"
     assert captured["api_base"] == "https://inference.baseten.co/v1"
+    assert captured["tool_choice"] == "required"
 
 
 def test_shared_baseten_route_is_used_for_each_agent_role() -> None:
