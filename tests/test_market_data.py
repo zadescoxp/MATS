@@ -44,3 +44,21 @@ def test_market_data_rejects_unsorted_candles() -> None:
         assert "strictly time-ordered" in str(exc)
     else:
         raise AssertionError("Unsorted candles were accepted")
+
+
+def test_market_data_uses_public_bybit_by_default(monkeypatch) -> None:
+    import framework.tools.market_data as module
+
+    calls: list[bool] = []
+
+    class Exchange:
+        def __init__(self, config) -> None:
+            pass
+
+        def set_sandbox_mode(self, enabled: bool) -> None:
+            calls.append(enabled)
+
+    monkeypatch.setattr(module.ccxt, "bybit", Exchange)
+    MarketDataTools(Settings())
+    MarketDataTools(Settings(market_data_testnet=True))
+    assert calls == [False, True]
