@@ -6,6 +6,7 @@ from typing import Any
 import ccxt
 
 from framework.config.settings import Settings
+from framework.schemas.models import AccountBalance, OrderExecutionResult, OrderSnapshot
 
 
 class ExecutionTools:
@@ -47,7 +48,7 @@ class ExecutionTools:
         *,
         dry_run: bool = True,
         idempotency_key: str,
-    ) -> dict[str, Any]:
+    ) -> OrderExecutionResult:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
         if amount <= 0:
@@ -57,19 +58,23 @@ class ExecutionTools:
         if order_type == "limit" and (price is None or price <= 0):
             raise ValueError("limit orders require a positive price")
         if dry_run:
-            return {
-                "status": "dry_run",
-                "order": {
-                    "symbol": symbol,
-                    "side": side,
-                    "type": order_type,
-                    "amount": amount,
-                    "price": price,
-                    "idempotency_key": idempotency_key,
-                },
-                "fills": [],
-                "errors": [],
-            }
+            return OrderExecutionResult(
+                status="dry_run",
+                orders=[
+                    OrderSnapshot(
+                        symbol=symbol,
+                        side=side,
+                        type=order_type,
+                        status="dry_run",
+                        amount=amount,
+                        price=price,
+                        raw={
+                            "idempotency_key": idempotency_key,
+                        },
+                    )
+                ],
+                errors=[],
+            )
         if not self.settings.bybit_testnet:
             raise ValueError("Live mainnet execution is disabled; Bybit testnet is required")
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
@@ -116,25 +121,101 @@ class ExecutionTools:
             if status in {"partially_filled", "failed"} and self._monotonic() >= deadline
             else []
         )
-        return {
-            "status": status,
-            "orders": orders,
-            "fills": current.get("trades") or [],
-            "filled": filled,
-            "remaining": float(current.get("remaining") or max(requested - filled, 0)),
-            "errors": errors,
+        return OrderExecutionResult(
+            status=status,
+            orders=[_normalize_order(item, symbol) for item in orders],
+            fills=current.get("trades") or [],
+            filled=filled,
+            remaining=float(current.get("remaining") or max(requested - filled, 0)),
+            errors=errors,
+        )
+
+    def cancel_order(self, order_id: str, symbol: str) -> OrderSnapshot:
+        return _normalize_order(self.exchange.cancel_order(order_id, symbol), symbol)
+
+    def get_order(self, order_id: str, symbol: str) -> OrderSnapshot:
+        return _normalize_order(self.exchange.fetch_order(order_id, symbol), symbol)
+
+    def place_protective_stop(
+        self,
+        symbol: str,
+        amount: float,
+        trigger_price: float,
+        *,
+        dry_run: bool,
+        idempotency_key: str,
+    ) -> OrderExecutionResult:
+        if amount <= 0 or trigger_price <= 0:
+            raise ValueError("Protective stop amount and trigger price must be positive")
+        if dry_run:
+            return OrderExecutionResult(
+                status="dry_run",
+                orders=[
+                    OrderSnapshot(
+                        symbol=symbol,
+                        side="sell",
+                        type="stop_market",
+                        status="dry_run",
+                        amount=amount,
+                        price=trigger_price,
+                        raw={"trigger_price": trigger_price},
+                    )
+                ],
+            )
+        if not self.settings.bybit_testnet:
+            raise ValueError("Live mainnet execution is disabled; Bybit testnet is required")
+        if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
+            raise ValueError("Bybit testnet API credentials are required for live execution")
+        link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
+        params = {
+            "orderLinkId": link_id,
+            "triggerPrice": trigger_price,
+            "triggerDirection": 2,
+            "triggerBy": "LastPrice",
         }
+        try:
+            order = self.exchange.create_order(symbol, "market", "sell", amount, None, params)
+        except ccxt.DuplicateOrderId:
+            order = self.exchange.fetch_order(None, symbol, {"orderLinkId": link_id})
+        return OrderExecutionResult(
+            status=order.get("status", "open"),
+            orders=[_normalize_order(order, symbol)],
+        )
 
-    def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any]:
-        return self.exchange.cancel_order(order_id, symbol)
+    def get_open_orders(self, symbol: str | None = None) -> list[OrderSnapshot]:
+        orders = self.exchange.fetch_open_orders(symbol)
+        return [_normalize_order(order, symbol or order.get("symbol", "")) for order in orders]
 
-    def get_order(self, order_id: str, symbol: str) -> dict[str, Any]:
-        return self.exchange.fetch_order(order_id, symbol)
-
-    def get_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        return self.exchange.fetch_open_orders(symbol)
-
-    def get_balance(self) -> dict[str, Any]:
+    def get_balance(self) -> AccountBalance:
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
             raise ValueError("Bybit API credentials are required to fetch account balance")
-        return self.exchange.fetch_balance()
+        balance = self.exchange.fetch_balance()
+        return AccountBalance(
+            free=balance.get("free") or {},
+            used=balance.get("used") or {},
+            total=balance.get("total") or {},
+            currencies={
+                key: value
+                for key, value in balance.items()
+                if key not in {"free", "used", "total", "info"} and isinstance(value, dict)
+            },
+        )
+
+
+def _normalize_order(order: dict[str, Any], symbol: str) -> OrderSnapshot:
+    return OrderSnapshot(
+        id=str(order["id"]) if order.get("id") is not None else None,
+        symbol=order.get("symbol") or symbol,
+        type=order.get("type"),
+        side=order.get("side"),
+        status=order.get("status", "unknown"),
+        amount=order.get("amount"),
+        price=order.get("price"),
+        average=order.get("average"),
+        filled=order.get("filled"),
+        remaining=order.get("remaining"),
+        cost=order.get("cost"),
+        timestamp=order.get("timestamp"),
+        info=order.get("info") or {},
+        raw=order,
+    )
