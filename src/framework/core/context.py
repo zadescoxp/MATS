@@ -7,8 +7,8 @@ from framework.persistence.database import Database
 
 if TYPE_CHECKING:
     from framework.tools.backtest import BacktestTool
-    from framework.tools.market_data import MarketDataTools
     from framework.tools.execution import ExecutionTools
+    from framework.tools.market_data import MarketDataTools
 
 
 @dataclass
