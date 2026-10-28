@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     symbols: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
     timeframes: list[str] = Field(default_factory=lambda: ["1h", "4h", "1d"])
     bybit_testnet: bool = True
+    market_data_testnet: bool = False
     bybit_api_key: SecretStr | None = None
     bybit_api_secret: SecretStr | None = None
     llm_provider: str = "baseten"
@@ -36,8 +37,10 @@ class Settings(BaseSettings):
     dry_run: bool = True
     kill_switch: bool = True
     log_level: str = "INFO"
-    max_revision_loops: int = Field(default=5, ge=0, le=20)
+    max_revision_loops: int = Field(default=2, ge=0, le=20)
     min_backtest_trades: int = Field(default=3, ge=1)
+    min_strategy_bars: int = Field(default=100, ge=50)
+    max_concurrent_symbols: int = Field(default=2, ge=1, le=20)
     max_backtest_drawdown: float = Field(default=0.25, gt=0, le=1)
     min_backtest_net_pnl: float = Field(default=0, ge=0)
     initial_capital: float = Field(default=10_000.0, gt=0)
