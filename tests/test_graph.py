@@ -1,3 +1,6 @@
+import json
+import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,14 +61,19 @@ class FakeLLM:
                 rationale="Higher timeframe and lower timeframe align.",
             ).model_dump(mode="json")
         elif name == "submit_strategy":
+            request = json.loads(messages[-1]["content"])
+            candidate = next(
+                item for item in request["eligible_candidates"] if item["timeframe"] == "1h"
+            )
             payload = StrategyDefinition(
                 name="EMA trend",
                 description="Enter on a fast EMA crossover and manage risk with a stop.",
-                chosen_timeframe="1h",
+                chosen_timeframe=candidate["timeframe"],
                 entry_rule="ema_crossover",
                 exit_rule="ema_crossover",
-                fast_period=2,
-                slow_period=5,
+                fast_period=candidate["fast_period"],
+                slow_period=candidate["slow_period"],
+                filters=candidate["filters"],
                 stop_loss_pct=0.2,
                 position_fraction=0.1,
             ).model_dump(mode="json")
@@ -126,12 +134,21 @@ def _response(name: str, payload: dict[str, Any]):
     )
 
 
-def _framework(candles, *, fail_analyst_once: bool = False):
+def _framework(
+    candles,
+    *,
+    fail_analyst_once: bool = False,
+    max_revision_loops: int = 2,
+    min_backtest_net_pnl: float = 0,
+):
     settings = Settings(
         database_path=Path(":memory:"),
         timeframes=["1h", "4h"],
         min_backtest_trades=1,
         max_backtest_drawdown=1,
+        max_revision_loops=max_revision_loops,
+        min_strategy_bars=100,
+        min_backtest_net_pnl=min_backtest_net_pnl,
         retry_attempts=1,
         dry_run=False,
         kill_switch=True,
@@ -195,6 +212,83 @@ def test_resume_does_not_refetch_completed_data_or_repeat_finished_agents(candle
         ).fetchall()
         assert len(data_steps) == 1
         assert data_steps[0]["status"] == "completed"
+    finally:
+        framework.close()
+        database.close()
+
+
+def test_critic_cycle_stops_after_three_total_strategy_attempts(candles) -> None:
+    framework, database, _, llm, execution = _framework(
+        candles,
+        max_revision_loops=2,
+        min_backtest_net_pnl=1_000_000,
+    )
+    try:
+        result = framework.run("BTC/USDT")
+        assert result.status == "failed"
+        assert llm.calls["submit_strategy"] == 3
+        assert llm.calls["submit_critique"] == 3
+        assert execution.dry_run_values == []
+        assert "3 total attempts" in result.errors[-1]
+        versions = database.connection.execute(
+            "SELECT version FROM strategies WHERE run_id=? ORDER BY version",
+            (result.run_id,),
+        ).fetchall()
+        assert [row["version"] for row in versions] == [0, 1, 2]
+    finally:
+        framework.close()
+        database.close()
+
+
+def test_insufficient_history_stops_before_strategy_model_call() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    short_candles = [
+        {
+            "timestamp": start + timedelta(hours=index),
+            "open": 100 + index * 0.1,
+            "high": 101 + index * 0.1,
+            "low": 99 + index * 0.1,
+            "close": 100 + index * 0.1,
+            "volume": 10,
+        }
+        for index in range(40)
+    ]
+    from framework.schemas.models import OHLCVBar
+
+    framework, database, _, llm, _ = _framework(
+        [OHLCVBar.model_validate(item) for item in short_candles]
+    )
+    try:
+        result = framework.run("BTC/USDT")
+        assert result.status == "failed"
+        assert result.strategy is None
+        assert "timeframe_coverage" in result.strategy_diagnostics
+        assert "100" in result.errors[-1]
+        assert llm.calls.get("submit_strategy", 0) == 0
+    finally:
+        framework.close()
+        database.close()
+
+
+def test_run_many_executes_symbols_concurrently_and_preserves_order(candles) -> None:
+    framework, database, _, _, _ = _framework(candles)
+    barrier = threading.Barrier(2)
+
+    def fake_run(symbol: str, config: dict[str, Any] | None):
+        barrier.wait(timeout=2)
+        from framework.core.state import GraphState
+
+        return GraphState(
+            run_id=symbol,
+            symbol=symbol,
+            timeframes_to_consider=["1h"],
+            status="completed",
+        )
+
+    framework._run_isolated_symbol = fake_run
+    try:
+        results = framework.run_many(["BTC/USDT", "ETH/USDT"], max_workers=2)
+        assert [result.symbol for result in results] == ["BTC/USDT", "ETH/USDT"]
     finally:
         framework.close()
         database.close()
