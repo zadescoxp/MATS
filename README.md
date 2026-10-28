@@ -24,16 +24,16 @@ uv sync --extra dev
 cp .env.example .env
 ```
 
-Set model routes and optional Bybit testnet credentials in `.env`. The settings model
-supports per-role providers, model names, API keys, base URLs, and a tool-support flag
-through `MATS_MODEL_ROUTES` JSON. For example:
+Set the shared LLM provider/model/API key/base URL and optional Bybit testnet credentials
+in `.env`. Per-role overrides are also supported through `MATS_MODEL_ROUTES` JSON. For example:
 
 ```dotenv
-MATS_MODEL_ROUTES='{"analyst":{"provider":"openai","model":"gpt-4o-mini","api_key":"...","supports_tools":true},"strategy":{"provider":"anthropic","model":"claude-3-5-sonnet-latest","api_key":"...","supports_tools":true}}'
+MATS_MODEL_ROUTES='{"analyst":{"provider":"baseten","model":"meta-models/muse-spark-open-1026","api_key":"...","base_url":"https://inference.baseten.co/v1","supports_tools":true},"strategy":{"provider":"anthropic","model":"claude-3-5-sonnet-latest","api_key":"...","supports_tools":true}}'
 ```
 
-Do not commit `.env` or testnet credentials. The model routes default to an OpenAI
-tool-calling model name; configure an API key before starting a run.
+Do not commit `.env` or API credentials. The default shared LLM settings select
+Baseten Muse; configure an API key before starting a run. Every routed model must
+support tool calling.
 
 ## Run and resume
 
