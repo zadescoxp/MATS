@@ -16,7 +16,8 @@ net-of-cost critique gate, sizes approved plans, and records dry-run or testnet 
 
 ## Install
 
-Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) are required.
+Python 3.11–3.14 and [uv](https://docs.astral.sh/uv/) are required. The locked
+Pydantic native core does not yet support Python 3.15.
 
 ```bash
 uv sync --extra dev
