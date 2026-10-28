@@ -13,7 +13,7 @@ def test_default_model_is_baseten_muse_for_every_role() -> None:
         assert route.base_url == "https://inference.baseten.co/v1"
 
 
-def test_llm_client_uses_baseten_provider_prefix(monkeypatch) -> None:
+def test_llm_client_uses_openai_compatible_baseten_transport(monkeypatch) -> None:
     import framework.llm.client as llm_module
 
     captured = {}
@@ -53,7 +53,7 @@ def test_llm_client_uses_baseten_provider_prefix(monkeypatch) -> None:
         ],
         "analyst",
     )
-    assert captured["model"] == "baseten/meta-models/muse-spark-open-1026"
+    assert captured["model"] == "openai/meta-models/muse-spark-open-1026"
     assert captured["api_base"] == "https://inference.baseten.co/v1"
 
 
