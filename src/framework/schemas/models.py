@@ -69,7 +69,7 @@ class MultiTimeframeFindings(BaseModel):
     key_levels: list[float] = Field(default_factory=list)
     divergences: list[str] = Field(default_factory=list)
     rationale: str
-    technical_snapshots: dict[str, dict[str, Any]]
+    technical_snapshots: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class StrategyDefinition(BaseModel):
@@ -83,7 +83,9 @@ class StrategyDefinition(BaseModel):
     stop_loss_pct: float = Field(default=0.02, gt=0, le=0.5)
     take_profit_pct: float | None = Field(default=None, gt=0, le=1)
     position_fraction: float = Field(default=0.1, gt=0, le=1)
-    filters: list[str] = Field(default_factory=list)
+    filters: list[Literal["rsi_below_70", "price_above_slow_ema", "volume_positive"]] = Field(
+        default_factory=list
+    )
     revision_notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -119,6 +121,7 @@ class BacktestReport(BaseModel):
     total_trades: int
     total_fees: float
     total_slippage: float
+    funding_cost: float = 0.0
     equity_curve: list[dict[str, Any]]
     trades: list[TradeRecord]
     metrics: dict[str, float | int | None]
@@ -147,6 +150,41 @@ class ExecutionReport(BaseModel):
     fills: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     dry_run: bool
+
+
+class OrderSnapshot(BaseModel):
+    id: str | None = None
+    symbol: str
+    type: str | None = None
+    side: str | None = None
+    status: str
+    amount: float | None = None
+    price: float | None = None
+    average: float | None = None
+    filled: float | None = None
+    remaining: float | None = None
+    cost: float | None = None
+    timestamp: int | None = None
+    info: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderExecutionResult(BaseModel):
+    status: Literal[
+        "dry_run", "open", "filled", "partially_filled", "rejected", "failed", "canceled"
+    ]
+    orders: list[OrderSnapshot] = Field(default_factory=list)
+    fills: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    filled: float = Field(default=0, ge=0)
+    remaining: float = Field(default=0, ge=0)
+
+
+class AccountBalance(BaseModel):
+    free: dict[str, float | None] = Field(default_factory=dict)
+    used: dict[str, float | None] = Field(default_factory=dict)
+    total: dict[str, float | None] = Field(default_factory=dict)
+    currencies: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def json_safe(value: Any) -> Any:
