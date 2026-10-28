@@ -6,10 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ModelRoute(BaseModel):
-    provider: str = "openai"
-    model: str = "gpt-4o-mini"
+    provider: str = "baseten"
+    model: str = "meta-models/muse-spark-open-1026"
     api_key: SecretStr | None = None
-    base_url: str | None = None
+    base_url: str | None = "https://inference.baseten.co/v1"
     supports_tools: bool = True
 
 
@@ -28,10 +28,10 @@ class Settings(BaseSettings):
     bybit_testnet: bool = True
     bybit_api_key: SecretStr | None = None
     bybit_api_secret: SecretStr | None = None
-    llm_provider: str = "openai"
-    llm_model: str = "gpt-4o-mini"
+    llm_provider: str = "baseten"
+    llm_model: str = "meta-models/muse-spark-open-1026"
     llm_api_key: SecretStr | None = None
-    llm_base_url: str | None = None
+    llm_base_url: str | None = "https://inference.baseten.co/v1"
     llm_supports_tools: bool = True
     dry_run: bool = True
     kill_switch: bool = True
