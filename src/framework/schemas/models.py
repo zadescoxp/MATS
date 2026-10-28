@@ -58,6 +58,20 @@ class AnalystFinding(BaseModel):
     indicators: dict[str, float | str | None] = Field(default_factory=dict)
 
 
+class MultiTimeframeFindings(BaseModel):
+    higher_timeframe_bias: Literal["bullish", "bearish", "neutral"]
+    lower_timeframe_timing: Literal["bullish", "bearish", "neutral"]
+    higher_timeframe: str
+    lower_timeframe: str
+    regime: str
+    momentum: str
+    volatility: str
+    key_levels: list[float] = Field(default_factory=list)
+    divergences: list[str] = Field(default_factory=list)
+    rationale: str
+    technical_snapshots: dict[str, dict[str, Any]]
+
+
 class StrategyDefinition(BaseModel):
     name: str
     description: str
