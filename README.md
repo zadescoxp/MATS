@@ -9,7 +9,9 @@ net-of-cost critique gate, sizes approved plans, and records dry-run or testnet 
 
 - Dry-run is enabled by default.
 - The global kill switch is enabled by default and forces order placement to dry-run.
-- Live order placement is limited in code to Bybit testnet; mainnet orders are rejected.
+- Public Bybit market data is used by default to provide the historical depth needed
+  for meaningful indicators/backtests; order placement is limited to Bybit testnet.
+- Live mainnet orders are rejected.
 - Risk assessment and execution are unreachable until the critique approves the backtest.
 - A lower-timeframe bullish entry timing signal is required before sizing an order.
 - No real exchange order has been placed as part of this implementation.
@@ -40,13 +42,37 @@ support tool calling. Baseten calls use the OpenAI-compatible Model API at
 
 ```bash
 uv run mats --symbol BTC/USDT
+uv run mats --all
+uv run mats --symbol BTC/USDT --symbol ETH/USDT --workers 2
 uv run mats --resume
 uv run mats --resume <run-id>
 uv run mats --symbol ETH/USDT --timeframe 15m --timeframe 1h --account-equity 5000
 uv run mats --loop --interval 60
 ```
 
+`--all` runs every `MATS_SYMBOLS` pair concurrently (two at a time by default); each
+pair gets its own run and final JSON state in the returned JSON array. Use `--workers`
+to cap concurrency. Concurrent multi-symbol execution is refused if both dry-run and
+the kill switch are disabled, because aggregate live portfolio exposure is not yet
+coordinated.
+
 The database defaults to `./data/state.db`. Configure `MATS_DATABASE_PATH` to change it.
+Public market history is fetched from Bybit mainnet by default, while the execution
+adapter remains on Bybit testnet. Set `MATS_MARKET_DATA_TESTNET=true` only when
+intentionally using the sparse testnet candle history.
+
+Each symbol gets at most three strategy attempts total: one initial candidate and up to
+two critique-guided revisions (`MATS_MAX_REVISION_LOOPS=2`). Before spending a strategy
+call, the builder measures supported EMA candidates across configured timeframes using
+the available bars and actual fee/slippage settings. It only offers candidates with
+enough history and trades; insufficient history or no viable signal is recorded in
+`strategy_diagnostics` rather than hidden behind repeated critique loops.
+
+If a symbol has too little testnet history, you will see the reason in that symbol's
+JSON `errors` and `strategy_diagnostics.timeframe_coverage`. A zero net PnL with zero
+trades means no trades were opened; it is not evidence that trading costs erased an
+edge. Review `backtest_report.total_trades`, `total_fees`, and `total_slippage`.
+
 Runs can also be started and resumed from Python:
 
 ```python
