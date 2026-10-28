@@ -32,6 +32,7 @@ class BacktestTool:
                     "high": candle.high,
                     "low": candle.low,
                     "close": candle.close,
+                    "volume": candle.volume,
                 }
                 for candle in candles
             ]
