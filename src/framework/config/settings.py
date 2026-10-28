@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     kill_switch: bool = True
     log_level: str = "INFO"
     max_revision_loops: int = Field(default=5, ge=0, le=20)
+    min_backtest_trades: int = Field(default=3, ge=1)
+    max_backtest_drawdown: float = Field(default=0.25, gt=0, le=1)
+    min_backtest_net_pnl: float = Field(default=0, ge=0)
     initial_capital: float = Field(default=10_000.0, gt=0)
     fee_rate_taker: float = Field(default=0.001, ge=0, lt=1)
     fee_rate_maker: float = Field(default=0.001, ge=0, lt=1)
@@ -49,6 +52,10 @@ class Settings(BaseSettings):
     exchange_rate_limit_ms: int = Field(default=1000, ge=0)
     request_timeout_ms: int = Field(default=10_000, gt=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
+    include_orderbook: bool = False
+    include_recent_trades: bool = False
+    execution_timeout_seconds: float = Field(default=10, gt=0)
+    execution_poll_interval_seconds: float = Field(default=1, gt=0)
 
     def model_for(self, role: str) -> ModelRoute:
         try:
