@@ -107,7 +107,7 @@ class BacktestReport(BaseModel):
     total_slippage: float
     equity_curve: list[dict[str, Any]]
     trades: list[TradeRecord]
-    metrics: dict[str, float | int]
+    metrics: dict[str, float | int | None]
 
 
 class Critique(BaseModel):
