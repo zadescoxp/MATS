@@ -57,6 +57,11 @@ the kill switch are disabled, because aggregate live portfolio exposure is not y
 coordinated.
 
 The database defaults to `./data/state.db`. Configure `MATS_DATABASE_PATH` to change it.
+To explore saved runs without a frontend server, open [`dashboard.html`](./dashboard.html)
+in a browser and choose the SQLite database file. The dashboard reads it locally in the
+browser and visualizes run status, cost-inclusive backtests, trades, critique, agent-step
+tokens, and system events. Its SQLite reader is loaded from a CDN, so an internet
+connection is needed when opening the page; the database itself is not uploaded.
 Public market history is fetched from Bybit mainnet by default, while the execution
 adapter remains on Bybit testnet. Set `MATS_MARKET_DATA_TESTNET=true` only when
 intentionally using the sparse testnet candle history.
