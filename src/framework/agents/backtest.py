@@ -25,8 +25,8 @@ class BacktestNode:
         self.context.database.save_backtest(
             backtest_id,
             strategy_id,
-            report.model_dump(mode="json", exclude={"equity_curve", "trades"}),
+            report.model_dump(mode="json", exclude={"equity_curve"}),
             report.model_dump(mode="json")["equity_curve"],
-            costs.model_dump(mode="json"),
+            {**costs.model_dump(mode="json"), "funding_cost": 0.0},
         )
         return {"backtest_report": report}
