@@ -72,6 +72,7 @@ class LLMClient:
             "messages": messages,
             "tools": [tool.openai_schema() for tool in tools],
             "tool_choice": "required",
+            "parallel_tool_calls": False,
         }
         if route.api_key:
             kwargs["api_key"] = route.api_key.get_secret_value()
