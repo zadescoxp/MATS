@@ -87,7 +87,10 @@ records:
 - Before asking the strategy model to choose, `StrategyBuilderNode` backtests supported
   EMA/timeframe/filter candidates against historical bars with the configured cost
   model. It only offers measured candidates that meet the minimum history and
-  trade-count thresholds, and records the evidence in `strategy_diagnostics`.
+  trade-count thresholds, ranks candidates by net PnL and drawdown, and supplies at
+  most the top five per timeframe. The model must preserve the tested entry, filter,
+  stop, take-profit, and position parameters; the evidence is recorded in
+  `strategy_diagnostics`.
 - `reprice_trade_list(trades, CostAssumptions)` recomputes fees, slippage, and net PnL
   without changing the source trade objects.
 - `ExecutionTools` exposes market/limit placement, conditional protective stops,
