@@ -13,11 +13,6 @@ class ModelRoute(BaseModel):
     supports_tools: bool = True
 
 
-_DEFAULT_ROUTES = {
-    role: ModelRoute() for role in ("analyst", "strategy", "critic", "coder", "dummy")
-}
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MATS_",
@@ -33,6 +28,11 @@ class Settings(BaseSettings):
     bybit_testnet: bool = True
     bybit_api_key: SecretStr | None = None
     bybit_api_secret: SecretStr | None = None
+    llm_provider: str = "openai"
+    llm_model: str = "gpt-4o-mini"
+    llm_api_key: SecretStr | None = None
+    llm_base_url: str | None = None
+    llm_supports_tools: bool = True
     dry_run: bool = True
     kill_switch: bool = True
     log_level: str = "INFO"
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     slippage_fixed: float = Field(default=0.0, ge=0)
     max_risk_per_trade: float = Field(default=0.01, gt=0, le=1)
     max_account_exposure: float = Field(default=0.25, gt=0, le=1)
-    model_routes: dict[str, ModelRoute] = Field(default_factory=lambda: _DEFAULT_ROUTES.copy())
+    model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
     exchange_rate_limit_ms: int = Field(default=1000, ge=0)
     request_timeout_ms: int = Field(default=10_000, gt=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
@@ -57,10 +57,13 @@ class Settings(BaseSettings):
     execution_poll_interval_seconds: float = Field(default=1, gt=0)
 
     def model_for(self, role: str) -> ModelRoute:
-        try:
-            route = self.model_routes[role]
-        except KeyError as exc:
-            raise ValueError(f"No model route configured for agent role {role!r}") from exc
+        route = self.model_routes.get(role) or ModelRoute(
+            provider=self.llm_provider,
+            model=self.llm_model,
+            api_key=self.llm_api_key,
+            base_url=self.llm_base_url,
+            supports_tools=self.llm_supports_tools,
+        )
         if not route.supports_tools:
             raise ValueError(f"Configured model for role {role!r} does not support tool calling")
         return route
