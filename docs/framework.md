@@ -88,7 +88,10 @@ long-only spot; it does not open short positions or futures.
 ## Model routing
 
 `LLMClient.invoke_with_tools(messages, tools, model_config)` uses LiteLLM's
-OpenAI-compatible tool schema. Shared model settings come from `MATS_LLM_PROVIDER`,
+OpenAI-compatible tool schema. For Baseten, it deliberately uses LiteLLM's OpenAI
+transport with Baseten's Model API base URL and passes the model slug unchanged; this
+avoids routing a Model API slug through LiteLLM's deployment-specific `/predict` adapter.
+Shared model settings come from `MATS_LLM_PROVIDER`,
 `MATS_LLM_MODEL`, `MATS_LLM_API_KEY`, `MATS_LLM_BASE_URL`, and
 `MATS_LLM_SUPPORTS_TOOLS`; role-specific `ModelRoute` values in `MATS_MODEL_ROUTES`
 override them. Each route includes provider, model, credentials, optional API base URL,
