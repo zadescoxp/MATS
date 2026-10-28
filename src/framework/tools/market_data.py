@@ -44,7 +44,7 @@ class MarketDataTools:
                 "rateLimit": settings.exchange_rate_limit_ms,
             }
         )
-        exchange.set_sandbox_mode(settings.bybit_testnet)
+        exchange.set_sandbox_mode(settings.market_data_testnet)
         return exchange
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> OHLCVResult:
