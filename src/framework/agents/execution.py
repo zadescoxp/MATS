@@ -34,12 +34,31 @@ class ExecutionNode:
                 dry_run=dry_run,
                 idempotency_key=f"{state.run_id}:spot-entry",
             )
-            status = outcome["status"]
+            status = outcome.status
+            orders = [order.model_dump(mode="json") for order in outcome.orders]
+            if status == "dry_run":
+                stop = self.context.execution.place_protective_stop(
+                    state.symbol,
+                    state.risk_assessment.position_size,
+                    state.risk_assessment.stop_price,
+                    dry_run=True,
+                    idempotency_key=f"{state.run_id}:spot-stop",
+                )
+                orders.extend(order.model_dump(mode="json") for order in stop.orders)
+            elif status in {"filled", "partially_filled"} and outcome.filled > 0:
+                stop = self.context.execution.place_protective_stop(
+                    state.symbol,
+                    outcome.filled,
+                    state.risk_assessment.stop_price,
+                    dry_run=False,
+                    idempotency_key=f"{state.run_id}:spot-stop",
+                )
+                orders.extend(order.model_dump(mode="json") for order in stop.orders)
             report = ExecutionReport(
                 status=status,
-                orders=outcome.get("orders", [outcome.get("order", {})]),
-                fills=outcome.get("fills", []),
-                errors=outcome.get("errors", []),
+                orders=orders,
+                fills=outcome.fills,
+                errors=outcome.errors,
                 dry_run=status == "dry_run",
             )
 
