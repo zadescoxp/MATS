@@ -13,6 +13,8 @@ _FILTER_SETS = (
     ("price_above_slow_ema",),
     ("rsi_below_70", "price_above_slow_ema"),
 )
+_RISK_CONFIGS = ((0.02, None), (0.025, 0.05), (0.03, 0.06))
+_MAX_CANDIDATES_PER_TIMEFRAME = 5
 
 
 class StrategyBuilderNode:
@@ -28,6 +30,7 @@ class StrategyBuilderNode:
         candidates = [
             item for item in candidates if _strategy_key(item["strategy"]) != previous_key
         ]
+        candidates = _shortlist(candidates)
         diagnostics = {
             "minimum_bars_required": self.context.settings.min_strategy_bars,
             "timeframe_coverage": coverage,
@@ -37,6 +40,9 @@ class StrategyBuilderNode:
                     "fast_period": item["strategy"].fast_period,
                     "slow_period": item["strategy"].slow_period,
                     "filters": item["strategy"].filters,
+                    "stop_loss_pct": item["strategy"].stop_loss_pct,
+                    "take_profit_pct": item["strategy"].take_profit_pct,
+                    "position_fraction": item["strategy"].position_fraction,
                     "closed_trades": item["trades"],
                     "net_pnl_after_costs": item["net_pnl"],
                     "max_drawdown_pct": item["max_drawdown"],
@@ -76,10 +82,11 @@ class StrategyBuilderNode:
                     "Choose exactly one candidate from the supplied measured candidate list. "
                     "The list was tested on historical candles with the configured fees and "
                     "slippage and contains candidates that produced enough closed trades. "
-                    "Choose its timeframe, fast/slow periods, and filters exactly; do not "
-                    "invent parameters or filters. You may set a sensible stop loss, take "
-                    "profit, and position fraction. Prefer credible net-of-cost evidence and "
-                    "appropriate multi-timeframe findings, not an untested timeframe. Call "
+                    "Copy its timeframe, fast/slow periods, filters, stop loss, take profit, "
+                    "and position fraction exactly; do not invent or adjust these measured "
+                    "parameters. Prefer candidates with positive net-of-cost PnL and "
+                    "controlled drawdown, while respecting the multi-timeframe findings. "
+                    "Do not choose an untested timeframe. Call "
                     "submit_strategy exactly once. On revision, choose a different candidate "
                     "and apply the concrete critique instructions."
                 ),
@@ -136,6 +143,9 @@ class StrategyBuilderNode:
             and item["fast_period"] == strategy.fast_period
             and item["slow_period"] == strategy.slow_period
             and item["filters"] == strategy.filters
+            and item["stop_loss_pct"] == strategy.stop_loss_pct
+            and item["take_profit_pct"] == strategy.take_profit_pct
+            and item["position_fraction"] == strategy.position_fraction
         )
         strategy_id = f"{state.run_id}-v{state.revision_count}"
         self.context.database.save_strategy(
@@ -174,33 +184,66 @@ class StrategyBuilderNode:
 
             for fast, slow in _EMA_PAIRS:
                 for filters in _FILTER_SETS:
-                    strategy = StrategyDefinition(
-                        name=f"{timeframe} EMA {fast}/{slow}",
-                        description="Historical candidate evaluated with configured spot costs.",
-                        chosen_timeframe=timeframe,
-                        entry_rule="ema_crossover",
-                        exit_rule="ema_crossover",
-                        fast_period=fast,
-                        slow_period=slow,
-                        filters=list(filters),
-                    )
-                    report = self.context.backtester.run(strategy, candles)
-                    if report.total_trades >= self.context.settings.min_backtest_trades:
-                        candidates.append(
-                            {
-                                "strategy": strategy,
-                                "trades": report.total_trades,
-                                "net_pnl": report.net_pnl,
-                                "max_drawdown": report.max_drawdown_pct,
-                            }
+                    for stop_loss, take_profit in _RISK_CONFIGS:
+                        strategy = StrategyDefinition(
+                            name=f"{timeframe} EMA {fast}/{slow}",
+                            description=(
+                                "Historical candidate evaluated with configured spot costs."
+                            ),
+                            chosen_timeframe=timeframe,
+                            entry_rule="ema_crossover",
+                            exit_rule="ema_crossover",
+                            fast_period=fast,
+                            slow_period=slow,
+                            stop_loss_pct=stop_loss,
+                            take_profit_pct=take_profit,
+                            position_fraction=0.1,
+                            filters=list(filters),
                         )
+                        report = self.context.backtester.run(strategy, candles)
+                        if report.total_trades >= self.context.settings.min_backtest_trades:
+                            candidates.append(
+                                {
+                                    "strategy": strategy,
+                                    "trades": report.total_trades,
+                                    "net_pnl": report.net_pnl,
+                                    "max_drawdown": report.max_drawdown_pct,
+                                }
+                            )
         return candidates, coverage
 
 
-def _strategy_key(strategy: StrategyDefinition) -> tuple[str, int, int, tuple[str, ...]]:
+def _strategy_key(
+    strategy: StrategyDefinition,
+) -> tuple[str, int, int, tuple[str, ...], float, float | None, float]:
     return (
         strategy.chosen_timeframe,
         strategy.fast_period,
         strategy.slow_period,
         tuple(strategy.filters),
+        strategy.stop_loss_pct,
+        strategy.take_profit_pct,
+        strategy.position_fraction,
     )
+
+
+def _shortlist(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            item["net_pnl"],
+            -item["max_drawdown"],
+            item["trades"],
+        ),
+        reverse=True,
+    )
+    selected: list[dict[str, object]] = []
+    counts: dict[str, int] = {}
+    for item in ordered:
+        strategy = item["strategy"]
+        timeframe = strategy.chosen_timeframe
+        if counts.get(timeframe, 0) >= _MAX_CANDIDATES_PER_TIMEFRAME:
+            continue
+        selected.append(item)
+        counts[timeframe] = counts.get(timeframe, 0) + 1
+    return selected
