@@ -15,6 +15,14 @@ There is exactly one primary analyst. It receives every configured timeframe in 
 call, computes the technical indicator suite, and emits one combined finding object.
 Non-price context can be included in the finding without introducing a second generic
 analyst. Polling is available through the CLI or `TradingFramework.run_polling`.
+`TradingFramework.run_many` gives each symbol its own graph/checkpointer and runs
+symbols concurrently, preserving input order in the returned states. It refuses
+multi-symbol execution when both dry-run and the global kill switch are disabled
+because aggregate portfolio exposure is not coordinated.
+
+By default, historical market candles come from Bybit public mainnet endpoints while
+orders remain constrained to Bybit testnet. Testnet OHLCV history may be very sparse;
+`MATS_MARKET_DATA_TESTNET=true` is an explicit opt-in to it.
 
 ## `GraphState`
 
@@ -28,6 +36,7 @@ analyst. Polling is available through the CLI or `TradingFramework.run_polling`.
 | `raw_data` | `dict[str, list[OHLCVBar]]` | Normalized historical bars by timeframe |
 | `market_context` | `dict` | Ticker, and optionally order book/recent trades |
 | `analyst_findings` | `list[MultiTimeframeFindings]` | Unified higher-bias/lower-timing findings |
+| `strategy_diagnostics` | `dict` | Historical coverage and measured, net-of-cost candidate results |
 | `strategy` | `StrategyDefinition \| None` | Supported strategy DSL definition |
 | `backtest_report` | `BacktestReport \| None` | Net-of-fee/slippage backtest and trades |
 | `critique` | `Critique \| None` | `APPROVE`/`REJECT`, issues, revision instructions |
@@ -75,6 +84,10 @@ records:
   evaluated on the next bar to avoid look-ahead. Fees and percentage/fixed slippage
   are charged on entry and exit; spot funding is zero. It returns the equity curve,
   net PnL, drawdown, Sharpe, win rate, trades, and cost totals.
+- Before asking the strategy model to choose, `StrategyBuilderNode` backtests supported
+  EMA/timeframe/filter candidates against historical bars with the configured cost
+  model. It only offers measured candidates that meet the minimum history and
+  trade-count thresholds, and records the evidence in `strategy_diagnostics`.
 - `reprice_trade_list(trades, CostAssumptions)` recomputes fees, slippage, and net PnL
   without changing the source trade objects.
 - `ExecutionTools` exposes market/limit placement, conditional protective stops,
@@ -119,3 +132,7 @@ testnet credentials. The execution implementation rejects mainnet. Risk sizing u
 configured initial capital in dry-run mode; on live testnet it uses available quote
 balance unless the run explicitly supplies `account_equity`. Never place live orders
 with credentials outside a controlled testnet setup.
+
+The default critique limit is two revision loops, for a maximum of three strategy
+attempts per symbol including the initial attempt. `MATS_SYMBOLS` can be processed
+concurrently with `mats --all`; each symbol gets a separate persisted run.
