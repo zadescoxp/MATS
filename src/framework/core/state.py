@@ -20,6 +20,7 @@ class GraphState(BaseModel):
     raw_data: dict[str, list[OHLCVBar]] = Field(default_factory=dict)
     market_context: dict[str, Any] = Field(default_factory=dict)
     analyst_findings: list[MultiTimeframeFindings] = Field(default_factory=list)
+    strategy_diagnostics: dict[str, Any] = Field(default_factory=dict)
     strategy: StrategyDefinition | None = None
     backtest_report: BacktestReport | None = None
     critique: Critique | None = None
