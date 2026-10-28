@@ -74,8 +74,9 @@ class FakeLLM:
                 fast_period=candidate["fast_period"],
                 slow_period=candidate["slow_period"],
                 filters=candidate["filters"],
-                stop_loss_pct=0.2,
-                position_fraction=0.1,
+                stop_loss_pct=candidate["stop_loss_pct"],
+                take_profit_pct=candidate["take_profit_pct"],
+                position_fraction=candidate["position_fraction"],
             ).model_dump(mode="json")
         elif name == "submit_critique":
             payload = Critique(
