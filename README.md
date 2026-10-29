@@ -83,7 +83,8 @@ enable the kill switch. Position flattening is routed through the framework, req
 to be off, and remains subject to the Bybit testnet-only execution guard.
 
 The console starts each selected symbol as an independent run and shows their live progress
-together. For multi-symbol live testnet batches, a supplied total account-equity value is
+together; batch membership is persisted so the overview remains after a page refresh.
+For multi-symbol live testnet batches, a supplied total account-equity value is
 split evenly across the selected symbols; if omitted, available quote-currency balances are
 fetched once and split among the selected pairs using each quote currency. Only one live
 batch can be active at a time. The CLI retains its separate sequential live-run behavior.
