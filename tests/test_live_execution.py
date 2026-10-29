@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 
 from framework.agents.execution import ExecutionNode
@@ -149,6 +150,46 @@ def test_edge_fade_expectancy_forces_flatten() -> None:
         assert database.open_positions("BTC/USDT") == []
         assert database.strategy_stop_reason("BTC/USDT", prior["strategy_key"])
         assert execution.exchange.order_count == 5
+    finally:
+        database.close()
+
+
+def test_manual_flatten_cancels_protective_order_and_closes_selected_position() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-manual-flatten", "BTC/USDT", {})
+        ExecutionNode(context)(_approved_state("run-manual-flatten", market.candles))
+
+        result = PositionMonitor(context).flatten(["run-manual-flatten"])
+
+        assert result[0]["action"] == "manual_flatten"
+        assert database.open_positions("BTC/USDT") == []
+        assert execution.exchange.order_count == 3
+        assert (
+            database.connection.execute(
+                "SELECT status FROM runs WHERE run_id = ?", ("run-manual-flatten",)
+            ).fetchone()["status"]
+            == "stopped"
+        )
+    finally:
+        database.close()
+
+
+def test_manual_flatten_refuses_to_place_an_order_in_dry_run() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-dry-flatten", "BTC/USDT", {})
+        ExecutionNode(context)(_approved_state("run-dry-flatten", market.candles))
+        order_count = execution.exchange.order_count
+        settings.dry_run = True
+
+        with pytest.raises(ValueError, match="Disable dry-run"):
+            PositionMonitor(context).flatten(["run-dry-flatten"])
+
+        assert execution.exchange.order_count == order_count
+        assert len(database.open_positions("BTC/USDT")) == 1
     finally:
         database.close()
 
