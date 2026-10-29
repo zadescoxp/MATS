@@ -16,9 +16,9 @@ call, computes the technical indicator suite, and emits one combined finding obj
 Non-price context can be included in the finding without introducing a second generic
 analyst. Polling is available through the CLI or `TradingFramework.run_polling`.
 `TradingFramework.run_many` gives each symbol its own graph/checkpointer and runs
-symbols concurrently, preserving input order in the returned states. It refuses
-multi-symbol execution when both dry-run and the global kill switch are disabled
-because aggregate portfolio exposure is not coordinated.
+symbols concurrently in research/dry-run mode, preserving input order. Live testnet
+symbols are run sequentially so each run sizes against the updated exchange balance
+after preceding orders have settled.
 
 By default, historical market candles come from Bybit public mainnet endpoints while
 orders remain constrained to Bybit testnet. Testnet OHLCV history may be very sparse;
