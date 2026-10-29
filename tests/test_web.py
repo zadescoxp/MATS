@@ -4,6 +4,7 @@ import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -18,6 +19,28 @@ from framework.web import (
     _symbols,
     _timeframes,
 )
+
+
+def _capture_threads(monkeypatch):
+    threads = []
+
+    class CapturedThread:
+        def __init__(self, *, target, args, name, daemon):
+            self.target = target
+            self.args = args
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+
+        def start(self):
+            self.started = True
+            threads.append(self)
+
+        def is_alive(self):
+            return self.started
+
+    monkeypatch.setattr("framework.web.threading.Thread", CapturedThread)
+    return threads
 
 
 def test_snapshot_decodes_run_steps_backtests_executions_and_positions(tmp_path: Path) -> None:
@@ -140,14 +163,46 @@ def test_run_startup_failure_registers_failed_run_and_event(tmp_path: Path, monk
     assert run["events"][0]["message"] == "simulated framework constructor failure"
 
 
-def test_start_rejects_live_multi_symbol_without_mutating_safety_state(tmp_path: Path) -> None:
+def test_start_live_multi_symbol_splits_total_equity_across_parallel_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
     settings = Settings(database_path=tmp_path / "state.db", dry_run=True, kill_switch=False)
     service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
 
-    with pytest.raises(ValueError, match="one symbol at a time"):
-        service.start({"symbols": ["BTC/USDT", "ETH/USDT"], "dry_run": False})
+    result = service.start(
+        {
+            "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
+            "dry_run": False,
+            "account_equity": 9000,
+        }
+    )
 
-    assert settings.dry_run is True
+    assert len(result["run_ids"]) == 3
+    assert len(threads) == 3
+    assert all(thread.started for thread in threads)
+    assert [thread.args[2]["account_equity"] for thread in threads] == [3000, 3000, 3000]
+    assert settings.dry_run is False
+
+
+def test_start_live_multi_symbol_splits_available_balance(tmp_path: Path, monkeypatch) -> None:
+    service = DashboardService(
+        Settings(database_path=tmp_path / "state.db", dry_run=True, kill_switch=False)
+    )
+    threads = _capture_threads(monkeypatch)
+
+    class FakeExecutionTools:
+        def __init__(self, _settings):
+            pass
+
+        def get_balance(self):
+            return SimpleNamespace(free={"USDT": 9000}, currencies={})
+
+    monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
+
+    service.start({"symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"], "dry_run": False})
+
+    assert [thread.args[2]["account_equity"] for thread in threads] == [3000, 3000, 3000]
 
 
 def test_stop_enables_kill_switch_and_sets_stop_event(tmp_path: Path) -> None:
@@ -189,7 +244,9 @@ def test_stop_all_requests_every_active_run(tmp_path: Path) -> None:
     assert settings.kill_switch is True
 
 
-def test_resume_all_rejects_parallel_live_runs(tmp_path: Path) -> None:
+def test_resume_all_starts_parallel_live_runs_with_allocated_equity(
+    tmp_path: Path, monkeypatch
+) -> None:
     path = tmp_path / "state.db"
     database = Database(path)
     try:
@@ -200,9 +257,22 @@ def test_resume_all_rejects_parallel_live_runs(tmp_path: Path) -> None:
     finally:
         database.close()
     service = DashboardService(Settings(database_path=path, dry_run=False, kill_switch=False))
+    threads = _capture_threads(monkeypatch)
 
-    with pytest.raises(ValueError, match="one at a time"):
-        service.resume_all()
+    class FakeExecutionTools:
+        def __init__(self, _settings):
+            pass
+
+        def get_balance(self):
+            return SimpleNamespace(free={"USDT": 8000}, currencies={})
+
+    monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
+
+    response = service.resume_all()
+
+    assert set(response["run_ids"]) == {"failed-1", "failed-2"}
+    assert len(threads) == 2
+    assert {thread.args[2] for thread in threads} == {4000}
 
 
 @pytest.mark.parametrize("symbols", [[], ["btc/usdt"], ["BTC/USDT", "BTC/USDT"]])
