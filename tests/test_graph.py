@@ -179,8 +179,12 @@ def _framework(
 def test_full_graph_uses_one_analyst_and_dry_run(candles) -> None:
     framework, database, market, llm, execution = _framework(candles)
     try:
-        result = framework.run("BTC/USDT")
+        result = framework.run("BTC/USDT", {"dashboard_batch_id": "batch-1"})
         assert result.status == "completed", result.errors
+        saved_config = database.connection.execute(
+            "SELECT config_snapshot FROM runs WHERE run_id = ?", (result.run_id,)
+        ).fetchone()
+        assert json.loads(saved_config["config_snapshot"])["dashboard_batch_id"] == "batch-1"
         assert result.critique and result.critique.decision == "APPROVE"
         assert result.risk_assessment and not result.risk_assessment.approved
         assert result.live_signal and result.live_signal.action == "hold"
