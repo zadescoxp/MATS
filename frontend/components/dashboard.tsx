@@ -279,11 +279,15 @@ function StatusBadge({ status }: { status: string }) {
 function CoinMark({ symbol, small = false }: { symbol: string; small?: boolean }) {
   const base = symbol.split("/")[0]?.toUpperCase() ?? "";
   const size = small ? 28 : 34;
-  const logo = base === "BTC"
-    ? "https://cryptologos.cc/logos/bitcoin-btc-logo.png"
-    : base === "ETH"
-      ? "https://cryptologos.cc/logos/ethereum-eth-logo.png"
-      : null;
+  const logos: Record<string, string> = {
+    BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.png",
+    ETH: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+    SOL: "https://cryptologos.cc/logos/solana-sol-logo.png",
+    XRP: "https://cryptologos.cc/logos/xrp-xrp-logo.png",
+    BNB: "https://cryptologos.cc/logos/bnb-bnb-logo.png",
+    ADA: "https://cryptologos.cc/logos/cardano-ada-logo.png",
+  };
+  const logo = logos[base];
   const [failedLogo, setFailedLogo] = useState<string | null>(null);
   return (
     <span
