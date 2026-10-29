@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 mats = "framework.cli:main"
+mats-web = "framework.web:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/framework"]
