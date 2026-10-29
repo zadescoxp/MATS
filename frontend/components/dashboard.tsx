@@ -56,6 +56,7 @@ import { Badge } from "@/components/ui/badge";
 import { PersonaAvatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { LiveMarketChart } from "@/components/live-market-chart";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 
@@ -153,9 +154,12 @@ function statusStyle(status: string): string {
     case "error":
       return "border-negative/20 bg-negative/10 text-negative";
     case "running":
+    case "watching":
     case "dry_run":
     case "stopped":
     case "hold":
+    case "paused":
+    case "triggered":
       return "border-accent/20 bg-accent/10 text-accent";
     default:
       return "border-border bg-foreground/[0.03] text-muted";
@@ -370,6 +374,7 @@ export function Dashboard() {
   const [startDryRun, setStartDryRun] = useState(true);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const notifiedFailures = useRef(new Set<string>());
+  const [wideViewport, setWideViewport] = useState<boolean | null>(null);
 
   const updateState = useCallback((incoming: DashboardState) => {
     setData(incoming);
@@ -409,6 +414,14 @@ export function Dashboard() {
   }, [updateState]);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia("(min-width: 1100px)");
+    const updateViewport = () => setWideViewport(mediaQuery.matches);
+    updateViewport();
+    mediaQuery.addEventListener("change", updateViewport);
+    return () => mediaQuery.removeEventListener("change", updateViewport);
+  }, []);
+
+  useEffect(() => {
     if (!data || startDefaultsLoaded) return;
     setStartSymbols(data.settings.symbols);
     setStartTimeframes(data.settings.timeframes);
@@ -444,9 +457,14 @@ export function Dashboard() {
   }, [notice]);
 
   const runs = data?.runs ?? EMPTY_RUNS;
+  const activeRunIds = data?.active_run_ids ?? [];
+  const entryWatchers = data?.entry_watchers ?? [];
   const dryRunEnabled = data?.settings.dry_run ?? true;
   const killSwitchEnabled = data?.settings.kill_switch ?? true;
   const selectedRun = runs.find((run) => run.run_id === selectedRunId) ?? null;
+  const selectedEntryWatcher = selectedRun
+    ? entryWatchers.find((watcher) => watcher.run_id === selectedRun.run_id)
+    : null;
   const selectedBatchId = selectedRun?.config.dashboard_batch_id;
   const groupedRuns =
     runGroupIds.length > 1
@@ -573,13 +591,17 @@ export function Dashboard() {
 
   async function submitStop() {
     if (!selectedRun) return;
-    if (!window.confirm("Stop this run at its next agent boundary and enable the kill switch?")) return;
-    await act("stop", { run_id: selectedRun.run_id }, "Stop requested; the run will halt between agent steps.");
+    if (!window.confirm("Stop this run or entry watcher and enable the kill switch?")) return;
+    await act("stop", { run_id: selectedRun.run_id }, "Stop requested; live entry watching will halt.");
   }
 
   async function submitResume() {
     if (!selectedRun) return;
-    await act("resume", { run_id: selectedRun.run_id }, "Resume requested.");
+    await act(
+      "resume",
+      { run_id: selectedRun.run_id },
+      selectedEntryWatcher ? "Entry watcher resume requested." : "Resume requested.",
+    );
   }
 
   async function submitStopAll() {
@@ -593,12 +615,29 @@ export function Dashboard() {
     const resumable = data.runs.filter(
       (run) =>
         ["failed", "stopped", "running"].includes(run.status) &&
-        !data.active_run_ids.includes(run.run_id),
+        !activeRunIds.includes(run.run_id),
     );
-    if (!resumable.length) return;
-    if (!window.confirm(`Resume ${resumable.length} inactive incomplete run(s)?`)) return;
+    const resumableWatchers = entryWatchers.filter(
+      (watcher) =>
+        ["stopped", "failed"].includes(watcher.status) &&
+        !data.active_run_ids.includes(watcher.run_id),
+    );
+    if (!resumable.length && !resumableWatchers.length) return;
+    if (!window.confirm(`Resume ${resumable.length + resumableWatchers.length} inactive run(s) or watchers?`)) return;
     await act("resume_all");
   }
+
+  const hasResumableWork =
+    Boolean(data?.runs.some(
+      (run) =>
+        ["failed", "stopped", "running"].includes(run.status) &&
+        !data.active_run_ids.includes(run.run_id),
+    )) ||
+    entryWatchers.some(
+      (watcher) =>
+        ["stopped", "failed"].includes(watcher.status) &&
+        !activeRunIds.includes(watcher.run_id),
+    );
 
   async function submitFlatten() {
     if (!selectedPositions.length) return;
@@ -1110,9 +1149,46 @@ export function Dashboard() {
     const activeDefinition = activeStep
       ? AGENTS.find((agent) => agent.id === activeStep.agent_name)
       : null;
+    const entryWatcher = selectedRun
+      ? data?.entry_watchers?.find((watcher) => watcher.run_id === selectedRun.run_id)
+      : null;
 
     return (
       <div className="space-y-8">
+        <LiveMarketChart
+          symbol={selectedRun?.symbol ?? data?.settings.symbols[0] ?? "BTC/USDT"}
+          enabled={wideViewport === true}
+        />
+        {entryWatcher && (
+          <section aria-label="Entry watcher status">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] font-medium text-muted">Entry watcher</p>
+              <StatusBadge status={entryWatcher.status} />
+            </div>
+            <p className="mt-2 text-xs leading-5 text-muted">
+              {entryWatcher.status === "watching"
+                ? `Checking for an entry every ${entryWatcher.interval_seconds} seconds.`
+                : entryWatcher.status === "paused"
+                  ? "Paused while dry-run or the kill switch is enabled."
+                  : entryWatcher.error ?? "No entry checks are active."}
+            </p>
+            {entryWatcher.signal && (
+              <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+                Latest signal: {textValue(entryWatcher.signal.action, "unknown")} · {textValue(entryWatcher.signal.reason, "No reason recorded")}
+              </p>
+            )}
+            {entryWatcher.last_checked_at && (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Last checked {dateLabel(entryWatcher.last_checked_at)}
+              </p>
+            )}
+            {entryWatcher.error && entryWatcher.status === "watching" && (
+              <p role="status" className="mt-2 text-[10px] leading-4 text-negative">
+                Latest check failed: {entryWatcher.error}
+              </p>
+            )}
+          </section>
+        )}
         <section>
           <div className="flex items-center justify-between">
             <p className="text-[11px] font-medium text-muted">Research snapshot</p>
@@ -1333,11 +1409,11 @@ export function Dashboard() {
             <Plus className="h-4 w-4" /> New run
           </Button>
           <div className="mt-2 flex gap-1">
-            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={!selectedRun || !data?.active_run_ids.includes(selectedRun.run_id) || selectedRun.status !== "running" || busyAction === "stop"} onClick={submitStop} aria-label="Stop selected run">
+            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={!selectedRun || !data?.active_run_ids.includes(selectedRun.run_id) || busyAction === "stop"} onClick={submitStop} aria-label="Stop selected run or entry watcher">
               <Pause className="h-3.5 w-3.5" /> Stop
             </Button>
-            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={!selectedRun || !["failed", "stopped", "running"].includes(selectedRun.status) || Boolean(data?.active_run_ids.includes(selectedRun.run_id)) || busyAction === "resume"} onClick={submitResume} aria-label="Resume selected run">
-              <Play className="h-3.5 w-3.5" /> Resume
+            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={!selectedRun || (!["failed", "stopped", "running"].includes(selectedRun.status) && !["stopped", "failed"].includes(selectedEntryWatcher?.status ?? "")) || Boolean(data?.active_run_ids.includes(selectedRun.run_id)) || busyAction === "resume"} onClick={submitResume} aria-label="Resume selected run or entry watcher">
+              <Play className="h-3.5 w-3.5" />{selectedEntryWatcher && ["stopped", "failed"].includes(selectedEntryWatcher.status) ? " Resume watcher" : " Resume"}
             </Button>
             <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={busyAction === "monitor"} onClick={() => act("monitor", {}, "Monitor cycle started.")} aria-label="Run monitor cycle">
               <RefreshCw className="h-3.5 w-3.5" /> Monitor
@@ -1349,7 +1425,7 @@ export function Dashboard() {
           </div>
           <div className="flex justify-between px-2 pt-1">
             <button type="button" onClick={submitStopAll} disabled={!data?.active_run_ids.length || busyAction === "stop_all"} className="text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40">Stop all</button>
-            <button type="button" onClick={submitResumeAll} disabled={!data?.runs.some((run) => ["failed", "stopped", "running"].includes(run.status) && !data.active_run_ids.includes(run.run_id)) || busyAction === "resume_all"} className="text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40">Resume incomplete</button>
+            <button type="button" onClick={submitResumeAll} disabled={!hasResumableWork || busyAction === "resume_all"} className="text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40">Resume inactive</button>
           </div>
         </div>
       </aside>
@@ -1417,6 +1493,12 @@ export function Dashboard() {
 
           {data && (
             <>
+              <div className="mb-5 min-[1100px]:hidden">
+                <LiveMarketChart
+                  symbol={selectedRun?.symbol ?? data.settings.symbols[0] ?? "BTC/USDT"}
+                  enabled={wideViewport === false}
+                />
+              </div>
               <div className="mb-4 space-y-3 lg:hidden">
                 <select
                   aria-label="Select research run"
