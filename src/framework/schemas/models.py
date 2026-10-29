@@ -76,13 +76,33 @@ class StrategyDefinition(BaseModel):
     name: str
     description: str
     chosen_timeframe: str
-    entry_rule: Literal["ema_crossover"]
-    exit_rule: Literal["ema_crossover"]
+    template_name: Literal[
+        "ema_crossover",
+        "rsi_mean_reversion",
+        "supertrend_atr",
+        "macd_htf_bias",
+        "bollinger_squeeze",
+        "htf_trend_ltf_timing",
+    ] = "ema_crossover"
+    entry_rule: Literal[
+        "ema_crossover",
+        "rsi_mean_reversion",
+        "supertrend_atr",
+        "macd_htf_bias",
+        "bollinger_squeeze",
+        "htf_trend_ltf_timing",
+    ] = "ema_crossover"
+    exit_rule: Literal[
+        "opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"
+    ] = "opposite_signal"
     fast_period: int = Field(default=12, ge=2)
     slow_period: int = Field(default=26, ge=3)
     stop_loss_pct: float = Field(default=0.02, gt=0, le=0.5)
     take_profit_pct: float | None = Field(default=None, gt=0, le=1)
     position_fraction: float = Field(default=0.1, gt=0, le=1)
+    parameters: dict[str, int | float | str] = Field(default_factory=dict)
+    time_stop_bars: int | None = Field(default=None, ge=1)
+    trailing_atr_multiple: float | None = Field(default=None, gt=0)
     filters: list[Literal["rsi_below_70", "price_above_slow_ema", "volume_positive"]] = Field(
         default_factory=list
     )
@@ -90,9 +110,20 @@ class StrategyDefinition(BaseModel):
 
     @model_validator(mode="after")
     def validate_periods(self) -> "StrategyDefinition":
+        if self.template_name != self.entry_rule:
+            raise ValueError("template_name and entry_rule must identify the same supported template")
         if self.fast_period >= self.slow_period:
             raise ValueError("fast_period must be less than slow_period")
         return self
+
+
+class LiveSignal(BaseModel):
+    action: Literal["long", "short", "exit", "hold"]
+    reason: str
+    strength: float = Field(ge=0, le=1)
+    price: float = Field(gt=0)
+    stop: float | None = Field(default=None, gt=0)
+    strategy_over: bool = False
 
 
 class TradeRecord(BaseModel):
@@ -145,7 +176,9 @@ class RiskAssessment(BaseModel):
 
 
 class ExecutionReport(BaseModel):
-    status: Literal["dry_run", "filled", "partially_filled", "rejected", "failed"]
+    status: Literal[
+        "dry_run", "filled", "partially_filled", "rejected", "failed", "hold", "stopped"
+    ]
     orders: list[dict[str, Any]] = Field(default_factory=list)
     fills: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
