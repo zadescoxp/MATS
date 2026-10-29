@@ -114,6 +114,36 @@ def test_position_exit_reports_strategy_over_on_stop_hit() -> None:
     assert result.reason == "Protective stop was hit."
 
 
+def test_position_monitor_ignores_pre_entry_wick_in_entry_candle() -> None:
+    definition = StrategyDefinition(
+        name="EMA",
+        description="EMA crossover",
+        chosen_timeframe="1h",
+        template_name="ema_crossover",
+        entry_rule="ema_crossover",
+        fast_period=3,
+        slow_period=8,
+    )
+    bars = _bars(
+        [99, 100],
+        datetime(2026, 1, 1, tzinfo=UTC),
+        timedelta(hours=1),
+    )
+    bars[-1] = bars[-1].model_copy(update={"low": 90})
+    result = evaluate_live_signal(
+        definition,
+        {"1h": bars},
+        {
+            "side": "long",
+            "entry_price": 100,
+            "stop_price": 98,
+            "opened_at": datetime(2026, 1, 1, 1, 30, tzinfo=UTC).isoformat(),
+            "bars_held": 0,
+        },
+    )
+    assert result.action == "hold"
+
+
 def _data(prices: list[float], template: str) -> dict[str, list[OHLCVBar]]:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     lower = _bars(prices, start, timedelta(hours=1))
