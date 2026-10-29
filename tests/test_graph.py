@@ -4,8 +4,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from framework.agents.common import parse_tool_response
 from framework.config.settings import Settings
 from framework.core.graph import TradingFramework
+from framework.llm.client import LLMResponse, ToolCall
 from framework.persistence.database import Database
 from framework.schemas.models import (
     Critique,
@@ -36,6 +38,32 @@ class FakeMarketData:
 
     def fetch_recent_trades(self, symbol: str) -> Any:
         raise AssertionError("Recent trades should be disabled")
+
+
+def test_analyst_tool_response_accepts_missing_optional_rationale() -> None:
+    response = LLMResponse(
+        tool_calls=[
+            ToolCall(
+                id="findings",
+                name="submit_findings",
+                arguments={
+                    "higher_timeframe_bias": "bearish",
+                    "lower_timeframe_timing": "neutral",
+                    "higher_timeframe": "4h",
+                    "lower_timeframe": "1h",
+                    "regime": "trending",
+                    "momentum": "negative",
+                    "volatility": "high",
+                },
+            )
+        ]
+    )
+
+    finding = parse_tool_response(response, "submit_findings", MultiTimeframeFindings)
+
+    assert finding.higher_timeframe_bias == "bearish"
+    assert finding.volatility == "high"
+    assert finding.rationale == ""
 
 
 class FakeLLM:
