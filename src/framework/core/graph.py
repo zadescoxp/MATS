@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Iterator
@@ -27,6 +28,8 @@ from framework.tools.backtest import BacktestTool
 from framework.tools.cost_model import CostAssumptions
 from framework.tools.execution import ExecutionTools
 from framework.tools.market_data import MarketDataTools
+
+logger = logging.getLogger(__name__)
 
 
 class TradingFramework:
@@ -196,14 +199,16 @@ class TradingFramework:
             raise ValueError("Symbols must not be empty")
         if len(set(selected_symbols)) != len(selected_symbols):
             raise ValueError("Symbols must be unique")
-        if not (self.settings.dry_run or self.settings.kill_switch):
-            raise ValueError(
-                "Concurrent multi-symbol runs require dry-run or the global kill switch; "
-                "live portfolio-wide exposure controls are not implemented."
-            )
         worker_limit = self.settings.max_concurrent_symbols if max_workers is None else max_workers
         if worker_limit < 1:
             raise ValueError("max_workers must be positive")
+        if not (self.settings.dry_run or self.settings.kill_switch):
+            if worker_limit > 1 and len(selected_symbols) > 1:
+                logger.warning(
+                    "Live testnet multi-symbol runs are processed sequentially to share "
+                    "the exchange's updated available balance between symbol runs."
+                )
+            return [self._run_isolated_symbol(symbol, config) for symbol in selected_symbols]
         with ThreadPoolExecutor(
             max_workers=min(worker_limit, len(selected_symbols)),
             thread_name_prefix="mats-symbol",
