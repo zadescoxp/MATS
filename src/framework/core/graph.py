@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import threading
 import uuid
 from collections.abc import Iterator
@@ -166,7 +167,9 @@ class TradingFramework:
         self.database.create_run(run_id, symbol, config_snapshot)
         return self._invoke(state, run_id)
 
-    def resume(self, run_id: str | None = None) -> GraphState:
+    def resume(
+        self, run_id: str | None = None, *, account_equity: float | None = None
+    ) -> GraphState:
         row = self.database.resumable_run(run_id)
         if row is None:
             raise ValueError(f"No incomplete run found for run_id={run_id!r}")
@@ -181,6 +184,14 @@ class TradingFramework:
                 ),
             ).model_dump(mode="json")
         state = GraphState.model_validate(raw_state)
+        if account_equity is not None:
+            if (
+                isinstance(account_equity, bool)
+                or not math.isfinite(account_equity)
+                or account_equity <= 0
+            ):
+                raise ValueError("account_equity must be a positive finite number")
+            state = state.model_copy(update={"account_equity": account_equity})
         self.database.update_run_status(state.run_id, "running")
         return self._invoke(state, state.run_id)
 
