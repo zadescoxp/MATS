@@ -37,6 +37,9 @@ _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
 class DashboardService:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
+        if self.settings.database_path.exists():
+            database = Database(self.settings.database_path)
+            database.close()
         self._lock = threading.RLock()
         self._stop_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
