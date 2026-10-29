@@ -447,9 +447,15 @@ export function Dashboard() {
   const dryRunEnabled = data?.settings.dry_run ?? true;
   const killSwitchEnabled = data?.settings.kill_switch ?? true;
   const selectedRun = runs.find((run) => run.run_id === selectedRunId) ?? null;
-  const groupedRuns = runGroupIds
-    .map((runId) => runs.find((run) => run.run_id === runId))
-    .filter((run): run is Run => run !== undefined);
+  const selectedBatchId = selectedRun?.config.dashboard_batch_id;
+  const groupedRuns =
+    runGroupIds.length > 1
+      ? runGroupIds
+          .map((runId) => runs.find((run) => run.run_id === runId))
+          .filter((run): run is Run => run !== undefined)
+      : typeof selectedBatchId === "string"
+        ? runs.filter((run) => run.config.dashboard_batch_id === selectedBatchId)
+        : [];
   const activeAttempt = latestAttempt(selectedRun);
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
   const runSymbols = useMemo(
