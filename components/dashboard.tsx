@@ -804,6 +804,24 @@ export function Dashboard() {
           </CardHeader>
           <div className="mt-4"><RawSection title="Strategy JSON" value={attempt.strategy} /></div>
           <div className="mt-3"><RawSection title="Backtest JSON" value={attempt.report} /></div>
+          <div className="mt-4 flex flex-wrap gap-4">
+            {[
+              { label: "StrategyBuilder", agent: "strategy_builder" },
+              { label: "Backtest", agent: "backtest" },
+            ].map((item) => (
+              <button
+                key={item.agent}
+                type="button"
+                className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+                onClick={() => {
+                  setSelectedAgent(item.agent);
+                  setTab("agent");
+                }}
+              >
+                View {item.label} step <ArrowRight className="h-3 w-3" />
+              </button>
+            ))}
+          </div>
           {attempt.decision && (
             <div className="mt-4 rounded-xl border border-border p-4">
               <div className="flex flex-wrap items-center gap-2">
@@ -870,6 +888,10 @@ export function Dashboard() {
 
   function renderPositions() {
     const rows = filteredPositions;
+    const availableSymbols = [...new Set([
+      ...openPositions.map((position) => position.symbol),
+      ...executions.map((execution) => execution.symbol),
+    ])];
     const allSelected = rows.length > 0 && rows.every((position) => selectedPositions.includes(position.run_id));
     const executionsWithIds = executions.flatMap((execution) =>
       execution.orders
@@ -892,7 +914,7 @@ export function Dashboard() {
                 aria-label="Filter positions by symbol"
               >
                 <option value="">All symbols</option>
-                {[...new Set(openPositions.map((position) => position.symbol))].map((symbol) => <option key={symbol}>{symbol}</option>)}
+                {availableSymbols.map((symbol) => <option key={symbol}>{symbol}</option>)}
               </select>
               <Button variant="outline" size="sm" onClick={() => act("monitor", {}, "Monitor cycle started.")} disabled={busyAction === "monitor"}>
                 {busyAction === "monitor" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
