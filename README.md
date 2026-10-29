@@ -57,11 +57,33 @@ the kill switch are disabled, because aggregate live portfolio exposure is not y
 coordinated.
 
 The database defaults to `./data/state.db`. Configure `MATS_DATABASE_PATH` to change it.
-To explore saved runs without a frontend server, open [`dashboard.html`](./dashboard.html)
-in a browser and choose the SQLite database file. The dashboard reads it locally in the
-browser and visualizes run status, cost-inclusive backtests, trades, critique, agent-step
-tokens, and system events. Its SQLite reader is loaded from a CDN, so an internet
-connection is needed when opening the page; the database itself is not uploaded.
+
+## Local web console
+
+The Next.js console streams persisted runs and agent steps from SQLite and sends actions to a
+loopback-only Python API. Start both processes from the repository root:
+
+```bash
+uv run mats-web
+```
+
+In another terminal:
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. The console uses `MATS_DATABASE_PATH` and the same `.env`
+settings as the CLI. API credentials remain in the Python process and are never sent to the
+browser. Dry-run and the kill switch remain enabled by default; disabling either from the
+console requires confirmation. Run stops take effect at the next agent boundary, and also
+enable the kill switch. Position flattening is routed through the framework, requires dry-run
+to be off, and remains subject to the Bybit testnet-only execution guard.
+
+For static inspection without the API, [`dashboard.html`](./dashboard.html) remains available:
+open it in a browser and choose a SQLite database file. That page reads the selected file
+locally in the browser; its SQLite reader is loaded from a CDN.
 Public market history is fetched from Bybit mainnet by default, while the execution
 adapter remains on Bybit testnet. Set `MATS_MARKET_DATA_TESTNET=true` only when
 intentionally using the sparse testnet candle history.
