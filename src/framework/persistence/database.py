@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS agent_steps (
     agent_name TEXT NOT NULL,
     input_json TEXT NOT NULL,
     output_json TEXT,
+    tool_calls_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     error TEXT,
     tokens_used INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +136,14 @@ class Database:
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA busy_timeout = 30000")
         self.connection.executescript(SCHEMA)
+        step_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(agent_steps)")
+        }
+        if "tool_calls_json" not in step_columns:
+            self.connection.execute(
+                """ALTER TABLE agent_steps
+                   ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'"""
+            )
         position_columns = {
             row["name"] for row in self.connection.execute("PRAGMA table_info(live_positions)")
         }
@@ -177,6 +186,7 @@ class Database:
                        input_json = excluded.input_json,
                        status = 'running',
                        error = NULL,
+                       tool_calls_json = '[]',
                        started_at = excluded.started_at,
                        finished_at = NULL
                    WHERE agent_steps.status != 'completed'""",
@@ -189,6 +199,7 @@ class Database:
         step_id: str,
         *,
         output: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
         error: str | None = None,
         tokens_used: int = 0,
         cost: float = 0.0,
@@ -197,11 +208,12 @@ class Database:
         with self._lock, self.connection:
             self.connection.execute(
                 """UPDATE agent_steps
-                   SET output_json = ?, status = ?, error = ?, tokens_used = ?, cost = ?,
-                       finished_at = ?
+                   SET output_json = ?, tool_calls_json = ?, status = ?, error = ?,
+                       tokens_used = ?, cost = ?, finished_at = ?
                    WHERE step_id = ?""",
                 (
                     json_dumps(output) if output is not None else None,
+                    json_dumps(tool_calls or []),
                     status,
                     error,
                     tokens_used,
@@ -528,11 +540,12 @@ class Database:
         with self._lock:
             if run_id:
                 return self.connection.execute(
-                    "SELECT * FROM runs WHERE run_id = ? AND status IN ('running', 'failed')",
+                    """SELECT * FROM runs WHERE run_id = ?
+                       AND status IN ('running', 'failed', 'stopped')""",
                     (run_id,),
                 ).fetchone()
             return self.connection.execute(
-                """SELECT * FROM runs WHERE status IN ('running', 'failed')
+                """SELECT * FROM runs WHERE status IN ('running', 'failed', 'stopped')
                    ORDER BY started_at DESC LIMIT 1"""
             ).fetchone()
 
