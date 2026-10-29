@@ -26,7 +26,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-xl border border-transparent font-medium transition-colors disabled:pointer-events-none disabled:opacity-45",
+        "inline-flex items-center justify-center gap-2 rounded-lg border border-transparent font-medium transition-colors disabled:pointer-events-none disabled:opacity-45",
         size === "sm" ? "min-h-8 px-3 text-xs" : "min-h-10 px-4 text-sm",
         variants[variant],
         className,
