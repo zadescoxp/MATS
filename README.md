@@ -78,9 +78,10 @@ npm run dev
 Open `http://localhost:3000`. The console uses `MATS_DATABASE_PATH` and the same `.env`
 settings as the CLI. API credentials remain in the Python process and are never sent to the
 browser. Dry-run and the kill switch remain enabled by default; disabling either from the
-console requires confirmation. Run stops take effect at the next agent boundary, and also
-enable the kill switch. Position flattening is routed through the framework, requires dry-run
-to be off, and remains subject to the Bybit testnet-only execution guard.
+console requires confirmation. Run stops take effect at the next agent boundary, stop any
+associated entry watcher, and enable the kill switch. Position flattening is routed through
+the framework, requires dry-run to be off, and remains subject to the Bybit testnet-only
+execution guard.
 
 The console starts each selected symbol as an independent run and shows their live progress
 together; batch membership is persisted so the overview remains after a page refresh.
@@ -88,6 +89,13 @@ For multi-symbol live testnet batches, a supplied total account-equity value is
 split evenly across the selected symbols; if omitted, available quote-currency balances are
 fetched once and split among the selected pairs using each quote currency. Only one live
 batch can be active at a time. The CLI retains its separate sequential live-run behavior.
+After a live strategy is approved, the dashboard persists an entry watcher that rechecks
+market data and risk every 60 seconds. It places no order until the existing execution
+guards approve an actionable signal. Watchers pause while dry-run or the kill switch is on,
+are restored after an API restart (and remain paused if those safety settings are enabled),
+and can be stopped or resumed from the run controls. The live
+candlestick chart also reads market data through the local API; the browser never contacts
+the exchange directly.
 
 For static inspection without the API, [`frontend/dashboard.html`](./frontend/dashboard.html)
 remains available: open it in a browser and choose a SQLite database file. That page reads
