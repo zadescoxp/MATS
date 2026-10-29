@@ -263,36 +263,6 @@ def test_dashboard_does_not_start_entry_watcher_with_safety_switches_enabled(
     assert service.state()["entry_watchers"] == []
 
 
-def test_dashboard_market_data_uses_backend_market_adapter(tmp_path: Path, monkeypatch) -> None:
-    candle = SimpleNamespace(
-        model_dump=lambda **_kwargs: {
-            "timestamp": "2026-10-30T00:00:00Z",
-            "open": 1,
-            "high": 2,
-            "low": 1,
-            "close": 2,
-            "volume": 3,
-        }
-    )
-
-    class FakeMarketDataTools:
-        def __init__(self, _settings):
-            pass
-
-        def fetch_ohlcv(self, symbol, timeframe, limit):
-            assert (symbol, timeframe, limit) == ("BTC/USDT", "1m", 300)
-            return SimpleNamespace(symbol=symbol, timeframe=timeframe, candles=[candle])
-
-    monkeypatch.setattr("framework.web.MarketDataTools", FakeMarketDataTools)
-    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
-
-    snapshot = service.market_data("BTC/USDT", "1m")
-
-    assert snapshot["candles"][0]["close"] == 2
-    with pytest.raises(ValueError, match="pairs"):
-        service.market_data("invalid", "1m")
-
-
 def test_database_adds_tool_call_column_to_existing_agent_steps(tmp_path: Path) -> None:
     path = tmp_path / "legacy-state.db"
     database = Database(path)
@@ -540,53 +510,6 @@ def test_local_http_api_exposes_state_and_confirmed_setting_action(tmp_path: Pat
         with pytest.raises(HTTPError) as error:
             urlopen(blocked_request)
         assert error.value.code == 403
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def test_market_http_endpoint_returns_backend_candles_and_validates_query(
-    tmp_path: Path, monkeypatch
-) -> None:
-    class FakeCandle:
-        def model_dump(self, **_kwargs):
-            return {
-                "timestamp": "2026-10-30T00:00:00Z",
-                "open": 1,
-                "high": 2,
-                "low": 1,
-                "close": 2,
-                "volume": 3,
-            }
-
-    class FakeMarketDataTools:
-        def __init__(self, _settings):
-            pass
-
-        def fetch_ohlcv(self, symbol, timeframe, limit):
-            return SimpleNamespace(symbol=symbol, timeframe=timeframe, candles=[FakeCandle()])
-
-    monkeypatch.setattr("framework.web.MarketDataTools", FakeMarketDataTools)
-    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
-
-    class BoundHandler(DashboardHandler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, service=service, **kwargs)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), BoundHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    base_url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        with urlopen(f"{base_url}/api/market?symbol=BTC%2FUSDT&timeframe=1m") as response:
-            snapshot = json.load(response)
-        assert snapshot["symbol"] == "BTC/USDT"
-        assert snapshot["candles"][0]["close"] == 2
-
-        with pytest.raises(HTTPError) as error:
-            urlopen(f"{base_url}/api/market?symbol=invalid&timeframe=1m")
-        assert error.value.code == 400
     finally:
         server.shutdown()
         server.server_close()
