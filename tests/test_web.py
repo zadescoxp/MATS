@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from framework.config.settings import Settings
-from framework.persistence.database import Database
+from framework.persistence.database import Database, _enable_wal
 from framework.web import (
     DashboardHandler,
     DashboardService,
@@ -87,6 +87,24 @@ def test_database_adds_tool_call_column_to_existing_agent_steps(tmp_path: Path) 
         migrated.close()
 
 
+def test_database_retries_transient_wal_lock() -> None:
+    class LockedOnceConnection:
+        calls = 0
+
+        def execute(self, _statement: str) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                error = sqlite3.OperationalError("database is locked")
+                error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                raise error
+
+    connection = LockedOnceConnection()
+
+    _enable_wal(connection)
+
+    assert connection.calls == 2
+
+
 def test_dashboard_service_migrates_existing_database_before_reading(tmp_path: Path) -> None:
     path = tmp_path / "legacy-state.db"
     database = Database(path)
@@ -103,6 +121,23 @@ def test_dashboard_service_migrates_existing_database_before_reading(tmp_path: P
 
     assert service.state()["runs"][0]["run_id"] == "run-1"
     assert service.state()["runs"][0]["steps"] == []
+
+
+def test_run_startup_failure_registers_failed_run_and_event(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "state.db"
+    service = DashboardService(Settings(database_path=path))
+
+    def fail_framework_startup(**_kwargs):
+        raise RuntimeError("simulated framework constructor failure")
+
+    monkeypatch.setattr("framework.web.TradingFramework", fail_framework_startup)
+    service._run("run-startup-failed", "BTC/USDT", {"timeframes": ["1h"]}, Event())
+
+    snapshot = _read_snapshot(path)
+    run = next(run for run in snapshot["runs"] if run["run_id"] == "run-startup-failed")
+    assert run["status"] == "failed"
+    assert run["events"][0]["type"] == "dashboard_run_failed"
+    assert run["events"][0]["message"] == "simulated framework constructor failure"
 
 
 def test_start_rejects_live_multi_symbol_without_mutating_safety_state(tmp_path: Path) -> None:
