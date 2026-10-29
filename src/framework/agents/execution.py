@@ -138,6 +138,11 @@ class ExecutionNode:
         )
         orders = [_order_dict(order) for order in outcome.orders]
         errors = list(outcome.errors)
+        entry_price = (
+            outcome.orders[0].average
+            if outcome.orders and outcome.orders[0].average
+            else signal.price
+        )
         protective_order_id: str | None = None
         protective_orders: list[OrderSnapshot] = []
         emergency_orders: list[OrderSnapshot] = []
@@ -210,9 +215,9 @@ class ExecutionNode:
                     if emergency_flattened:
                         exit_price = _fill_price(emergency_orders, signal.price)
                         pnl_per_unit = (
-                            exit_price - signal.price
+                            exit_price - entry_price
                             if signal.action == "long"
-                            else signal.price - exit_price
+                            else entry_price - exit_price
                         )
                         emergency_pnl = pnl_per_unit * filled
                     filled = max(filled - closed_quantity, 0)
@@ -234,16 +239,12 @@ class ExecutionNode:
                 strategy=state.strategy.model_dump(mode="json"),
                 side=signal.action,
                 amount=outcome.filled or amount,
-                entry_price=(
-                    outcome.orders[0].average
-                    if outcome.orders and outcome.orders[0].average
-                    else signal.price
-                ),
+                entry_price=entry_price,
                 stop_price=stop,
                 take_profit_price=(
-                    signal.price * (1 + state.strategy.take_profit_pct)
+                    entry_price * (1 + state.strategy.take_profit_pct)
                     if signal.action == "long" and state.strategy.take_profit_pct
-                    else signal.price * (1 - state.strategy.take_profit_pct)
+                    else entry_price * (1 - state.strategy.take_profit_pct)
                     if state.strategy.take_profit_pct
                     else None
                 ),
