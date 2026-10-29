@@ -1,4 +1,7 @@
+import json
 from typing import Any
+
+from framework.schemas.models import StrategyDefinition
 
 STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
     "ema_crossover": {
@@ -10,6 +13,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "short": "fast EMA crosses below slow EMA",
         },
         "exit_conditions": ["opposite_signal", "stop_loss", "take_profit", "time_stop"],
+        "default_exit_rule": "opposite_signal",
         "default_parameters": {"fast_period": 12, "slow_period": 26},
         "default_risk": {"stop_loss_pct": 0.02, "take_profit_pct": None},
         "supported_timeframes": ["5m", "15m", "1h", "4h", "1d"],
@@ -23,6 +27,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "short": "close below trend EMA and RSI crosses below overbought threshold",
         },
         "exit_conditions": ["opposite_signal", "stop_loss", "take_profit", "time_stop"],
+        "default_exit_rule": "fixed_risk_reward",
         "default_parameters": {
             "rsi_period": 14,
             "oversold": 30,
@@ -41,6 +46,8 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "short": "Supertrend turns bearish and ATR percentage passes its filter",
         },
         "exit_conditions": ["opposite_signal", "trailing_atr", "time_stop"],
+        "default_exit_rule": "trailing_atr",
+        "default_trailing_atr_multiple": 3.0,
         "default_parameters": {
             "atr_period": 10,
             "supertrend_multiplier": 3.0,
@@ -59,6 +66,8 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "short": "MACD histogram crosses negative with bearish higher-timeframe EMA bias",
         },
         "exit_conditions": ["opposite_signal", "stop_loss", "take_profit", "time_stop"],
+        "default_exit_rule": "time_stop",
+        "default_time_stop_bars": 48,
         "default_parameters": {
             "macd_fast": 12,
             "macd_slow": 26,
@@ -79,6 +88,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "short": "prior band width is compressed and close breaks below the lower band",
         },
         "exit_conditions": ["opposite_signal", "stop_loss", "take_profit", "time_stop"],
+        "default_exit_rule": "fixed_risk_reward",
         "default_parameters": {
             "bollinger_period": 20,
             "bollinger_deviations": 2.0,
@@ -98,6 +108,8 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "short": "lower-timeframe bearish EMA cross with bearish higher-timeframe EMA trend",
         },
         "exit_conditions": ["opposite_signal", "stop_loss", "take_profit", "time_stop"],
+        "default_exit_rule": "time_stop",
+        "default_time_stop_bars": 24,
         "default_parameters": {
             "fast_period": 8,
             "slow_period": 21,
@@ -122,7 +134,27 @@ def strategy_library_summary() -> list[dict[str, Any]]:
             "exit_conditions": template["exit_conditions"],
             "default_parameters": template["default_parameters"],
             "default_risk": template["default_risk"],
+            "default_exit_rule": template["default_exit_rule"],
+            "default_time_stop_bars": template.get("default_time_stop_bars"),
+            "default_trailing_atr_multiple": template.get("default_trailing_atr_multiple"),
             "supported_timeframes": template["supported_timeframes"],
         }
         for template_name, template in STRATEGY_LIBRARY.items()
     ]
+
+
+def strategy_fingerprint(strategy: StrategyDefinition) -> str:
+    return json.dumps(
+        {
+            "template_name": strategy.template_name,
+            "chosen_timeframe": strategy.chosen_timeframe,
+            "parameters": strategy.parameters,
+            "exit_rule": strategy.exit_rule,
+            "stop_loss_pct": strategy.stop_loss_pct,
+            "take_profit_pct": strategy.take_profit_pct,
+            "time_stop_bars": strategy.time_stop_bars,
+            "trailing_atr_multiple": strategy.trailing_atr_multiple,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
