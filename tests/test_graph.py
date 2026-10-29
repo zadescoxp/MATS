@@ -69,10 +69,14 @@ class FakeLLM:
                 name="EMA trend",
                 description="Enter on a fast EMA crossover and manage risk with a stop.",
                 chosen_timeframe=candidate["timeframe"],
-                entry_rule="ema_crossover",
-                exit_rule="ema_crossover",
+                template_name=candidate["template_name"],
+                entry_rule=candidate["template_name"],
+                exit_rule=candidate["exit_rule"],
                 fast_period=candidate["fast_period"],
                 slow_period=candidate["slow_period"],
+                parameters=candidate["parameters"],
+                time_stop_bars=candidate["time_stop_bars"],
+                trailing_atr_multiple=candidate["trailing_atr_multiple"],
                 filters=candidate["filters"],
                 stop_loss_pct=candidate["stop_loss_pct"],
                 take_profit_pct=candidate["take_profit_pct"],
@@ -109,13 +113,15 @@ class FakeExecution:
             ],
         )
 
-    def place_protective_stop(self, symbol, amount, trigger_price, *, dry_run, idempotency_key):
+    def place_protective_stop(
+        self, symbol, amount, trigger_price, *, dry_run, idempotency_key, side="sell"
+    ):
         return OrderExecutionResult(
             status="dry_run",
             orders=[
                 OrderSnapshot(
                     symbol=symbol,
-                    side="sell",
+                    side=side,
                     amount=amount,
                     price=trigger_price,
                     status="dry_run",
@@ -174,11 +180,12 @@ def test_full_graph_uses_one_analyst_and_dry_run(candles) -> None:
         result = framework.run("BTC/USDT")
         assert result.status == "completed", result.errors
         assert result.critique and result.critique.decision == "APPROVE"
-        assert result.risk_assessment and result.risk_assessment.approved
-        assert result.execution_result and result.execution_result.dry_run
-        assert len(result.execution_result.orders) == 2
-        assert execution.dry_run_values == [True]
-        assert market.ohlcv_calls == 2
+        assert result.risk_assessment and not result.risk_assessment.approved
+        assert result.live_signal and result.live_signal.action == "hold"
+        assert result.execution_result and result.execution_result.status == "hold"
+        assert result.execution_result.orders == []
+        assert execution.dry_run_values == []
+        assert market.ohlcv_calls == 4
         assert market.ticker_calls == 1
         assert llm.calls["submit_findings"] == 1
         assert result.backtest_report and result.backtest_report.total_trades >= 1
@@ -203,11 +210,11 @@ def test_resume_does_not_refetch_completed_data_or_repeat_finished_agents(candle
 
         resumed = framework.resume(first.run_id)
         assert resumed.status == "completed", resumed.errors
-        assert market.ohlcv_calls == 2
+        assert market.ohlcv_calls == 4
         assert market.ticker_calls == 1
         assert llm.calls["submit_findings"] == 2
         assert llm.calls["submit_strategy"] == 1
-        assert execution.dry_run_values == [True]
+        assert execution.dry_run_values == []
         data_steps = database.connection.execute(
             "SELECT status FROM agent_steps WHERE agent_name='data_worker'"
         ).fetchall()
