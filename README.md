@@ -60,16 +60,17 @@ The database defaults to `./data/state.db`. Configure `MATS_DATABASE_PATH` to ch
 
 ## Local web console
 
-The Next.js console streams persisted runs and agent steps from SQLite and sends actions to a
-loopback-only Python API. Start both processes from the repository root:
+The Next.js console lives in [`frontend/`](./frontend/) and streams persisted runs and agent
+steps from SQLite through a loopback-only Python API. Start the API from the repository root:
 
 ```bash
 uv run mats-web
 ```
 
-In another terminal:
+In another terminal, start the frontend from its directory:
 
 ```bash
+cd frontend
 npm install
 npm run dev
 ```
@@ -81,9 +82,9 @@ console requires confirmation. Run stops take effect at the next agent boundary,
 enable the kill switch. Position flattening is routed through the framework, requires dry-run
 to be off, and remains subject to the Bybit testnet-only execution guard.
 
-For static inspection without the API, [`dashboard.html`](./dashboard.html) remains available:
-open it in a browser and choose a SQLite database file. That page reads the selected file
-locally in the browser; its SQLite reader is loaded from a CDN.
+For static inspection without the API, [`frontend/dashboard.html`](./frontend/dashboard.html)
+remains available: open it in a browser and choose a SQLite database file. That page reads
+the selected file locally in the browser; its SQLite reader is loaded from a CDN.
 Public market history is fetched from Bybit mainnet by default, while the execution
 adapter remains on Bybit testnet. Set `MATS_MARKET_DATA_TESTNET=true` only when
 intentionally using the sparse testnet candle history.
