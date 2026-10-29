@@ -144,16 +144,19 @@ class ExecutionTools:
         *,
         dry_run: bool,
         idempotency_key: str,
+        side: str = "sell",
     ) -> OrderExecutionResult:
         if amount <= 0 or trigger_price <= 0:
             raise ValueError("Protective stop amount and trigger price must be positive")
+        if side not in {"buy", "sell"}:
+            raise ValueError("Protective stop side must be 'buy' or 'sell'")
         if dry_run:
             return OrderExecutionResult(
                 status="dry_run",
                 orders=[
                     OrderSnapshot(
                         symbol=symbol,
-                        side="sell",
+                        side=side,
                         type="stop_market",
                         status="dry_run",
                         amount=amount,
@@ -170,11 +173,11 @@ class ExecutionTools:
         params = {
             "orderLinkId": link_id,
             "triggerPrice": trigger_price,
-            "triggerDirection": 2,
+            "triggerDirection": 2 if side == "sell" else 1,
             "triggerBy": "LastPrice",
         }
         try:
-            order = self.exchange.create_order(symbol, "market", "sell", amount, None, params)
+            order = self.exchange.create_order(symbol, "market", side, amount, None, params)
         except ccxt.DuplicateOrderId:
             order = self.exchange.fetch_order(None, symbol, {"orderLinkId": link_id})
         return OrderExecutionResult(
