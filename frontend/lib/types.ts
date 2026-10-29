@@ -96,21 +96,6 @@ export interface EntryWatcher {
   updated_at: string;
 }
 
-export interface MarketCandle {
-  timestamp: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-export interface MarketSnapshot {
-  symbol: string;
-  timeframe: string;
-  candles: MarketCandle[];
-}
-
 export interface DashboardState {
   runs: Run[];
   positions: Position[];
