@@ -68,7 +68,7 @@ class MultiTimeframeFindings(BaseModel):
     volatility: str
     key_levels: list[float] = Field(default_factory=list)
     divergences: list[str] = Field(default_factory=list)
-    rationale: str
+    rationale: str = ""
     technical_snapshots: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
