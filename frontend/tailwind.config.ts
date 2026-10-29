@@ -5,18 +5,21 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: "#0a0a0a",
-        card: "#111111",
-        border: "#1f1f1f",
-        foreground: "#f5f5f5",
+        background: "#09090b",
+        surface: "#0f0f12",
+        card: "#141418",
+        "card-hover": "#1a1a1f",
+        border: "#27272a",
+        foreground: "#fafafa",
         muted: "#a1a1aa",
+        "muted-foreground": "#71717a",
         accent: "#3b82f6",
         positive: "#22c55e",
         negative: "#ef4444",
       },
       borderRadius: {
         xl: "0.75rem",
-        "2xl": "1rem",
+        "2xl": "0.75rem",
       },
     },
   },
