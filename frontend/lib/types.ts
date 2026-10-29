@@ -85,10 +85,37 @@ export interface Operation {
   error?: string;
 }
 
+export interface EntryWatcher {
+  run_id: string;
+  interval_seconds: number;
+  status: string;
+  signal: Record<string, unknown> | null;
+  last_checked_at: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MarketCandle {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface MarketSnapshot {
+  symbol: string;
+  timeframe: string;
+  candles: MarketCandle[];
+}
+
 export interface DashboardState {
   runs: Run[];
   positions: Position[];
   system_events: SystemEvent[];
+  entry_watchers: EntryWatcher[];
   settings: {
     dry_run: boolean;
     kill_switch: boolean;
