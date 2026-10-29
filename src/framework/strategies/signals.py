@@ -40,6 +40,18 @@ def evaluate_live_signal(
         slow = ema(close, slow_period)
         long_signal = _crossed_up(fast, slow)
         short_signal = _crossed_down(fast, slow)
+        for rule in strategy.filters:
+            if rule == "rsi_below_70":
+                current_rsi = rsi(close).iloc[-1]
+                long_signal = long_signal and _finite(current_rsi) and current_rsi < 70
+                short_signal = short_signal and _finite(current_rsi) and current_rsi < 70
+            elif rule == "price_above_slow_ema":
+                above_slow = _finite(slow.iloc[-1]) and close.iloc[-1] > slow.iloc[-1]
+                long_signal = long_signal and above_slow
+                short_signal = short_signal and above_slow
+            elif rule == "volume_positive":
+                long_signal = long_signal and frame["volume"].iloc[-1] > 0
+                short_signal = short_signal and frame["volume"].iloc[-1] > 0
         reason = (
             "Fast EMA crossed above slow EMA."
             if long_signal
@@ -238,7 +250,7 @@ def _evaluate_position_exit(
             return "exit", "Take-profit target was hit.", stop
         opposite = signal_action == "long"
 
-    bars_held = int(position.get("bars_held", 0)) + 1
+    bars_held = int(position.get("bars_held", 0))
     if strategy.time_stop_bars and bars_held >= strategy.time_stop_bars:
         return "exit", "Configured time stop was reached.", stop
     if strategy.exit_rule == "trailing_atr" and current_atr:
