@@ -12,12 +12,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
+from framework.agents.execution import ExecutionNode
+from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.config.settings import Settings, get_settings
 from framework.core.graph import TradingFramework
+from framework.core.state import GraphState
 from framework.persistence.database import Database
 from framework.tools.execution import ExecutionTools
+from framework.tools.market_data import MarketDataTools
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 _ALLOWED_TIMEFRAMES = {
@@ -35,6 +39,7 @@ _ALLOWED_TIMEFRAMES = {
     "1w",
 }
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
+_ENTRY_WATCH_INTERVAL_SECONDS = 60
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +53,7 @@ class DashboardService:
         self._stop_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._operations: dict[str, dict[str, str]] = {}
+        self._restore_entry_watchers()
 
     def state(self) -> dict[str, Any]:
         data = _read_snapshot(self.settings.database_path)
@@ -132,7 +138,7 @@ class DashboardService:
             self.settings.kill_switch = True
             event.set()
         return {
-            "message": "Stop requested. The run will stop at the next agent boundary; "
+            "message": "Stop requested. The run or entry watcher will stop; "
             "the kill switch is now enabled."
         }
 
@@ -160,6 +166,29 @@ class DashboardService:
     ) -> dict[str, str]:
         database = Database(self.settings.database_path)
         try:
+            watcher = next(
+                (
+                    item
+                    for item in database.entry_watchers()
+                    if item["run_id"] == run_id
+                    and item["status"] in {"stopped", "failed"}
+                ),
+                None,
+            )
+            if watcher is not None:
+                with self._lock:
+                    if self._run_is_active(str(watcher["run_id"])):
+                        raise ValueError(f"Run {watcher['run_id']} is already active.")
+                    database.start_entry_watcher(
+                        str(watcher["run_id"]), int(watcher["interval_seconds"])
+                    )
+                    self._launch_entry_watcher(
+                        str(watcher["run_id"]), int(watcher["interval_seconds"])
+                    )
+                return {
+                    "run_id": str(watcher["run_id"]),
+                    "message": "Entry watcher resume requested.",
+                }
             row = database.resumable_run(run_id)
             if row is None:
                 raise ValueError(f"No incomplete run found for run_id={run_id!r}.")
@@ -207,10 +236,16 @@ class DashboardService:
             for run in snapshot["runs"]
             if run["status"] in {"running", "failed", "stopped"} and run["run_id"] not in active
         ]
-        if not candidates:
-            raise ValueError("No inactive incomplete runs found.")
+        watcher_ids = [
+            str(watcher["run_id"])
+            for watcher in snapshot["entry_watchers"]
+            if watcher["status"] in {"stopped", "failed"}
+            and watcher["run_id"] not in active
+        ]
+        if not candidates and not watcher_ids:
+            raise ValueError("No inactive incomplete runs or stopped entry watchers found.")
         equity_overrides: dict[str, float] = {}
-        if not self.settings.dry_run and not self.settings.kill_switch:
+        if candidates and not self.settings.dry_run and not self.settings.kill_switch:
             if active:
                 raise ValueError("Stop active live runs before resuming another live batch.")
             has_unallocated_runs = any(
@@ -234,9 +269,11 @@ class DashboardService:
             )
             for run in candidates
         ]
+        for watcher_id in watcher_ids:
+            self.resume(watcher_id, allow_parallel_live=True)
         return {
-            "run_ids": [item["run_id"] for item in resumed],
-            "message": f"Resume requested for {len(resumed)} run(s).",
+            "run_ids": [item["run_id"] for item in resumed] + watcher_ids,
+            "message": f"Resume requested for {len(resumed) + len(watcher_ids)} run(s).",
         }
 
     def toggle(self, name: str, enabled: Any, confirmed: Any) -> dict[str, Any]:
@@ -289,6 +326,16 @@ class DashboardService:
         finally:
             worker.close()
 
+    def market_data(self, symbol: str, timeframe: str) -> dict[str, Any]:
+        _symbols([symbol], self.settings.symbols)
+        _timeframes([timeframe], self.settings.timeframes)
+        result = MarketDataTools(self.settings).fetch_ohlcv(symbol, timeframe, limit=300)
+        return {
+            "symbol": result.symbol,
+            "timeframe": result.timeframe,
+            "candles": [candle.model_dump(mode="json") for candle in result.candles],
+        }
+
     def _run(
         self,
         run_id: str,
@@ -299,7 +346,8 @@ class DashboardService:
         worker = None
         try:
             worker = TradingFramework(settings=self.settings, stop_event=stop_event)
-            worker.run(symbol, config, run_id=run_id)
+            result = worker.run(symbol, config, run_id=run_id)
+            self._maybe_start_entry_watcher(run_id, result, stop_event)
         except Exception as exc:
             if worker is None:
                 database = None
@@ -349,11 +397,145 @@ class DashboardService:
         worker = None
         try:
             worker = TradingFramework(settings=self.settings, stop_event=stop_event)
-            worker.resume(run_id, account_equity=account_equity)
+            result = worker.resume(run_id, account_equity=account_equity)
+            self._maybe_start_entry_watcher(run_id, result, stop_event)
         except Exception as exc:
             if worker:
                 worker.database.log_event(run_id, "dashboard_resume_failed", str(exc), error=exc)
                 worker.database.update_run_status(run_id, "failed")
+        finally:
+            if worker:
+                worker.close()
+
+    def _maybe_start_entry_watcher(
+        self, run_id: str, state: GraphState, stop_event: threading.Event
+    ) -> None:
+        if (
+            state.status not in {"running", "completed"}
+            or state.critique is None
+            or state.critique.decision != "APPROVE"
+            or state.strategy is None
+            or stop_event.is_set()
+        ):
+            return
+        with self._lock:
+            if self.settings.dry_run or self.settings.kill_switch or stop_event.is_set():
+                return
+            database = Database(self.settings.database_path)
+            try:
+                if any(
+                    position["run_id"] == run_id
+                    for position in database.open_positions(state.symbol)
+                ):
+                    return
+                database.start_entry_watcher(run_id, _ENTRY_WATCH_INTERVAL_SECONDS)
+            finally:
+                database.close()
+            self._launch_entry_watcher(run_id, _ENTRY_WATCH_INTERVAL_SECONDS)
+
+    def _launch_entry_watcher(self, run_id: str, interval_seconds: int) -> None:
+        watcher_stop_event = threading.Event()
+        with self._lock:
+            self._stop_events[run_id] = watcher_stop_event
+            thread = threading.Thread(
+                target=self._watch_entries,
+                args=(run_id, watcher_stop_event, interval_seconds),
+                name=f"mats-entry-watch-{run_id[:8]}",
+                daemon=True,
+            )
+            self._threads[run_id] = thread
+            thread.start()
+
+    def _restore_entry_watchers(self) -> None:
+        if not self.settings.database_path.exists():
+            return
+        database = Database(self.settings.database_path)
+        try:
+            watchers = database.entry_watchers(active_only=True)
+        finally:
+            database.close()
+        for watcher in watchers:
+            run_id = str(watcher["run_id"])
+            stop_event = threading.Event()
+            with self._lock:
+                self._stop_events[run_id] = stop_event
+                thread = threading.Thread(
+                    target=self._watch_entries,
+                    args=(run_id, stop_event, int(watcher["interval_seconds"])),
+                    name=f"mats-entry-watch-{run_id[:8]}",
+                    daemon=True,
+                )
+                self._threads[run_id] = thread
+                thread.start()
+
+    def _watch_entries(
+        self, run_id: str, stop_event: threading.Event, interval_seconds: int
+    ) -> None:
+        worker = None
+        database = None
+        try:
+            worker = TradingFramework(settings=self.settings, stop_event=stop_event)
+            database = worker.database
+            raw_state = database.latest_checkpoint(run_id)
+            if raw_state is None:
+                raise ValueError(f"No saved graph state is available for watcher run {run_id}.")
+            state = GraphState.model_validate(raw_state)
+            if (
+                state.critique is None
+                or state.critique.decision != "APPROVE"
+                or state.strategy is None
+            ):
+                raise ValueError(f"Watcher run {run_id} has no approved strategy to monitor.")
+
+            while not stop_event.is_set():
+                if self.settings.dry_run or self.settings.kill_switch:
+                    database.update_entry_watcher(run_id, status="paused")
+                    stop_event.wait(interval_seconds)
+                    continue
+                try:
+                    risk_update = RiskAssessmentNode(worker.context)(state)
+                    state = state.model_copy(update=risk_update)
+                    signal = state.live_signal
+                    if signal is None:
+                        raise RuntimeError("Risk assessment returned no live signal.")
+                    if (
+                        signal.action in {"long", "short"}
+                        and state.risk_assessment is not None
+                        and state.risk_assessment.approved
+                        and not stop_event.is_set()
+                        and not self.settings.dry_run
+                        and not self.settings.kill_switch
+                    ):
+                        execution_update = ExecutionNode(worker.context)(state)
+                        state = state.model_copy(update=execution_update)
+                    database.update_entry_watcher(
+                        run_id,
+                        status="watching",
+                        signal=signal.model_dump(mode="json"),
+                        error=None,
+                    )
+                    if any(position["run_id"] == run_id for position in database.open_positions()):
+                        database.update_entry_watcher(run_id, status="triggered")
+                        database.log_event(
+                            run_id,
+                            "entry_watcher_triggered",
+                            "The entry watcher placed an order and saved an open position.",
+                        )
+                        return
+                except Exception as exc:
+                    database.update_entry_watcher(run_id, status="watching", error=str(exc))
+                    database.log_event(run_id, "entry_watcher_check_failed", str(exc), error=exc)
+                    logger.exception("Entry watcher check failed for run %s", run_id)
+                stop_event.wait(interval_seconds)
+            database.update_entry_watcher(run_id, status="stopped")
+            database.log_event(run_id, "entry_watcher_stopped", "Entry watcher stopped.")
+        except Exception as exc:
+            if database is None and worker is not None:
+                database = worker.database
+            if database is not None:
+                database.update_entry_watcher(run_id, status="failed", error=str(exc))
+                database.log_event(run_id, "entry_watcher_failed", str(exc), error=exc)
+            logger.exception("Entry watcher could not start for run %s", run_id)
         finally:
             if worker:
                 worker.close()
@@ -412,6 +594,7 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
         "runs": [],
         "positions": [],
         "system_events": [],
+        "entry_watchers": [],
     }
     if not database_path.exists():
         return empty
@@ -479,6 +662,13 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
                    FROM system_events ORDER BY timestamp DESC LIMIT 200"""
             )
         ]
+        entry_watchers = [
+            {
+                **dict(row),
+                "signal": json.loads(row["signal_json"]) if row["signal_json"] else None,
+            }
+            for row in connection.execute("SELECT * FROM entry_watchers ORDER BY created_at")
+        ]
         return {
             "runs": [
                 {
@@ -493,6 +683,7 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
             ],
             "positions": positions,
             "system_events": system_events,
+            "entry_watchers": entry_watchers,
         }
     finally:
         connection.close()
@@ -546,12 +737,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if route == "/api/state":
                 self._json_response(HTTPStatus.OK, self.service.state())
+            elif route == "/api/market":
+                query = parse_qs(urlsplit(self.path).query)
+                symbol = query.get("symbol", [self.service.settings.symbols[0]])[0]
+                timeframe = query.get("timeframe", [self.service.settings.timeframes[0]])[0]
+                self._json_response(
+                    HTTPStatus.OK, self.service.market_data(symbol, timeframe)
+                )
             elif route == "/api/events":
                 self._events()
             else:
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "Not found."})
-        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        except ValueError as exc:
+            status = (
+                HTTPStatus.BAD_REQUEST
+                if route == "/api/market"
+                else HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+            self._json_response(status, {"error": str(exc)})
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
             self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+        except Exception as exc:
+            logger.exception("Dashboard GET request failed for %s", route)
+            self._json_response(
+                (
+                    HTTPStatus.BAD_GATEWAY
+                    if route == "/api/market"
+                    else HTTPStatus.INTERNAL_SERVER_ERROR
+                ),
+                {"error": str(exc)},
+            )
 
     def do_POST(self) -> None:
         if not self._request_allowed():
