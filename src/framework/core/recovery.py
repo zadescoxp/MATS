@@ -1,6 +1,7 @@
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Event
 from typing import Any
 
 from framework.core.context import AgentContext
@@ -12,17 +13,26 @@ class AgentResult:
     updates: dict[str, Any]
     tokens_used: int = 0
     cost: float = 0.0
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 class NodeRunner:
-    def __init__(self, context: AgentContext):
+    def __init__(self, context: AgentContext, stop_event: Event | None = None):
         self.context = context
+        self.stop_event = stop_event
 
     def wrap(
         self, name: str, function: Callable[[GraphState], dict[str, Any] | AgentResult]
     ) -> Callable[[GraphState | dict[str, Any]], dict[str, Any]]:
         def run(raw_state: GraphState | dict[str, Any]) -> dict[str, Any]:
             state = GraphState.model_validate(raw_state)
+            if self.stop_event and self.stop_event.is_set():
+                self.context.database.log_event(
+                    state.run_id,
+                    "run_stopped",
+                    f"Run stopped before the {name} agent started.",
+                )
+                return {"status": "stopped"}
             step_id = f"{state.run_id}:{name}:r{state.revision_count}"
             start_state = state.model_dump(mode="json")
             self.context.database.checkpoint(state.run_id, name, "before", start_state)
@@ -53,6 +63,7 @@ class NodeRunner:
                     self.context.database.finish_step(
                         step_id,
                         output=agent_result.updates,
+                        tool_calls=agent_result.tool_calls,
                         tokens_used=agent_result.tokens_used,
                         cost=agent_result.cost,
                     )
