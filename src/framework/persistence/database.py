@@ -56,6 +56,38 @@ CREATE TABLE IF NOT EXISTS executions (
     orders_json TEXT NOT NULL,
     status TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS live_positions (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    symbol TEXT NOT NULL,
+    strategy_key TEXT NOT NULL,
+    strategy_json TEXT NOT NULL,
+    side TEXT NOT NULL,
+    amount REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    stop_price REAL NOT NULL,
+    take_profit_price REAL,
+    entry_order_id TEXT,
+    protective_order_id TEXT,
+    status TEXT NOT NULL,
+    stop_reason TEXT,
+    bars_held INTEGER NOT NULL DEFAULT 0,
+    net_pnl REAL,
+    events_json TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_positions_status_symbol
+    ON live_positions(status, symbol);
+CREATE INDEX IF NOT EXISTS idx_live_positions_strategy
+    ON live_positions(strategy_key, status, updated_at);
+CREATE TABLE IF NOT EXISTS strategy_stops (
+    symbol TEXT NOT NULL,
+    strategy_key TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    reason TEXT NOT NULL,
+    stopped_at TEXT NOT NULL,
+    PRIMARY KEY (symbol, strategy_key)
+);
 CREATE TABLE IF NOT EXISTS system_events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT REFERENCES runs(run_id),
@@ -286,6 +318,172 @@ class Database:
                    ON CONFLICT(execution_id) DO UPDATE SET
                        orders_json = excluded.orders_json, status = excluded.status""",
                 (execution_id, run_id, json_dumps(orders), status),
+            )
+
+    def save_live_position(
+        self,
+        *,
+        run_id: str,
+        symbol: str,
+        strategy_key: str,
+        strategy: dict[str, Any],
+        side: str,
+        amount: float,
+        entry_price: float,
+        stop_price: float,
+        take_profit_price: float | None,
+        entry_order_id: str | None,
+        protective_order_id: str | None,
+    ) -> None:
+        now = _now()
+        event = {
+            "type": "opened",
+            "timestamp": now,
+            "side": side,
+            "amount": amount,
+            "entry_price": entry_price,
+            "entry_order_id": entry_order_id,
+        }
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO live_positions
+                   (run_id, symbol, strategy_key, strategy_json, side, amount, entry_price,
+                    stop_price, take_profit_price, entry_order_id, protective_order_id, status,
+                    events_json, opened_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                       symbol = excluded.symbol, strategy_key = excluded.strategy_key,
+                       strategy_json = excluded.strategy_json, side = excluded.side,
+                       amount = excluded.amount, entry_price = excluded.entry_price,
+                       stop_price = excluded.stop_price,
+                       take_profit_price = excluded.take_profit_price,
+                       entry_order_id = excluded.entry_order_id,
+                       protective_order_id = excluded.protective_order_id,
+                       status = 'open', stop_reason = NULL, bars_held = 0, net_pnl = NULL,
+                       events_json = excluded.events_json, opened_at = excluded.opened_at,
+                       updated_at = excluded.updated_at""",
+                (
+                    run_id,
+                    symbol,
+                    strategy_key,
+                    json_dumps(strategy),
+                    side,
+                    amount,
+                    entry_price,
+                    stop_price,
+                    take_profit_price,
+                    entry_order_id,
+                    protective_order_id,
+                    json_dumps([event]),
+                    now,
+                    now,
+                ),
+            )
+
+    def open_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if symbol is None:
+                rows = self.connection.execute(
+                    "SELECT * FROM live_positions WHERE status = 'open' ORDER BY opened_at"
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    """SELECT * FROM live_positions WHERE status = 'open' AND symbol = ?
+                       ORDER BY opened_at""",
+                    (symbol,),
+                ).fetchall()
+        return [
+            {
+                **dict(row),
+                "strategy": json.loads(row["strategy_json"]),
+                "events": json.loads(row["events_json"]),
+            }
+            for row in rows
+        ]
+
+    def update_live_position(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        event_type: str,
+        reason: str,
+        bars_held: int,
+        net_pnl: float | None = None,
+    ) -> None:
+        now = _now()
+        with self._lock, self.connection:
+            row = self.connection.execute(
+                "SELECT events_json FROM live_positions WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No persisted live position for run_id={run_id!r}")
+            events = json.loads(row["events_json"])
+            events.append(
+                {
+                    "type": event_type,
+                    "timestamp": now,
+                    "reason": reason,
+                    "net_pnl": net_pnl,
+                }
+            )
+            self.connection.execute(
+                """UPDATE live_positions
+                   SET status = ?, stop_reason = ?, bars_held = ?, net_pnl = ?,
+                       events_json = ?, updated_at = ?
+                   WHERE run_id = ?""",
+                (
+                    status,
+                    reason,
+                    bars_held,
+                    net_pnl,
+                    json_dumps(events),
+                    now,
+                    run_id,
+                ),
+            )
+
+    def recent_strategy_expectancy(self, strategy_key: str, lookback: int) -> float | None:
+        if lookback <= 0:
+            raise ValueError("lookback must be positive")
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT net_pnl FROM live_positions
+                   WHERE strategy_key = ? AND status = 'closed' AND net_pnl IS NOT NULL
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (strategy_key, lookback),
+            ).fetchall()
+        if not rows:
+            return None
+        return sum(float(row["net_pnl"]) for row in rows) / len(rows)
+
+    def mark_strategy_stopped(
+        self, symbol: str, strategy_key: str, run_id: str, reason: str
+    ) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO strategy_stops (symbol, strategy_key, run_id, reason, stopped_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(symbol, strategy_key) DO UPDATE SET
+                       run_id = excluded.run_id, reason = excluded.reason,
+                       stopped_at = excluded.stopped_at""",
+                (symbol, strategy_key, run_id, reason, _now()),
+            )
+
+    def strategy_stop_reason(self, symbol: str, strategy_key: str) -> str | None:
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT reason FROM strategy_stops
+                   WHERE symbol = ? AND strategy_key = ?""",
+                (symbol, strategy_key),
+            ).fetchone()
+        return str(row["reason"]) if row else None
+
+    def clear_strategy_stop(self, symbol: str, strategy_key: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM strategy_stops WHERE symbol = ? AND strategy_key = ?",
+                (symbol, strategy_key),
             )
 
     def resumable_run(self, run_id: str | None = None) -> sqlite3.Row | None:
