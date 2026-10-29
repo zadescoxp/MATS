@@ -93,9 +93,9 @@ After a live strategy is approved, the dashboard persists an entry watcher that 
 market data and risk every 60 seconds. It places no order until the existing execution
 guards approve an actionable signal. Watchers pause while dry-run or the kill switch is on,
 are restored after an API restart (and remain paused if those safety settings are enabled),
-and can be stopped or resumed from the run controls. The live
-candlestick chart also reads market data through the local API; the browser never contacts
-the exchange directly.
+and can be stopped or resumed from the run controls. The live candlestick chart loads public
+history and subscribes to Bybit's public market WebSocket directly; it does not use the
+trading framework API.
 
 For static inspection without the API, [`frontend/dashboard.html`](./frontend/dashboard.html)
 remains available: open it in a browser and choose a SQLite database file. That page reads
