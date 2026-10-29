@@ -182,6 +182,7 @@ def test_start_live_multi_symbol_splits_total_equity_across_parallel_runs(
     assert len(threads) == 3
     assert all(thread.started for thread in threads)
     assert [thread.args[2]["account_equity"] for thread in threads] == [3000, 3000, 3000]
+    assert all(thread.args[2]["dashboard_batch_id"] == result["batch_id"] for thread in threads)
     assert settings.dry_run is False
 
 
