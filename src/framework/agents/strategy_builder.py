@@ -5,15 +5,8 @@ from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
 from framework.schemas.models import StrategyDefinition
+from framework.strategies.library import STRATEGY_LIBRARY, strategy_library_summary
 
-_EMA_PAIRS = ((5, 10), (8, 21), (9, 21), (12, 26), (14, 32), (20, 50))
-_FILTER_SETS = (
-    (),
-    ("rsi_below_70",),
-    ("price_above_slow_ema",),
-    ("rsi_below_70", "price_above_slow_ema"),
-)
-_RISK_CONFIGS = ((0.02, None), (0.025, 0.05), (0.03, 0.06))
 _MAX_CANDIDATES_PER_TIMEFRAME = 5
 
 
@@ -37,6 +30,8 @@ class StrategyBuilderNode:
             "eligible_candidates": [
                 {
                     "timeframe": item["strategy"].chosen_timeframe,
+                    "template_name": item["strategy"].template_name,
+                    "parameters": item["strategy"].parameters,
                     "fast_period": item["strategy"].fast_period,
                     "slow_period": item["strategy"].slow_period,
                     "filters": item["strategy"].filters,
@@ -52,7 +47,7 @@ class StrategyBuilderNode:
         }
         if not candidates:
             reason = (
-                f"No untried EMA/timeframe candidate has at least "
+                f"No untried library/timeframe candidate has at least "
                 f"{self.context.settings.min_strategy_bars} historical bars and "
                 f"at least {self.context.settings.min_backtest_trades} closed trades "
                 "after fees and slippage."
@@ -79,12 +74,15 @@ class StrategyBuilderNode:
             {
                 "role": "system",
                 "content": (
-                    "Choose exactly one candidate from the supplied measured candidate list. "
+                    "You may only choose a parameterized variant of a template in the supplied "
+                    "reference library, and exactly one candidate from the supplied measured "
+                    "candidate list. Never generate arbitrary strategy code. "
                     "The list was tested on historical candles with the configured fees and "
                     "slippage and contains candidates that produced enough closed trades. "
-                    "Copy its timeframe, fast/slow periods, filters, stop loss, take profit, "
-                    "and position fraction exactly; do not invent or adjust these measured "
-                    "parameters. Prefer candidates with positive net-of-cost PnL and "
+                    "Copy its template name, timeframe, parameters, filters, stop loss, take "
+                    "profit, exit rule, and position fraction exactly; do not invent or adjust "
+                    "these measured parameters. Prefer candidates with positive net-of-cost PnL "
+                    "and "
                     "controlled drawdown, while respecting the multi-timeframe findings. "
                     "Do not choose an untested timeframe. Call "
                     "submit_strategy exactly once. On revision, choose a different candidate "
@@ -96,6 +94,7 @@ class StrategyBuilderNode:
                 "content": json.dumps(
                     {
                         "symbol": state.symbol,
+                        "strategy_library": strategy_library_summary(),
                         "analyst_findings": [
                             item.model_dump(mode="json") for item in state.analyst_findings
                         ],
@@ -117,7 +116,10 @@ class StrategyBuilderNode:
                 submit_tool(
                     "submit_strategy",
                     StrategyDefinition,
-                    "Submit a complete strategy using one measured candidate exactly.",
+                    (
+                        "Submit a supported template and parameters using one measured "
+                        "candidate exactly."
+                    ),
                 )
             ],
             self.context.settings.model_for("strategy"),
@@ -133,13 +135,15 @@ class StrategyBuilderNode:
         )
         if selected is None:
             raise ValueError(
-                "Strategy builder selected an untested timeframe, EMA pair, or filter set; "
+                "Strategy builder selected an untested template, timeframe, or parameter set; "
                 "choose one of the supplied measured candidates."
             )
         diagnostics["selected_candidate"] = next(
             item
             for item in diagnostics["eligible_candidates"]
             if item["timeframe"] == strategy.chosen_timeframe
+            and item["template_name"] == strategy.template_name
+            and item["parameters"] == strategy.parameters
             and item["fast_period"] == strategy.fast_period
             and item["slow_period"] == strategy.slow_period
             and item["filters"] == strategy.filters
@@ -182,44 +186,61 @@ class StrategyBuilderNode:
                 info["reason"] = "insufficient_history"
                 continue
 
-            for fast, slow in _EMA_PAIRS:
-                for filters in _FILTER_SETS:
-                    for stop_loss, take_profit in _RISK_CONFIGS:
-                        strategy = StrategyDefinition(
-                            name=f"{timeframe} EMA {fast}/{slow}",
-                            description=(
-                                "Historical candidate evaluated with configured spot costs."
-                            ),
-                            chosen_timeframe=timeframe,
-                            entry_rule="ema_crossover",
-                            exit_rule="ema_crossover",
-                            fast_period=fast,
-                            slow_period=slow,
-                            stop_loss_pct=stop_loss,
-                            take_profit_pct=take_profit,
-                            position_fraction=0.1,
-                            filters=list(filters),
-                        )
-                        report = self.context.backtester.run(strategy, candles)
-                        if report.total_trades >= self.context.settings.min_backtest_trades:
-                            candidates.append(
-                                {
-                                    "strategy": strategy,
-                                    "trades": report.total_trades,
-                                    "net_pnl": report.net_pnl,
-                                    "max_drawdown": report.max_drawdown_pct,
-                                }
-                            )
+            for template_name, template in STRATEGY_LIBRARY.items():
+                if timeframe not in template["supported_timeframes"]:
+                    continue
+                parameters = dict(template["default_parameters"])
+                higher_timeframe = parameters.get("higher_timeframe")
+                if higher_timeframe:
+                    available_higher = [
+                        item
+                        for item in state.timeframes_to_consider
+                        if item in state.raw_data
+                        and _timeframe_rank(item) > _timeframe_rank(timeframe)
+                    ]
+                    if not available_higher:
+                        continue
+                    parameters["higher_timeframe"] = min(available_higher, key=_timeframe_rank)
+                risk = template["default_risk"]
+                fast = int(parameters.get("fast_period", parameters.get("macd_fast", 12)))
+                slow = int(parameters.get("slow_period", parameters.get("macd_slow", 26)))
+                strategy = StrategyDefinition(
+                    name=f"{timeframe} {template['name']}",
+                    description=str(template["description"]),
+                    chosen_timeframe=timeframe,
+                    template_name=template_name,
+                    entry_rule=template_name,
+                    exit_rule="opposite_signal",
+                    fast_period=fast,
+                    slow_period=slow,
+                    parameters=parameters,
+                    stop_loss_pct=float(risk["stop_loss_pct"]),
+                    take_profit_pct=risk["take_profit_pct"],
+                    position_fraction=0.1,
+                    filters=["volume_positive"] if template_name == "ema_crossover" else [],
+                )
+                report = self.context.backtester.run(strategy, candles, data=state.raw_data)
+                if report.total_trades >= self.context.settings.min_backtest_trades:
+                    candidates.append(
+                        {
+                            "strategy": strategy,
+                            "trades": report.total_trades,
+                            "net_pnl": report.net_pnl,
+                            "max_drawdown": report.max_drawdown_pct,
+                        }
+                    )
         return candidates, coverage
 
 
 def _strategy_key(
     strategy: StrategyDefinition,
-) -> tuple[str, int, int, tuple[str, ...], float, float | None, float]:
+) -> tuple[str, str, int, int, str, tuple[str, ...], float, float | None, float]:
     return (
+        strategy.template_name,
         strategy.chosen_timeframe,
         strategy.fast_period,
         strategy.slow_period,
+        json.dumps(strategy.parameters, sort_keys=True),
         tuple(strategy.filters),
         strategy.stop_loss_pct,
         strategy.take_profit_pct,
@@ -247,3 +268,11 @@ def _shortlist(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
         selected.append(item)
         counts[timeframe] = counts.get(timeframe, 0) + 1
     return selected
+
+
+def _timeframe_rank(timeframe: str) -> int:
+    units = {"m": 60, "h": 3_600, "d": 86_400, "w": 604_800}
+    try:
+        return int(timeframe[:-1]) * units[timeframe[-1]]
+    except (KeyError, ValueError):
+        return 0
