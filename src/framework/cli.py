@@ -14,9 +14,13 @@ def main() -> None:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Run all configured symbols concurrently (MATS_SYMBOLS).",
+        help="Run all configured symbols (MATS_SYMBOLS); live testnet runs are sequential.",
     )
-    parser.add_argument("--workers", type=int, help="Maximum concurrent symbol runs.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="Maximum concurrent research/dry-run symbol runs; live runs are sequential.",
+    )
     parser.add_argument("--resume", nargs="?", const="", help="Resume a run (optionally by ID).")
     parser.add_argument("--timeframe", action="append", dest="timeframes")
     parser.add_argument("--account-equity", type=float)
