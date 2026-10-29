@@ -63,7 +63,7 @@ const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d
 const EMPTY_RUNS: Run[] = [];
 
 const AGENTS = [
-  { id: "data_worker", name: "Data worker", role: "Market data" },
+  { id: "data_worker", name: "Data worker", role: "Market data", persona: "/personas/data.png" },
   { id: "multi_timeframe_analyst", name: "Market analyst", role: "Multi-timeframe analysis", persona: "/personas/Analyst.png" },
   { id: "strategy_builder", name: "Strategy builder", role: "Strategy design", persona: "/personas/Strategy%20Builder.png" },
   { id: "backtest", name: "Backtester", role: "Backtesting", persona: "/personas/Backtester.png" },
@@ -71,7 +71,7 @@ const AGENTS = [
   { id: "risk_assessment", name: "Risk analyst", role: "Position sizing", persona: "/personas/RiskAnalyst.png" },
   { id: "coder", name: "Coder", role: "Execution logic", persona: "/personas/Coder.png" },
   { id: "execution", name: "Execution", role: "Signal and orders", persona: "/personas/Execution.png" },
-  { id: "monitor", name: "Monitor", role: "Position monitoring", persona: "/personas/Execution.png" },
+  { id: "monitor", name: "Monitor", role: "Position monitoring", persona: "/personas/monitor.jpg" },
 ];
 
 const TABS: Array<{ id: DashboardTab; label: string; icon: typeof Activity }> = [
