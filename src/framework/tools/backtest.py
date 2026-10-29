@@ -5,9 +5,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from framework.schemas.models import BacktestReport, OHLCVBar, StrategyDefinition, TradeRecord
+from framework.schemas.models import (
+    BacktestReport,
+    LiveSignal,
+    OHLCVBar,
+    StrategyDefinition,
+    TradeRecord,
+)
+from framework.strategies.signals import evaluate_live_signal
 from framework.tools.cost_model import CostAssumptions, reprice_trade_list
-from framework.tools.technicals import ema, rsi
 
 
 class BacktestTool:
@@ -21,6 +27,8 @@ class BacktestTool:
         self,
         strategy: StrategyDefinition,
         candles: Sequence[OHLCVBar],
+        *,
+        data: dict[str, Sequence[OHLCVBar]] | None = None,
     ) -> BacktestReport:
         if len(candles) < 2:
             raise ValueError("Backtesting requires at least two candles")
@@ -40,11 +48,27 @@ class BacktestTool:
         if not frame["timestamp"].is_monotonic_increasing:
             raise ValueError("Candles must be time-ordered")
 
-        fast = ema(frame["close"], strategy.fast_period)
-        slow = ema(frame["close"], strategy.slow_period)
-        relative_strength = rsi(frame["close"])
-        bullish_cross = (fast > slow) & (fast.shift(1) <= slow.shift(1))
-        bearish_cross = (fast < slow) & (fast.shift(1) >= slow.shift(1))
+        all_candles = data or {strategy.chosen_timeframe: candles}
+        signals = [
+            LiveSignal(
+                action="hold",
+                reason="Insufficient candles to evaluate a crossover.",
+                strength=0,
+                price=candles[0].close,
+            )
+        ]
+        for index in range(1, len(candles)):
+            as_of = candles[index].timestamp
+            available_data = {
+                timeframe: [
+                    item
+                    for item in series
+                    if timeframe == strategy.chosen_timeframe or item.timestamp <= as_of
+                ]
+                for timeframe, series in all_candles.items()
+            }
+            available_data[strategy.chosen_timeframe] = candles[: index + 1]
+            signals.append(evaluate_live_signal(strategy, available_data))
         cash = self.initial_capital
         position: dict[str, Any] | None = None
         trades: list[TradeRecord] = []
@@ -53,8 +77,25 @@ class BacktestTool:
         for index, bar in frame.iterrows():
             if position is not None:
                 reason, exit_price = self._exit_in_bar(position, bar)
-                if reason is None and index > 0 and bool(bearish_cross.iloc[index - 1]):
-                    reason, exit_price = "ema_crossover", float(bar["open"])
+                if reason is None and index > 0 and signals[index - 1].action == "short":
+                    reason, exit_price = "opposite_signal", float(bar["open"])
+                bars_held = index - position["entry_index"]
+                if (
+                    reason is None
+                    and strategy.time_stop_bars
+                    and bars_held >= strategy.time_stop_bars
+                ):
+                    reason, exit_price = "time_stop", float(bar["open"])
+                if reason is None and strategy.exit_rule == "trailing_atr":
+                    position["peak_price"] = max(position["peak_price"], float(bar["high"]))
+                    trailing_stop = (
+                        signals[index].stop
+                        if signals[index].stop is not None
+                        else position["stop_price"]
+                    )
+                    position["stop_price"] = max(position["stop_price"], trailing_stop)
+                    if float(bar["low"]) <= position["stop_price"]:
+                        reason, exit_price = "trailing_atr", position["stop_price"]
                 if reason:
                     cash, trade = self._close_position(
                         cash, position, float(exit_price), bar["timestamp"], reason
@@ -62,13 +103,7 @@ class BacktestTool:
                     trades.append(trade)
                     position = None
 
-            if (
-                position is None
-                and index > 0
-                and bool(bullish_cross.iloc[index - 1])
-                and self._filters_pass(strategy, frame, slow, relative_strength, index - 1)
-                and cash > 0
-            ):
+            if position is None and index > 0 and signals[index - 1].action == "long" and cash > 0:
                 market_price = float(bar["open"])
                 max_notional = min(
                     cash / (1 + self.costs.fee_rate + self.costs.slippage_percent),
@@ -90,6 +125,8 @@ class BacktestTool:
                         "entry_slippage": entry_slippage,
                         "quantity": quantity,
                         "stop_price": market_price * (1 - strategy.stop_loss_pct),
+                        "peak_price": market_price,
+                        "entry_index": index,
                         "take_profit_price": (
                             market_price * (1 + strategy.take_profit_pct)
                             if strategy.take_profit_pct
@@ -161,27 +198,6 @@ class BacktestTool:
                 "bars": len(frame),
             },
         )
-
-    @staticmethod
-    def _filters_pass(
-        strategy: StrategyDefinition,
-        frame: pd.DataFrame,
-        slow_ema: pd.Series,
-        relative_strength: pd.Series,
-        index: int,
-    ) -> bool:
-        for rule in strategy.filters:
-            if rule == "rsi_below_70" and (
-                pd.isna(relative_strength.iloc[index]) or relative_strength.iloc[index] >= 70
-            ):
-                return False
-            if rule == "price_above_slow_ema" and (
-                pd.isna(slow_ema.iloc[index]) or frame["close"].iloc[index] <= slow_ema.iloc[index]
-            ):
-                return False
-            if rule == "volume_positive" and frame["volume"].iloc[index] <= 0:
-                return False
-        return True
 
     def _exit_in_bar(
         self, position: dict[str, Any], bar: pd.Series
