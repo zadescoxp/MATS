@@ -70,6 +70,11 @@ def test_snapshot_decodes_run_steps_backtests_executions_and_positions(tmp_path:
         )
         database.save_critique("critique-1", "backtest-1", "APPROVE", [], "")
         database.save_execution("execution-1", "run-1", [{"id": "dry_run"}], "dry_run")
+        database.start_entry_watcher("run-1", 60)
+        database.update_entry_watcher(
+            "run-1",
+            signal={"action": "hold", "reason": "No entry yet."},
+        )
     finally:
         database.close()
 
@@ -84,6 +89,208 @@ def test_snapshot_decodes_run_steps_backtests_executions_and_positions(tmp_path:
     assert run["strategies"][0]["report"] == {"net_pnl": 12.5}
     assert run["strategies"][0]["decision"] == "APPROVE"
     assert run["executions"][0]["orders"] == [{"id": "dry_run"}]
+    assert snapshot["entry_watchers"][0]["run_id"] == "run-1"
+    assert snapshot["entry_watchers"][0]["signal"]["action"] == "hold"
+
+
+def test_dashboard_registers_entry_watcher_only_for_live_approved_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = Settings(database_path=tmp_path / "state.db", dry_run=False, kill_switch=False)
+    database = Database(settings.database_path)
+    database.create_run("run-live", "BTC/USDT", {})
+    database.close()
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    state = SimpleNamespace(
+        status="running",
+        symbol="BTC/USDT",
+        critique=SimpleNamespace(decision="APPROVE"),
+        strategy=object(),
+    )
+
+    service._maybe_start_entry_watcher("run-live", state, Event())
+
+    watcher = Database(settings.database_path)
+    try:
+        saved = watcher.entry_watchers()
+    finally:
+        watcher.close()
+    assert saved[0]["status"] == "watching"
+    assert saved[0]["interval_seconds"] == 60
+    assert threads[0].name == "mats-entry-watch-run-live"
+
+
+def test_dashboard_restores_persisted_entry_watcher(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "state.db"
+    database = Database(path)
+    database.create_run("run-watch", "BTC/USDT", {})
+    database.start_entry_watcher("run-watch", 60)
+    database.close()
+    threads = _capture_threads(monkeypatch)
+
+    service = DashboardService(Settings(database_path=path))
+
+    assert threads[0].name == "mats-entry-watch-run-watc"
+    assert service.state()["active_run_ids"] == ["run-watch"]
+
+
+def test_dashboard_resumes_stopped_entry_watcher(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "state.db"
+    database = Database(path)
+    database.create_run("run-watch", "BTC/USDT", {})
+    database.start_entry_watcher("run-watch", 60)
+    database.update_entry_watcher("run-watch", status="stopped")
+    database.close()
+    service = DashboardService(Settings(database_path=path))
+    threads = _capture_threads(monkeypatch)
+
+    response = service.resume("run-watch")
+
+    assert response["message"] == "Entry watcher resume requested."
+    assert threads[0].name == "mats-entry-watch-run-watc"
+
+
+def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "state.db"
+    settings = Settings(database_path=path, dry_run=False, kill_switch=False)
+    service = DashboardService(settings)
+    database = Database(path)
+    database.create_run("run-watch", "BTC/USDT", {})
+    database.start_entry_watcher("run-watch", 60)
+    database.close()
+    stop_event = Event()
+    calls: list[str] = []
+
+    class WatchState:
+        critique = SimpleNamespace(decision="APPROVE")
+        strategy = object()
+
+        def model_copy(self, update):
+            copied = WatchState()
+            for key, value in self.__dict__.items():
+                setattr(copied, key, value)
+            for key, value in update.items():
+                setattr(copied, key, value)
+            return copied
+
+    state = WatchState()
+
+    class FakeDatabase:
+        def latest_checkpoint(self, _run_id):
+            return {}
+
+        def update_entry_watcher(self, *_args, **_kwargs):
+            pass
+
+        def open_positions(self):
+            return []
+
+        def log_event(self, *_args, **_kwargs):
+            pass
+
+    class FakeWorker:
+        def __init__(self, **_kwargs):
+            self.database = FakeDatabase()
+            self.context = object()
+
+        def close(self):
+            pass
+
+    class FakeSignal:
+        action = "long"
+
+        def model_dump(self, **_kwargs):
+            return {"action": self.action, "reason": "Entry condition met."}
+
+    class FakeRiskAssessment:
+        def __init__(self, _context):
+            pass
+
+        def __call__(self, _state):
+            calls.append("risk")
+            return {
+                "risk_assessment": SimpleNamespace(approved=True),
+                "live_signal": FakeSignal(),
+            }
+
+    class FakeExecution:
+        def __init__(self, _context):
+            pass
+
+        def __call__(self, _state):
+            calls.append("execution")
+            stop_event.set()
+            return {}
+
+    monkeypatch.setattr("framework.web.TradingFramework", FakeWorker)
+    monkeypatch.setattr(
+        "framework.web.GraphState.model_validate", classmethod(lambda _cls, _value: state)
+    )
+    monkeypatch.setattr("framework.web.RiskAssessmentNode", FakeRiskAssessment)
+    monkeypatch.setattr("framework.web.ExecutionNode", FakeExecution)
+
+    service._watch_entries("run-watch", stop_event, 60)
+
+    assert calls == ["risk", "execution"]
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "kill_switch"),
+    [(True, False), (False, True)],
+)
+def test_dashboard_does_not_start_entry_watcher_with_safety_switches_enabled(
+    tmp_path: Path, monkeypatch, dry_run: bool, kill_switch: bool
+) -> None:
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=dry_run,
+        kill_switch=kill_switch,
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    state = SimpleNamespace(
+        status="completed",
+        critique=SimpleNamespace(decision="APPROVE"),
+        strategy=object(),
+    )
+
+    service._maybe_start_entry_watcher("run-live", state, Event())
+
+    assert threads == []
+    assert service.state()["entry_watchers"] == []
+
+
+def test_dashboard_market_data_uses_backend_market_adapter(tmp_path: Path, monkeypatch) -> None:
+    candle = SimpleNamespace(
+        model_dump=lambda **_kwargs: {
+            "timestamp": "2026-10-30T00:00:00Z",
+            "open": 1,
+            "high": 2,
+            "low": 1,
+            "close": 2,
+            "volume": 3,
+        }
+    )
+
+    class FakeMarketDataTools:
+        def __init__(self, _settings):
+            pass
+
+        def fetch_ohlcv(self, symbol, timeframe, limit):
+            assert (symbol, timeframe, limit) == ("BTC/USDT", "1m", 300)
+            return SimpleNamespace(symbol=symbol, timeframe=timeframe, candles=[candle])
+
+    monkeypatch.setattr("framework.web.MarketDataTools", FakeMarketDataTools)
+    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
+
+    snapshot = service.market_data("BTC/USDT", "1m")
+
+    assert snapshot["candles"][0]["close"] == 2
+    with pytest.raises(ValueError, match="pairs"):
+        service.market_data("invalid", "1m")
 
 
 def test_database_adds_tool_call_column_to_existing_agent_steps(tmp_path: Path) -> None:
@@ -221,7 +428,7 @@ def test_stop_enables_kill_switch_and_sets_stop_event(tmp_path: Path) -> None:
 
     assert event.is_set()
     assert settings.kill_switch is True
-    assert "next agent boundary" in response["message"]
+    assert "kill switch is now enabled" in response["message"]
 
 
 def test_stop_all_requests_every_active_run(tmp_path: Path) -> None:
@@ -333,6 +540,53 @@ def test_local_http_api_exposes_state_and_confirmed_setting_action(tmp_path: Pat
         with pytest.raises(HTTPError) as error:
             urlopen(blocked_request)
         assert error.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_market_http_endpoint_returns_backend_candles_and_validates_query(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FakeCandle:
+        def model_dump(self, **_kwargs):
+            return {
+                "timestamp": "2026-10-30T00:00:00Z",
+                "open": 1,
+                "high": 2,
+                "low": 1,
+                "close": 2,
+                "volume": 3,
+            }
+
+    class FakeMarketDataTools:
+        def __init__(self, _settings):
+            pass
+
+        def fetch_ohlcv(self, symbol, timeframe, limit):
+            return SimpleNamespace(symbol=symbol, timeframe=timeframe, candles=[FakeCandle()])
+
+    monkeypatch.setattr("framework.web.MarketDataTools", FakeMarketDataTools)
+    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
+
+    class BoundHandler(DashboardHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, service=service, **kwargs)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BoundHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urlopen(f"{base_url}/api/market?symbol=BTC%2FUSDT&timeframe=1m") as response:
+            snapshot = json.load(response)
+        assert snapshot["symbol"] == "BTC/USDT"
+        assert snapshot["candles"][0]["close"] == 2
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(f"{base_url}/api/market?symbol=invalid&timeframe=1m")
+        assert error.value.code == 400
     finally:
         server.shutdown()
         server.server_close()
