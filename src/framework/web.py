@@ -1,0 +1,580 @@
+import hashlib
+import json
+import math
+import re
+import sqlite3
+import threading
+import time
+import uuid
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+from framework.config.settings import Settings, get_settings
+from framework.core.graph import TradingFramework
+from framework.persistence.database import Database
+
+_ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
+_ALLOWED_TIMEFRAMES = {
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "12h",
+    "1d",
+    "1w",
+}
+_SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
+
+
+class DashboardService:
+    def __init__(self, settings: Settings | None = None):
+        self.settings = settings or get_settings()
+        self._lock = threading.RLock()
+        self._stop_events: dict[str, threading.Event] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._operations: dict[str, dict[str, str]] = {}
+
+    def state(self) -> dict[str, Any]:
+        data = _read_snapshot(self.settings.database_path)
+        with self._lock:
+            data["settings"] = {
+                "dry_run": self.settings.dry_run,
+                "kill_switch": self.settings.kill_switch,
+                "symbols": self.settings.symbols,
+                "timeframes": self.settings.timeframes,
+            }
+            data["operations"] = list(self._operations.values())
+            data["active_run_ids"] = [
+                run_id for run_id, thread in self._threads.items() if thread.is_alive()
+            ]
+        return data
+
+    def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        symbols = _symbols(payload.get("symbols"), self.settings.symbols)
+        timeframes = _timeframes(payload.get("timeframes"), self.settings.timeframes)
+        account_equity = payload.get("account_equity")
+        if account_equity is not None and (
+            isinstance(account_equity, bool)
+            or not isinstance(account_equity, int | float)
+            or not math.isfinite(account_equity)
+            or account_equity <= 0
+        ):
+            raise ValueError("account_equity must be a positive finite number.")
+        dry_run_override = payload.get("dry_run")
+        if dry_run_override is not None and not isinstance(dry_run_override, bool):
+            raise ValueError("dry_run must be a boolean.")
+
+        with self._lock:
+            effective_dry_run = (
+                self.settings.dry_run if dry_run_override is None else dry_run_override
+            )
+            if not effective_dry_run and not self.settings.kill_switch and len(symbols) > 1:
+                raise ValueError("Live multi-symbol runs must be started one symbol at a time.")
+            if not effective_dry_run and not self.settings.kill_switch:
+                active = [
+                    run_id
+                    for run_id, event in self._stop_events.items()
+                    if not event.is_set() and self._run_is_active(run_id)
+                ]
+                if active:
+                    raise ValueError("A live run is already active.")
+
+            if dry_run_override is not None:
+                self.settings.dry_run = dry_run_override
+            run_ids = [str(uuid.uuid4()) for _ in symbols]
+            config: dict[str, Any] = {"timeframes": timeframes}
+            if account_equity is not None:
+                config["account_equity"] = float(account_equity)
+            for run_id, symbol in zip(run_ids, symbols, strict=True):
+                stop_event = threading.Event()
+                self._stop_events[run_id] = stop_event
+                thread = threading.Thread(
+                    target=self._run,
+                    args=(run_id, symbol, config, stop_event),
+                    name=f"mats-run-{run_id[:8]}",
+                    daemon=True,
+                )
+                self._threads[run_id] = thread
+                thread.start()
+        return {"run_ids": run_ids}
+
+    def stop(self, run_id: str) -> dict[str, str]:
+        with self._lock:
+            event = self._stop_events.get(run_id)
+            if event is None or not self._run_is_active(run_id):
+                raise ValueError(f"No active dashboard run found for run_id={run_id!r}.")
+            self.settings.kill_switch = True
+            event.set()
+        return {
+            "message": "Stop requested. The run will stop at the next agent boundary; "
+            "the kill switch is now enabled."
+        }
+
+    def stop_all(self) -> dict[str, Any]:
+        with self._lock:
+            active_ids = [run_id for run_id, thread in self._threads.items() if thread.is_alive()]
+            if not active_ids:
+                raise ValueError("No active dashboard runs found.")
+            self.settings.kill_switch = True
+            for run_id in active_ids:
+                event = self._stop_events.get(run_id)
+                if event:
+                    event.set()
+        return {
+            "run_ids": active_ids,
+            "message": f"Stop requested for {len(active_ids)} run(s); kill switch enabled.",
+        }
+
+    def resume(self, run_id: str | None) -> dict[str, str]:
+        database = Database(self.settings.database_path)
+        try:
+            row = database.resumable_run(run_id)
+            if row is None:
+                raise ValueError(f"No incomplete run found for run_id={run_id!r}.")
+            selected_id = str(row["run_id"])
+            with self._lock:
+                if self._run_is_active(selected_id):
+                    raise ValueError(f"Run {selected_id} is already active.")
+                active_live_run = (
+                    not self.settings.dry_run
+                    and not self.settings.kill_switch
+                    and any(
+                        run_id != selected_id and thread.is_alive()
+                        for run_id, thread in self._threads.items()
+                    )
+                )
+                if active_live_run:
+                    raise ValueError("A live run is already active.")
+                stop_event = threading.Event()
+                self._stop_events[selected_id] = stop_event
+                thread = threading.Thread(
+                    target=self._resume,
+                    args=(selected_id, stop_event),
+                    name=f"mats-resume-{selected_id[:8]}",
+                    daemon=True,
+                )
+                self._threads[selected_id] = thread
+                thread.start()
+            return {"run_id": selected_id, "message": "Run resume requested."}
+        finally:
+            database.close()
+
+    def resume_all(self) -> dict[str, Any]:
+        snapshot = self.state()
+        active = set(snapshot["active_run_ids"])
+        candidates = [
+            run["run_id"]
+            for run in snapshot["runs"]
+            if run["status"] in {"running", "failed", "stopped"} and run["run_id"] not in active
+        ]
+        if not candidates:
+            raise ValueError("No inactive incomplete runs found.")
+        if not self.settings.dry_run and not self.settings.kill_switch:
+            if active or len(candidates) > 1:
+                raise ValueError("Resume live runs one at a time to preserve portfolio safety.")
+        resumed = [self.resume(run_id) for run_id in candidates]
+        return {
+            "run_ids": [item["run_id"] for item in resumed],
+            "message": f"Resume requested for {len(resumed)} run(s).",
+        }
+
+    def toggle(self, name: str, enabled: Any, confirmed: Any) -> dict[str, Any]:
+        if name not in {"dry_run", "kill_switch"}:
+            raise ValueError(f"Unsupported setting: {name!r}.")
+        if enabled is False and confirmed is not True:
+            raise ValueError(f"Confirmation is required to disable {name.replace('_', ' ')}.")
+        with self._lock:
+            self._set_toggle(name, enabled)
+        return {"settings": {name: getattr(self.settings, name)}}
+
+    def monitor(self, run_ids: list[str] | None = None) -> dict[str, str]:
+        operation_id = str(uuid.uuid4())
+        self._start_operation(operation_id, "monitor")
+
+        def execute() -> None:
+            worker = None
+            try:
+                worker = TradingFramework(settings=self.settings)
+                if run_ids:
+                    results = worker.position_monitor.monitor_positions(run_ids)
+                else:
+                    results = worker.monitor_open_positions()
+                worker.database.log_event(
+                    None,
+                    "monitor_cycle_completed",
+                    f"Monitor cycle completed ({len(results)} positions).",
+                )
+                self._finish_operation(operation_id, "completed")
+            except Exception as exc:
+                if worker:
+                    worker.database.log_event(None, "monitor_cycle_failed", str(exc), error=exc)
+                self._finish_operation(operation_id, "failed", str(exc))
+            finally:
+                if worker:
+                    worker.close()
+
+        threading.Thread(
+            target=execute, name=f"mats-monitor-{operation_id[:8]}", daemon=True
+        ).start()
+        return {"operation_id": operation_id, "message": "Monitor cycle started."}
+
+    def flatten(self, run_ids: list[str], confirmed: Any) -> dict[str, Any]:
+        if confirmed is not True:
+            raise ValueError("Confirmation is required before flattening positions.")
+        worker = TradingFramework(settings=self.settings)
+        try:
+            results = worker.position_monitor.flatten(run_ids)
+            return {"results": results}
+        finally:
+            worker.close()
+
+    def _run(
+        self,
+        run_id: str,
+        symbol: str,
+        config: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> None:
+        worker = None
+        try:
+            worker = TradingFramework(settings=self.settings, stop_event=stop_event)
+            worker.run(symbol, config, run_id=run_id)
+        except Exception as exc:
+            if worker:
+                worker.database.log_event(run_id, "dashboard_run_failed", str(exc), error=exc)
+            else:
+                database = Database(self.settings.database_path)
+                try:
+                    database.log_event(run_id, "dashboard_run_failed", str(exc), error=exc)
+                    database.update_run_status(run_id, "failed")
+                finally:
+                    database.close()
+        finally:
+            if worker:
+                worker.close()
+
+    def _resume(self, run_id: str, stop_event: threading.Event) -> None:
+        worker = None
+        try:
+            worker = TradingFramework(settings=self.settings, stop_event=stop_event)
+            worker.resume(run_id)
+        except Exception as exc:
+            if worker:
+                worker.database.log_event(run_id, "dashboard_resume_failed", str(exc), error=exc)
+                worker.database.update_run_status(run_id, "failed")
+        finally:
+            if worker:
+                worker.close()
+
+    def _run_is_active(self, run_id: str) -> bool:
+        thread = self._threads.get(run_id)
+        return bool(thread and thread.is_alive())
+
+    def _set_toggle(self, name: str, enabled: Any) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError(f"{name} must be a boolean.")
+        setattr(self.settings, name, enabled)
+
+    def _start_operation(self, operation_id: str, name: str) -> None:
+        with self._lock:
+            self._operations[operation_id] = {
+                "operation_id": operation_id,
+                "name": name,
+                "status": "running",
+            }
+
+    def _finish_operation(self, operation_id: str, status: str, error: str | None = None) -> None:
+        with self._lock:
+            operation = self._operations[operation_id]
+            operation["status"] = status
+            if error:
+                operation["error"] = error
+
+
+def _read_snapshot(database_path: Path) -> dict[str, Any]:
+    empty: dict[str, Any] = {
+        "runs": [],
+        "positions": [],
+        "system_events": [],
+    }
+    if not database_path.exists():
+        return empty
+    connection = sqlite3.connect(database_path, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        runs = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT run_id, symbol, status, started_at, finished_at, config_snapshot
+               FROM runs ORDER BY started_at DESC"""
+            )
+        ]
+        steps = []
+        for row in connection.execute(
+            """SELECT step_id, run_id, agent_name, input_json, output_json, tool_calls_json,
+                          status, error, tokens_used, cost, started_at, finished_at
+                   FROM agent_steps ORDER BY started_at"""
+        ):
+            step = dict(row)
+            step["input"] = json.loads(step.pop("input_json"))
+            output = step.pop("output_json")
+            step["output"] = json.loads(output) if output else None
+            step["tool_calls"] = json.loads(step.pop("tool_calls_json"))
+            steps.append(step)
+        strategies = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT s.strategy_id, s.run_id, s.version, s.definition_json, b.backtest_id,
+                          b.report_json, b.equity_curve_json, b.costs_json, c.decision,
+                          c.issues_json, c.revision_instructions
+                   FROM strategies s
+                   LEFT JOIN backtests b ON b.strategy_id = s.strategy_id
+                   LEFT JOIN critiques c ON c.backtest_id = b.backtest_id
+                   ORDER BY s.run_id, s.version"""
+            )
+        ]
+        for item in strategies:
+            for key, source in (
+                ("strategy", "definition_json"),
+                ("report", "report_json"),
+                ("equity_curve", "equity_curve_json"),
+                ("costs", "costs_json"),
+                ("issues", "issues_json"),
+            ):
+                item[key] = json.loads(item[source]) if item.get(source) else None
+        executions = [
+            {**dict(row), "orders": json.loads(row["orders_json"])}
+            for row in connection.execute(
+                "SELECT execution_id, run_id, orders_json, status FROM executions"
+            )
+        ]
+        positions = [
+            {
+                **dict(row),
+                "strategy": json.loads(row["strategy_json"]),
+                "events": json.loads(row["events_json"]),
+            }
+            for row in connection.execute("SELECT * FROM live_positions ORDER BY opened_at DESC")
+        ]
+        system_events = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT event_id, run_id, type, message, traceback, timestamp
+                   FROM system_events ORDER BY timestamp DESC LIMIT 200"""
+            )
+        ]
+        return {
+            "runs": [
+                {
+                    **{key: value for key, value in run.items() if key != "config_snapshot"},
+                    "config": json.loads(run["config_snapshot"]),
+                    "steps": [step for step in steps if step["run_id"] == run["run_id"]],
+                    "strategies": [item for item in strategies if item["run_id"] == run["run_id"]],
+                    "executions": [item for item in executions if item["run_id"] == run["run_id"]],
+                    "events": [item for item in system_events if item["run_id"] == run["run_id"]],
+                }
+                for run in runs
+            ],
+            "positions": positions,
+            "system_events": system_events,
+        }
+    finally:
+        connection.close()
+
+
+def _symbols(value: Any, defaults: list[str]) -> list[str]:
+    symbols = defaults if value is None else value
+    if (
+        not isinstance(symbols, list)
+        or not symbols
+        or any(not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol) for symbol in symbols)
+    ):
+        raise ValueError("symbols must be a non-empty list of pairs like BTC/USDT.")
+    if len(set(symbols)) != len(symbols):
+        raise ValueError("symbols must be unique.")
+    return symbols
+
+
+def _timeframes(value: Any, defaults: list[str]) -> list[str]:
+    timeframes = defaults if value is None else value
+    if (
+        not isinstance(timeframes, list)
+        or not timeframes
+        or any(item not in _ALLOWED_TIMEFRAMES for item in timeframes)
+    ):
+        raise ValueError("timeframes contains an unsupported timeframe.")
+    return timeframes
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    service: DashboardService
+
+    def __init__(self, *args: Any, service: DashboardService, **kwargs: Any):
+        self.service = service
+        super().__init__(*args, **kwargs)
+
+    def do_OPTIONS(self) -> None:
+        if not self._origin_allowed():
+            self._json_response(HTTPStatus.FORBIDDEN, {"error": "Origin not allowed."})
+            return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self._cors_headers()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        if not self._request_allowed():
+            return
+        route = urlsplit(self.path).path
+        try:
+            if route == "/api/state":
+                self._json_response(HTTPStatus.OK, self.service.state())
+            elif route == "/api/events":
+                self._events()
+            else:
+                self._json_response(HTTPStatus.NOT_FOUND, {"error": "Not found."})
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def do_POST(self) -> None:
+        if not self._request_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 64_000:
+                raise ValueError("Request body must be between 1 and 64000 bytes.")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("Request body must be a JSON object.")
+            response = self._dispatch(urlsplit(self.path).path, payload)
+            self._json_response(HTTPStatus.ACCEPTED, response)
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except (OSError, RuntimeError) as exc:
+            self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def _dispatch(self, route: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if route != "/api/actions":
+            raise KeyError("Not found.")
+        action = payload.get("action")
+        if action == "start":
+            return self.service.start(payload)
+        if action == "stop":
+            return self.service.stop(_required_string(payload, "run_id"))
+        if action == "stop_all":
+            return self.service.stop_all()
+        if action == "resume":
+            run_id = payload.get("run_id")
+            if run_id is not None and not isinstance(run_id, str):
+                raise ValueError("run_id must be a string.")
+            return self.service.resume(run_id)
+        if action == "resume_all":
+            return self.service.resume_all()
+        if action == "monitor":
+            run_ids = payload.get("run_ids")
+            if run_ids is not None and (
+                not isinstance(run_ids, list) or any(not isinstance(item, str) for item in run_ids)
+            ):
+                raise ValueError("run_ids must be a list of strings.")
+            return self.service.monitor(run_ids)
+        if action == "flatten":
+            run_ids = payload.get("run_ids")
+            if not isinstance(run_ids, list) or any(not isinstance(item, str) for item in run_ids):
+                raise ValueError("run_ids must be a list of strings.")
+            return self.service.flatten(run_ids, payload.get("confirmed"))
+        if action == "toggle":
+            return self.service.toggle(
+                _required_string(payload, "name"), payload.get("enabled"), payload.get("confirmed")
+            )
+        raise ValueError(f"Unsupported action: {action!r}.")
+
+    def _events(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self._cors_headers()
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        previous = ""
+        try:
+            while True:
+                data = self.service.state()
+                serialized = json.dumps(data, separators=(",", ":"), sort_keys=True)
+                digest = hashlib.sha256(serialized.encode()).hexdigest()
+                if digest != previous:
+                    self.wfile.write(f"data: {serialized}\n\n".encode())
+                    self.wfile.flush()
+                    previous = digest
+                else:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                time.sleep(2)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _request_allowed(self) -> bool:
+        host = self.headers.get("Host", "").split(":", 1)[0].strip("[]").lower()
+        if host not in {"localhost", "127.0.0.1"}:
+            self._json_response(HTTPStatus.FORBIDDEN, {"error": "Localhost requests only."})
+            return False
+        if not self._origin_allowed():
+            self._json_response(HTTPStatus.FORBIDDEN, {"error": "Origin not allowed."})
+            return False
+        return True
+
+    def _origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        return origin is None or origin in _ALLOWED_ORIGINS
+
+    def _cors_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin in _ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
+    def _json_response(self, status: HTTPStatus, body: dict[str, Any]) -> None:
+        encoded = json.dumps(body, separators=(",", ":")).encode()
+        self.send_response(status)
+        self._cors_headers()
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+def _required_string(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty string.")
+    return value
+
+
+def main() -> None:
+    service = DashboardService()
+
+    class BoundDashboardHandler(DashboardHandler):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, service=service, **kwargs)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 8765), BoundDashboardHandler)
+    server.daemon_threads = True
+    print("MATS dashboard API listening on http://127.0.0.1:8765")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
