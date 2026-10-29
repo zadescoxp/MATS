@@ -27,7 +27,8 @@ class MultiTimeframeAnalystNode:
                 "content": (
                     "Analyze all supplied timeframes together. Assess alignment, divergence, "
                     "regime, momentum, volatility, and key levels. Do not propose a strategy. "
-                    "Call submit_findings exactly once with the complete structured finding."
+                    "Include a concise evidence-based rationale when possible. Call "
+                    "submit_findings exactly once with the complete structured finding."
                 ),
             },
             {
