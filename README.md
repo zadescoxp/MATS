@@ -82,6 +82,12 @@ console requires confirmation. Run stops take effect at the next agent boundary,
 enable the kill switch. Position flattening is routed through the framework, requires dry-run
 to be off, and remains subject to the Bybit testnet-only execution guard.
 
+The console starts each selected symbol as an independent run and shows their live progress
+together. For multi-symbol live testnet batches, a supplied total account-equity value is
+split evenly across the selected symbols; if omitted, available quote-currency balances are
+fetched once and split among the selected pairs using each quote currency. Only one live
+batch can be active at a time. The CLI retains its separate sequential live-run behavior.
+
 For static inspection without the API, [`frontend/dashboard.html`](./frontend/dashboard.html)
 remains available: open it in a browser and choose a SQLite database file. That page reads
 the selected file locally in the browser; its SQLite reader is loaded from a CDN.
