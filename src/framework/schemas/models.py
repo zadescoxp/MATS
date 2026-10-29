@@ -92,9 +92,9 @@ class StrategyDefinition(BaseModel):
         "bollinger_squeeze",
         "htf_trend_ltf_timing",
     ] = "ema_crossover"
-    exit_rule: Literal["opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"] = (
-        "opposite_signal"
-    )
+    exit_rule: Literal[
+        "ema_crossover", "opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"
+    ] = "opposite_signal"
     fast_period: int = Field(default=12, ge=2)
     slow_period: int = Field(default=26, ge=3)
     stop_loss_pct: float = Field(default=0.02, gt=0, le=0.5)
@@ -169,6 +169,7 @@ class Critique(BaseModel):
 
 class RiskAssessment(BaseModel):
     approved: bool
+    side: Literal["long", "short"] = "long"
     position_size: float = Field(ge=0)
     position_notional: float = Field(ge=0)
     risk_amount: float = Field(ge=0)
@@ -185,6 +186,8 @@ class ExecutionReport(BaseModel):
     fills: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     dry_run: bool
+    live_signal: LiveSignal | None = None
+    execution_result: str | None = None
 
 
 class OrderSnapshot(BaseModel):
