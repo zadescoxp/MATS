@@ -196,7 +196,21 @@ function toggleSelection(
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <Badge className={statusStyle(status)}>{status.replaceAll("_", " ")}</Badge>;
+  const normalized = status.toLowerCase();
+  const dot =
+    ["completed", "filled", "approve", "approved", "open"].includes(normalized)
+      ? "bg-positive"
+      : ["failed", "rejected", "reject", "error"].includes(normalized)
+        ? "bg-negative"
+        : ["running", "dry_run"].includes(normalized)
+          ? "bg-accent"
+          : "bg-muted-foreground";
+  return (
+    <Badge className={cn("border-transparent bg-foreground/[0.04] px-2.5 py-1 text-[10px] normal-case tracking-normal", statusStyle(status))}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", dot, normalized === "running" && "agent-live")} />
+      {status.replaceAll("_", " ")}
+    </Badge>
+  );
 }
 
 function CoinMark({ symbol, small = false }: { symbol: string; small?: boolean }) {
@@ -241,7 +255,7 @@ function RawSection({
         </span>
         <ChevronRight className="h-4 w-4 text-muted transition-transform group-open:rotate-90" />
       </summary>
-      <pre className="max-h-96 overflow-auto border-t border-border px-4 py-3 text-[11px] leading-5 text-muted">
+      <pre className="max-h-96 overflow-auto border-t border-border px-4 py-3 font-mono text-[11px] leading-5 text-muted">
         {JSON.stringify(value ?? null, null, 2)}
       </pre>
     </details>
@@ -270,7 +284,7 @@ function Metric({
   tone?: "positive" | "negative";
 }) {
   return (
-    <div className="rounded-xl border border-border bg-background/70 p-4">
+    <div className="rounded-xl border border-border bg-surface p-4">
       <p className="text-[11px] text-muted">{label}</p>
       <p className={cn("mt-2 text-lg font-semibold tabular-nums", tone === "positive" ? "text-positive" : tone === "negative" ? "text-negative" : "")}>{value}</p>
     </div>
@@ -522,11 +536,13 @@ export function Dashboard() {
       );
     }
     return (
-      <div className="space-y-5">
-        <div className="grid gap-3 xl:grid-cols-3">
-          {AGENTS.map((agent, index) => {
+      <div className="space-y-4">
+        <div className="relative space-y-2 before:absolute before:bottom-8 before:left-[22px] before:top-8 before:w-px before:bg-border">
+          {AGENTS.map((agent) => {
             const status = agentStatus(selectedRun, agent.id, data?.operations ?? []);
             const step = [...selectedRun.steps].reverse().find((item) => item.agent_name === agent.id);
+            const isSelected = selectedAgent === agent.id;
+            const isRunning = status === "running";
             return (
               <div className="relative" key={agent.id}>
                 <button
@@ -536,33 +552,30 @@ export function Dashboard() {
                     setTab("agent");
                   }}
                   className={cn(
-                    "w-full rounded-2xl border bg-card p-4 text-left transition-colors hover:border-accent/50",
-                    selectedAgent === agent.id ? "border-accent" : "border-border",
+                    "relative w-full rounded-xl border border-l-2 bg-card px-4 py-3 text-left transition-colors hover:bg-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                    isSelected || isRunning ? "border-l-accent bg-surface" : "border-l-transparent border-border",
                   )}
                   aria-label={`Open ${agent.name} details`}
                 >
-                  <div className="flex items-start gap-3">
-                    <PersonaAvatar name={agent.name} src={agent.persona} size={44} />
+                  <div className="flex w-full items-center gap-3">
+                    <span className="relative z-10 grid h-11 w-11 shrink-0 place-items-center rounded-full bg-card">
+                      <PersonaAvatar name={agent.name} src={agent.persona} size={44} />
+                    </span>
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-xs font-semibold">{agent.name}</p>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <p className="text-sm font-semibold">{agent.name}</p>
                         <StatusBadge status={status} />
                       </div>
-                      <p className="mt-2 line-clamp-2 min-h-8 text-[11px] leading-4 text-muted">
-                        {agent.id === "monitor"
-                          ? "Position monitoring runs on request."
-                          : agentLastAction(selectedRun, agent.id)}
+                      <p className="mt-1 truncate text-xs leading-5 text-muted">
+                        {agent.id === "monitor" ? "Position monitoring runs on request." : agentLastAction(selectedRun, agent.id)}
                       </p>
                     </div>
-                  </div>
-                  <div className="mt-4 flex items-center justify-between border-t border-border pt-3 text-[10px] text-muted">
-                    <span>{step ? `${step.tokens_used.toLocaleString()} tokens` : "No tokens recorded"}</span>
-                    <span>{step ? formatDuration(step.started_at, step.finished_at) : "—"}</span>
+                    <div className="hidden shrink-0 text-right sm:block">
+                      <p className="font-mono text-[11px] text-muted">{step ? `${step.tokens_used.toLocaleString()} tokens` : "—"}</p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">{step ? formatDuration(step.started_at, step.finished_at) : "No activity"}</p>
+                    </div>
                   </div>
                 </button>
-                {index < AGENTS.length - 1 && (
-                  <ArrowRight className="absolute -right-3 top-1/2 z-10 hidden h-4 w-4 -translate-y-1/2 text-muted xl:block" />
-                )}
               </div>
             );
           })}
@@ -779,11 +792,11 @@ export function Dashboard() {
             <div className="mt-5 h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={curve} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="#1f1f1f" vertical={false} />
-                  <XAxis dataKey="index" tick={{ fill: "#a1a1aa", fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: "#a1a1aa", fontSize: 10 }} axisLine={false} tickLine={false} width={66} tickFormatter={(value: number) => money(value, 0)} />
+                  <CartesianGrid stroke="#27272a" vertical={false} />
+                  <XAxis dataKey="index" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} width={66} tickFormatter={(value: number) => money(value, 0)} />
                   <Tooltip
-                    contentStyle={{ background: "#111111", border: "1px solid #1f1f1f", borderRadius: 12, color: "#f5f5f5", fontSize: 12 }}
+                    contentStyle={{ background: "#141418", border: "1px solid #27272a", borderRadius: 12, color: "#fafafa", fontSize: 12 }}
                     formatter={(value: number) => money(value)}
                     labelFormatter={(value) => curve[Number(value) - 1]?.label ?? `Point ${value}`}
                   />
@@ -1030,7 +1043,7 @@ export function Dashboard() {
       return <EmptyState title="No system events" body="Errors, retries, monitor actions, and run-level system events will appear here." />;
     }
     return (
-      <div className="space-y-3">
+      <div className="relative space-y-3 before:absolute before:bottom-4 before:left-[15px] before:top-4 before:w-px before:bg-border">
         {allEvents.map((event) => <EventCard key={event.event_id} event={event} />)}
       </div>
     );
@@ -1040,8 +1053,8 @@ export function Dashboard() {
     <div className="min-h-screen bg-background">
       <div className="flex min-h-screen">
         <aside className={cn(
-          "sticky top-0 hidden h-screen shrink-0 self-start flex-col overflow-y-auto border-r border-border bg-card/60 p-4 transition-[width] lg:flex",
-          sidebarCollapsed ? "w-[76px] items-center" : "w-[260px]",
+          "sticky top-0 hidden h-screen shrink-0 self-start flex-col overflow-y-auto border-r border-border bg-surface p-4 transition-[width] lg:flex",
+          sidebarCollapsed ? "w-[76px] items-center" : "w-[272px]",
         )}>
           <div className="flex w-full items-center justify-between gap-2 px-2 py-2">
             <div className="flex min-w-0 items-center gap-3">
@@ -1049,7 +1062,7 @@ export function Dashboard() {
               <Activity className="h-4 w-4" />
             </div>
             {!sidebarCollapsed && <div>
-              <p className="text-sm font-bold tracking-wide">MATS</p>
+              <p className="text-sm font-semibold tracking-wide">MATS</p>
               <p className="text-[10px] text-muted">Research console</p>
             </div>}
             </div>
@@ -1162,8 +1175,8 @@ export function Dashboard() {
           )}
         </aside>
         <main className="min-w-0 flex-1">
-          <header className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 py-3 backdrop-blur md:px-8">
-            <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
+          <header className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 py-3 backdrop-blur md:px-6">
+            <div className="mx-auto flex max-w-[1360px] flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="grid h-9 w-9 place-items-center rounded-xl border border-border bg-card lg:hidden">
                   <Activity className="h-4 w-4 text-accent" />
@@ -1202,11 +1215,11 @@ export function Dashboard() {
               </div>
             </div>
           </header>
-          <div className="mx-auto max-w-[1500px] space-y-5 p-4 md:p-8">
+          <div className="mx-auto max-w-[1360px] space-y-4 p-4 md:p-6">
             <section className="flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-accent">Trading research / live state</p>
-                <h1 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">Run observability</h1>
+                <h1 className="mt-2 text-xl font-semibold tracking-tight">Run observability</h1>
                 <p className="mt-2 max-w-2xl text-xs leading-5 text-muted">
                   Inspect each framework step, its saved evidence, modeled strategy results, and guarded testnet execution state.
                 </p>
@@ -1251,7 +1264,7 @@ export function Dashboard() {
 
             {data && (
               <>
-                <section className="rounded-2xl border border-border bg-card p-3 lg:hidden">
+                <section className="rounded-xl border border-border bg-card p-3 lg:hidden">
                   <label className="block text-[10px] text-muted" htmlFor="mobile-run-select">Current run</label>
                   <select
                     id="mobile-run-select"
@@ -1281,13 +1294,13 @@ export function Dashboard() {
                   </div>
                 </section>
                 <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <SummaryCard label="Open positions" value={String(openPositions.length)} note="Persisted live monitor state" icon={<Wallet className="h-4 w-4" />} />
-                  <SummaryCard label="Selected run tokens" value={tokensForRun.toLocaleString()} note="Recorded agent-step usage" icon={<Zap className="h-4 w-4" />} />
-                  <SummaryCard label="Run status" value={selectedRun?.status ?? "idle"} note={selectedRun ? `Started ${dateLabel(selectedRun.started_at)}` : "No run selected"} icon={<Activity className="h-4 w-4" />} />
-                  <SummaryCard label="Latest net backtest" value={money(activeAttempt?.report?.net_pnl)} note={activeAttempt ? `Version ${activeAttempt.version} · after modeled costs` : "No strategy attempt"} icon={<BarChart3 className="h-4 w-4" />} tone={numberValue(activeAttempt?.report?.net_pnl) >= 0 ? "positive" : "negative"} />
+                  <SummaryCard label="Open positions" value={String(openPositions.length)} note="Monitor state" icon={<Wallet className="h-4 w-4" />} />
+                  <SummaryCard label="Run tokens" value={tokensForRun.toLocaleString()} note="Recorded usage" icon={<Zap className="h-4 w-4" />} />
+                  <SummaryCard label="Run status" value={selectedRun?.status ?? "idle"} note={selectedRun ? dateLabel(selectedRun.started_at) : "No run selected"} icon={<Activity className="h-4 w-4" />} />
+                  <SummaryCard label="Net backtest" value={money(activeAttempt?.report?.net_pnl)} note={activeAttempt ? `Version ${activeAttempt.version}` : "No strategy attempt"} icon={<BarChart3 className="h-4 w-4" />} tone={numberValue(activeAttempt?.report?.net_pnl) >= 0 ? "positive" : "negative"} />
                 </section>
 
-                <nav className="flex gap-1 overflow-x-auto rounded-2xl border border-border bg-card p-1" aria-label="Dashboard views">
+                <nav className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1" aria-label="Dashboard views">
                   {TABS.map(({ id, label, icon: Icon }) => (
                     <button
                       key={id}
@@ -1295,7 +1308,7 @@ export function Dashboard() {
                       onClick={() => setTab(id)}
                       className={cn(
                         "flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-medium",
-                        tab === id ? "bg-accent text-foreground" : "text-muted hover:bg-foreground/[0.04] hover:text-foreground",
+                        tab === id ? "border border-accent/30 bg-accent/10 text-accent" : "border border-transparent text-muted hover:bg-foreground/[0.04] hover:text-foreground",
                       )}
                     >
                       <Icon className="h-3.5 w-3.5" />{label}
@@ -1374,13 +1387,13 @@ function SummaryCard({
   tone?: "positive" | "negative";
 }) {
   return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted">{label}</p>
-        <span className="text-muted">{icon}</span>
+    <Card className="flex min-w-0 items-center gap-3 px-4 py-3">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-surface text-muted">{icon}</span>
+      <div className="min-w-0">
+        <p className="truncate text-[11px] text-muted">{label}</p>
+        <p className={cn("mt-0.5 truncate text-base font-semibold capitalize", tone === "positive" ? "text-positive" : tone === "negative" ? "text-negative" : "")}>{value}</p>
+        <p className="truncate text-[10px] text-muted-foreground">{note}</p>
       </div>
-      <p className={cn("mt-4 truncate text-xl font-semibold capitalize tabular-nums", tone === "positive" ? "text-positive" : tone === "negative" ? "text-negative" : "")}>{value}</p>
-      <p className="mt-1 truncate text-[10px] text-muted">{note}</p>
     </Card>
   );
 }
@@ -1407,23 +1420,25 @@ function ToggleRow({
 function EventCard({ event }: { event: SystemEvent }) {
   const failed = /fail|error/i.test(`${event.type} ${event.message}`);
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          {failed ? <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-negative" /> : <Activity className="mt-0.5 h-4 w-4 shrink-0 text-accent" />}
+    <article className="relative pl-9">
+      <span className={cn("absolute left-[8px] top-3 grid h-4 w-4 place-items-center rounded-full border border-border bg-background", failed ? "text-negative" : "text-accent")}>
+        {failed ? <AlertCircle className="h-2.5 w-2.5" /> : <Activity className="h-2.5 w-2.5" />}
+      </span>
+      <div className="rounded-xl border border-border bg-card px-4 py-3 transition-colors hover:bg-card-hover">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs font-semibold">{event.type.replaceAll("_", " ")}</p>
-              {event.run_id && <span className="max-w-48 truncate font-mono text-[10px] text-muted">{event.run_id}</span>}
+              <p className="text-sm font-semibold">{event.type.replaceAll("_", " ")}</p>
+              {event.run_id && <span className="max-w-48 truncate font-mono text-[10px] text-muted-foreground">{event.run_id}</span>}
             </div>
-            <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted">{event.message}</p>
+            <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-muted">{event.message}</p>
           </div>
+          <span className="shrink-0 text-[10px] text-muted-foreground">{dateLabel(event.timestamp)}</span>
         </div>
-        <span className="shrink-0 text-[10px] text-muted">{dateLabel(event.timestamp)}</span>
+        {event.traceback && <div className="mt-3"><RawSection title="Traceback" value={event.traceback} /></div>}
+        <div className="mt-3"><RawSection title="Event JSON" value={event} /></div>
       </div>
-      {event.traceback && <div className="mt-3"><RawSection title="Traceback" value={event.traceback} /></div>}
-      <div className="mt-3"><RawSection title="Event JSON" value={event} /></div>
-    </Card>
+    </article>
   );
 }
 
@@ -1463,7 +1478,7 @@ function StartDialog({
         aria-modal="true"
         aria-labelledby="start-run-title"
         onSubmit={onSubmit}
-        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-2xl"
+        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border bg-card p-5"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
