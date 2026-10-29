@@ -12,12 +12,34 @@ class PositionMonitor:
         self.context = context
 
     def __call__(self) -> list[dict[str, Any]]:
-        results = []
-        for position in self.context.database.open_positions():
-            results.append(self._monitor(position))
-        return results
+        return self.monitor_positions()
 
-    def _monitor(self, position: dict[str, Any]) -> dict[str, Any]:
+    def monitor_positions(self, run_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        positions = self.context.database.open_positions()
+        if run_ids is not None:
+            selected = {position["run_id"]: position for position in positions}
+            missing = set(run_ids).difference(selected)
+            if missing:
+                raise ValueError(f"No open positions found for: {', '.join(sorted(missing))}")
+            positions = [selected[run_id] for run_id in run_ids]
+        return [self._monitor(position) for position in positions]
+
+    def flatten(self, run_ids: list[str]) -> list[dict[str, Any]]:
+        if not run_ids:
+            raise ValueError("At least one position must be selected.")
+        if len(set(run_ids)) != len(run_ids):
+            raise ValueError("Position run IDs must be unique.")
+        if self.context.settings.dry_run:
+            raise ValueError("Disable dry-run before flattening a live position.")
+        positions = {
+            position["run_id"]: position for position in self.context.database.open_positions()
+        }
+        missing = [run_id for run_id in run_ids if run_id not in positions]
+        if missing:
+            raise ValueError(f"No open positions found for: {', '.join(missing)}")
+        return [self._monitor(positions[run_id], force=True) for run_id in run_ids]
+
+    def _monitor(self, position: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
         strategy = position["strategy"]
         data = fetch_strategy_ohlcv(
             self.context.market_data, position["symbol"], strategy_model(strategy)
@@ -45,7 +67,10 @@ class PositionMonitor:
         edge_fade = (
             expectancy is not None and expectancy < self.context.settings.edge_fade_min_expectancy
         )
-        if edge_fade:
+        if force:
+            reason = "Manual flatten requested."
+            event_type = "manual_flatten"
+        elif edge_fade:
             reason = (
                 f"edge faded: rolling expectancy {expectancy:.8g} is below "
                 f"{self.context.settings.edge_fade_min_expectancy:.8g}."
