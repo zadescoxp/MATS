@@ -7,15 +7,12 @@ import {
   BarChart3,
   ChevronRight,
   Circle,
-  Database,
   FileJson,
   Filter,
   GitBranch,
   ListChecks,
   LoaderCircle,
   LockKeyhole,
-  PanelLeftClose,
-  PanelLeftOpen,
   Pause,
   Play,
   Plus,
@@ -66,23 +63,23 @@ const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d
 const EMPTY_RUNS: Run[] = [];
 
 const AGENTS = [
-  { id: "data_worker", name: "Data Worker" },
-  { id: "multi_timeframe_analyst", name: "MultiTimeframeAnalyst", persona: "/personas/Analyst.png" },
-  { id: "strategy_builder", name: "StrategyBuilder", persona: "/personas/Strategy%20Builder.png" },
-  { id: "backtest", name: "Backtest", persona: "/personas/Backtester.png" },
-  { id: "critique", name: "Critique", persona: "/personas/Critique.png" },
-  { id: "risk_assessment", name: "RiskAssessment", persona: "/personas/RiskAnalyst.png" },
-  { id: "coder", name: "Coder", persona: "/personas/Coder.png" },
-  { id: "execution", name: "Execution", persona: "/personas/Execution.png" },
-  { id: "monitor", name: "Monitor", persona: "/personas/Execution.png" },
+  { id: "data_worker", name: "Data worker", role: "Market data" },
+  { id: "multi_timeframe_analyst", name: "Market analyst", role: "Multi-timeframe analysis", persona: "/personas/Analyst.png" },
+  { id: "strategy_builder", name: "Strategy builder", role: "Strategy design", persona: "/personas/Strategy%20Builder.png" },
+  { id: "backtest", name: "Backtester", role: "Backtesting", persona: "/personas/Backtester.png" },
+  { id: "critique", name: "Critique", role: "Quality review", persona: "/personas/Critique.png" },
+  { id: "risk_assessment", name: "Risk analyst", role: "Position sizing", persona: "/personas/RiskAnalyst.png" },
+  { id: "coder", name: "Coder", role: "Execution logic", persona: "/personas/Coder.png" },
+  { id: "execution", name: "Execution", role: "Signal and orders", persona: "/personas/Execution.png" },
+  { id: "monitor", name: "Monitor", role: "Position monitoring", persona: "/personas/Execution.png" },
 ];
 
 const TABS: Array<{ id: DashboardTab; label: string; icon: typeof Activity }> = [
-  { id: "graph", label: "Agent graph", icon: GitBranch },
-  { id: "agent", label: "Agent detail", icon: ListChecks },
-  { id: "strategy", label: "Strategy & backtest", icon: BarChart3 },
-  { id: "positions", label: "Positions & executions", icon: Wallet },
-  { id: "events", label: "System events", icon: Activity },
+  { id: "graph", label: "Activity", icon: Activity },
+  { id: "agent", label: "Agent details", icon: ListChecks },
+  { id: "strategy", label: "Backtest", icon: BarChart3 },
+  { id: "positions", label: "Positions", icon: Wallet },
+  { id: "events", label: "Events", icon: GitBranch },
 ];
 
 type Notice = { kind: "success" | "error" | "info"; message: string };
@@ -117,6 +114,13 @@ function dateLabel(value: string | null | undefined): string {
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function clockLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function orderTime(value: unknown): string {
@@ -169,22 +173,75 @@ function agentStatus(run: Run | null, agentId: string, operations: DashboardStat
   return steps.at(-1)?.status ?? "idle";
 }
 
-function agentLastAction(run: Run | null, agentId: string): string {
-  if (!run) return "Waiting for a run";
-  const step = [...run.steps].reverse().find((item) => item.agent_name === agentId);
-  if (!step) return "No saved step";
-  if (step.error) return step.error;
-  const output = step.output;
-  if (!output) return "Step has no output";
-  const summary = Object.entries(output).find(
-    ([key, value]) => key !== "status" && typeof value === "string" && value.length,
-  );
-  return summary ? String(summary[1]) : step.status;
-}
-
 function latestAttempt(run: Run | null): StrategyAttempt | null {
   if (!run?.strategies.length) return null;
   return [...run.strategies].sort((a, b) => b.version - a.version)[0] ?? null;
+}
+
+function agentWorkingLabel(agentId: string, symbol: string): string {
+  const action: Record<string, string> = {
+    initialize: "Preparing the research run",
+    data_worker: "Collecting market data",
+    multi_timeframe_analyst: "Reviewing market structure",
+    strategy_builder: "Building a strategy candidate",
+    backtest: "Backtesting strategy performance",
+    critique: "Reviewing risk-adjusted results",
+    risk_assessment: "Sizing risk for the proposed trade",
+    coder: "Preparing execution logic",
+    execution: "Checking the execution signal",
+    monitor: "Monitoring open positions",
+  };
+  return `${action[agentId] ?? "Working on the next step"} for ${symbol}`;
+}
+
+function stepSummary(step: Run["steps"][number], symbol: string): string {
+  if (step.error) return step.error;
+  if (step.status === "running") return agentWorkingLabel(step.agent_name, symbol);
+  const output = step.output;
+  if (!output) return step.status === "completed" ? "Step completed." : "Waiting for this step.";
+  const describe = (value: unknown, depth = 0): string | null => {
+    if (typeof value === "string" && value.trim() && value.toLowerCase() !== "completed") {
+      return value.trim();
+    }
+    if (!isObject(value) || depth > 1) return null;
+    for (const key of ["summary", "finding", "decision", "reason", "message", "action", "template_name", "name"]) {
+      const summary = describe(value[key], depth + 1);
+      if (summary) return summary;
+    }
+    return null;
+  };
+  const candidates = [
+    "analyst_findings",
+    "strategy",
+    "backtest_report",
+    "critique",
+    "risk_assessment",
+    "live_signal",
+    "execution_result",
+    "strategy_diagnostics",
+    "market_context",
+    "summary",
+    "finding",
+    "decision",
+    "reason",
+    "message",
+    "action",
+  ];
+  for (const key of candidates) {
+    const summary = describe(output[key]);
+    if (summary) return summary;
+  }
+  const text = Object.entries(output).find(
+    ([key, value]) => key !== "status" && typeof value === "string" && value.trim(),
+  );
+  if (text) return `${text[0].replaceAll("_", " ")} · ${String(text[1]).trim()}`;
+  const count = Object.keys(output).length;
+  return count ? `Completed and saved ${count} structured result${count === 1 ? "" : "s"}.` : "Step completed.";
+}
+
+function agentName(agentId: string): string {
+  return AGENTS.find((agent) => agent.id === agentId)?.name
+    ?? agentId.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function toggleSelection(
@@ -296,15 +353,13 @@ export function Dashboard() {
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState("data_worker");
+  const [feedAgentId, setFeedAgentId] = useState("all");
   const [tab, setTab] = useState<DashboardTab>("graph");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [showStart, setShowStart] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [search, setSearch] = useState("");
-  const [coinSearch, setCoinSearch] = useState("");
   const [symbolFilter, setSymbolFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
   const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
   const [startSymbols, setStartSymbols] = useState<string[]>([]);
   const [startTimeframes, setStartTimeframes] = useState<string[]>([]);
@@ -378,6 +433,8 @@ export function Dashboard() {
   }, [data]);
 
   const runs = data?.runs ?? EMPTY_RUNS;
+  const dryRunEnabled = data?.settings.dry_run ?? true;
+  const killSwitchEnabled = data?.settings.kill_switch ?? true;
   const selectedRun = runs.find((run) => run.run_id === selectedRunId) ?? null;
   const activeAttempt = latestAttempt(selectedRun);
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
@@ -385,13 +442,8 @@ export function Dashboard() {
     () => [...new Set([...(data?.settings.symbols ?? []), ...COINS, ...runs.map((run) => run.symbol)])],
     [data?.settings.symbols, runs],
   );
-  const sidebarSymbols = runSymbols.filter((symbol) =>
-    symbol.toLowerCase().includes(coinSearch.trim().toLowerCase()),
-  );
   const visibleRuns = runs.filter(
-    (run) =>
-      (!statusFilter || run.status === statusFilter) &&
-      `${run.symbol} ${run.run_id}`.toLowerCase().includes(search.trim().toLowerCase()),
+    (run) => `${run.symbol} ${run.run_id}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
   const openPositions = (data?.positions ?? []).filter((position) => position.status === "open");
   const filteredPositions = openPositions.filter(
@@ -407,6 +459,13 @@ export function Dashboard() {
   );
   const allEvents = data?.system_events ?? [];
   const activeAgent = AGENTS.find((agent) => agent.id === selectedAgent) ?? AGENTS[0];
+  const feedSteps = useMemo(
+    () =>
+      (selectedRun?.steps ?? [])
+        .filter((step) => feedAgentId === "all" || step.agent_name === feedAgentId)
+        .sort((left, right) => left.started_at.localeCompare(right.started_at)),
+    [feedAgentId, selectedRun],
+  );
 
   const act = useCallback(
     async (
@@ -535,104 +594,66 @@ export function Dashboard() {
         />
       );
     }
-    return (
-      <div className="space-y-4">
-        <div className="relative space-y-2 before:absolute before:bottom-8 before:left-[22px] before:top-8 before:w-px before:bg-border">
-          {AGENTS.map((agent) => {
-            const status = agentStatus(selectedRun, agent.id, data?.operations ?? []);
-            const step = [...selectedRun.steps].reverse().find((item) => item.agent_name === agent.id);
-            const isSelected = selectedAgent === agent.id;
-            const isRunning = status === "running";
-            return (
-              <div className="relative" key={agent.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedAgent(agent.id);
-                    setTab("agent");
-                  }}
-                  className={cn(
-                    "relative w-full rounded-xl border border-l-2 bg-card px-4 py-3 text-left transition-colors hover:bg-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                    isSelected || isRunning ? "border-l-accent bg-surface" : "border-l-transparent border-border",
-                  )}
-                  aria-label={`Open ${agent.name} details`}
-                >
-                  <div className="flex w-full items-center gap-3">
-                    <span className="relative z-10 grid h-11 w-11 shrink-0 place-items-center rounded-full bg-card">
-                      <PersonaAvatar name={agent.name} src={agent.persona} size={44} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <p className="text-sm font-semibold">{agent.name}</p>
-                        <StatusBadge status={status} />
-                      </div>
-                      <p className="mt-1 truncate text-xs leading-5 text-muted">
-                        {agent.id === "monitor" ? "Position monitoring runs on request." : agentLastAction(selectedRun, agent.id)}
-                      </p>
-                    </div>
-                    <div className="hidden shrink-0 text-right sm:block">
-                      <p className="font-mono text-[11px] text-muted">{step ? `${step.tokens_used.toLocaleString()} tokens` : "—"}</p>
-                      <p className="mt-1 text-[10px] text-muted-foreground">{step ? formatDuration(step.started_at, step.finished_at) : "No activity"}</p>
-                    </div>
-                  </div>
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        {selectedRun.status === "running" &&
-          selectedRun.strategies.some((attempt) => attempt.decision === "REJECT") && (
-          <div className="flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/5 px-4 py-3 text-xs text-muted">
-            <GitBranch className="h-4 w-4 shrink-0 text-accent" />
-            Critique rejected a strategy. Revision loop returns to StrategyBuilder before risk assessment.
+    if (!feedSteps.length) {
+      return (
+        <div className="flex min-h-64 flex-col items-center justify-center px-6 text-center">
+          <div className="mb-4 grid h-12 w-12 place-items-center rounded-full bg-surface text-muted">
+            <Activity className="h-5 w-5" />
           </div>
-        )}
-        <Card className="p-5">
-          <CardHeader>
-            <div>
-              <CardTitle>Agent step timeline</CardTitle>
-              <CardDescription>Persisted step status, time, token usage, and recorded errors.</CardDescription>
-            </div>
-            <span className="text-xs text-muted">{selectedRun.steps.length} steps</span>
-          </CardHeader>
-          {selectedRun.steps.length ? (
-            <div className="mt-5 overflow-x-auto">
-              <table className="w-full min-w-[700px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-wide text-muted">
-                  <tr>
-                    <th className="pb-3 pr-4">Agent</th>
-                    <th className="pb-3 pr-4">Status</th>
-                    <th className="pb-3 pr-4">Started</th>
-                    <th className="pb-3 pr-4">Tokens</th>
-                    <th className="pb-3 pr-4">Cost</th>
-                    <th className="pb-3">Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedRun.steps.map((step) => (
-                    <tr
-                      key={step.step_id}
-                      className="cursor-pointer border-t border-border text-muted hover:bg-foreground/[0.02]"
-                      onClick={() => {
-                        setSelectedAgent(step.agent_name);
-                        setTab("agent");
-                      }}
-                    >
-                      <td className="py-3 pr-4 font-medium text-foreground">{step.agent_name}</td>
-                      <td className="py-3 pr-4"><StatusBadge status={step.status} /></td>
-                      <td className="py-3 pr-4">{dateLabel(step.started_at)}</td>
-                      <td className="py-3 pr-4 tabular-nums">{step.tokens_used.toLocaleString()}</td>
-                      <td className="py-3 pr-4 tabular-nums">{money(step.cost, 4)}</td>
-                      <td className="max-w-72 truncate py-3 text-negative">{step.error ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="mt-5"><EmptyState title="Waiting for agent steps" body="Steps appear here as the run writes to SQLite." /></div>
-          )}
-        </Card>
+          <p className="text-sm font-medium">No activity from this agent yet</p>
+          <p className="mt-1 max-w-xs text-xs leading-5 text-muted">
+            Saved inputs, tool calls, and results will appear here as the run progresses.
+          </p>
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-1">
+        {feedSteps.map((step) => {
+          const agent = AGENTS.find((item) => item.id === step.agent_name);
+          const isRunning = step.status === "running";
+          const tools = step.tool_calls ?? [];
+          return (
+            <article key={step.step_id} className="group flex gap-3 rounded-2xl px-3 py-4 transition-colors hover:bg-surface/70 sm:gap-4 sm:px-4">
+              <PersonaAvatar name={agent?.name ?? agentName(step.agent_name)} src={agent?.persona} size={40} />
+              <div className="min-w-0 flex-1">
+                <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-sm font-semibold">{agent?.name ?? agentName(step.agent_name)}</span>
+                  <span className="text-xs text-muted-foreground">{isRunning ? "is working" : step.status === "failed" ? "encountered an error" : "finished a step"}</span>
+                  {isRunning && <span className="h-1.5 w-1.5 rounded-full bg-accent agent-live" aria-label="In progress" />}
+                  <time className="ml-auto text-[11px] text-muted-foreground" title={dateLabel(step.finished_at ?? step.started_at)}>{clockLabel(step.finished_at ?? step.started_at)}</time>
+                </header>
+                <p className={cn("mt-2 text-sm leading-6", step.error ? "text-negative" : "text-foreground/90")}>
+                  {stepSummary(step, selectedRun.symbol)}
+                </p>
+                {!!tools.length && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {tools.map((tool, index) => (
+                      <span key={`${step.step_id}-tool-${index}`} className="rounded-full bg-surface px-2.5 py-1 text-[11px] text-muted">
+                        Used {textValue(tool.name ?? tool.tool_name, "tool")}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <details className="group mt-3 max-w-3xl">
+                  <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-full px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:bg-foreground/[0.05] hover:text-foreground">
+                    <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                    Step context and evidence
+                  </summary>
+                  <div className="mt-2 space-y-2 rounded-xl bg-surface p-3">
+                    <RawSection title="Input context" value={step.input} />
+                    {!!tools.length && <RawSection title={`Tool calls (${tools.length})`} value={tools} />}
+                    <RawSection title="Saved output" value={step.output} />
+                    {step.error && <RawSection title="Error" value={{ status: step.status, error: step.error }} />}
+                    <p className="px-1 text-[10px] text-muted-foreground">
+                      {step.tokens_used.toLocaleString()} tokens · {money(step.cost, 4)} · {formatDuration(step.started_at, step.finished_at)}
+                    </p>
+                  </div>
+                </details>
+              </div>
+            </article>
+          );
+        })}
       </div>
     );
   }
@@ -1049,309 +1070,424 @@ export function Dashboard() {
     );
   }
 
-  return (
-    <div className="min-h-screen bg-background">
-      <div className="flex min-h-screen">
-        <aside className={cn(
-          "sticky top-0 hidden h-screen shrink-0 self-start flex-col overflow-y-auto border-r border-border bg-surface p-4 transition-[width] lg:flex",
-          sidebarCollapsed ? "w-[76px] items-center" : "w-[272px]",
-        )}>
-          <div className="flex w-full items-center justify-between gap-2 px-2 py-2">
-            <div className="flex min-w-0 items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-xl border border-border bg-background text-accent">
-              <Activity className="h-4 w-4" />
-            </div>
-            {!sidebarCollapsed && <div>
-              <p className="text-sm font-semibold tracking-wide">MATS</p>
-              <p className="text-[10px] text-muted">Research console</p>
-            </div>}
-            </div>
-            <button
-              type="button"
-              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-              className="rounded-xl p-2 text-muted hover:bg-foreground/5 hover:text-foreground"
-              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            >
-              {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+  function renderResearchContext() {
+    const curve = (activeAttempt?.equity_curve ?? objectRows(activeAttempt?.report?.equity_curve)).map(
+      (point, index) => ({
+        index: index + 1,
+        equity: numberValue(point.equity ?? point.value),
+      }),
+    );
+    const position = openPositions.find((item) => item.run_id === selectedRun?.run_id);
+    const activeStep = selectedRun?.steps.find((step) => step.status === "running");
+    const activeDefinition = activeStep
+      ? AGENTS.find((agent) => agent.id === activeStep.agent_name)
+      : null;
+
+    return (
+      <div className="space-y-8">
+        <section>
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-medium text-muted">Research snapshot</p>
+            <button type="button" onClick={() => setTab("strategy")} className="text-[11px] text-muted transition-colors hover:text-foreground">
+              Full report
             </button>
           </div>
-          {!sidebarCollapsed && (
-          <>
-          <div className="mt-7">
-            <p className="px-2 text-[10px] font-semibold uppercase tracking-widest text-muted">Symbols</p>
-            <div className="relative mt-3">
-              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted" />
-              <Input value={coinSearch} onChange={(event) => setCoinSearch(event.target.value)} placeholder="Search symbols" className="h-9 min-h-9 pl-9 text-xs" />
+          {selectedRun ? (
+            <>
+              <div className="mt-4 flex items-center gap-3">
+                <CoinMark symbol={selectedRun.symbol} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">{selectedRun.symbol}</p>
+                  <p className="truncate font-mono text-[10px] text-muted-foreground" title={selectedRun.run_id}>{selectedRun.run_id}</p>
+                </div>
+                <StatusBadge status={selectedRun.status} />
+              </div>
+              <div className="mt-6 flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-[11px] text-muted">Backtest equity</p>
+                  <p className="mt-1 text-lg font-semibold tabular-nums">
+                    {activeAttempt ? money(activeAttempt.report?.net_pnl) : "—"}
+                  </p>
+                </div>
+                {activeAttempt?.decision && <StatusBadge status={activeAttempt.decision} />}
+              </div>
+              <div className="mt-3 h-28">
+                {curve.length > 1 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={curve} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+                      <Tooltip
+                        contentStyle={{ background: "#141418", border: "1px solid #27272a", borderRadius: 10, color: "#fafafa", fontSize: 11 }}
+                        formatter={(value: number) => money(value)}
+                        labelFormatter={(value) => `Point ${value}`}
+                      />
+                      <Area type="monotone" dataKey="equity" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.1} strokeWidth={1.75} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center rounded-xl bg-surface text-center text-[11px] text-muted">
+                    {selectedRun.status === "running" ? "Equity curve will appear after backtesting" : "No backtest curve saved"}
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 flex items-center justify-between gap-3 text-xs">
+                <span className="truncate text-muted">{activeAttempt ? textValue(activeAttempt.strategy.template_name, "Strategy candidate") : "Strategy not built yet"}</span>
+                <span className="shrink-0 text-muted-foreground">{activeAttempt ? `v${activeAttempt.version}` : ""}</span>
+              </div>
+            </>
+          ) : (
+            <p className="mt-4 text-xs leading-5 text-muted">Select a run to see its trading context.</p>
+          )}
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-medium text-muted">Open position</p>
+            <button type="button" onClick={() => setTab("positions")} className="text-[11px] text-muted transition-colors hover:text-foreground">
+              All positions
+            </button>
+          </div>
+          {position ? (
+            <div className="mt-4 space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium">{position.side} · {position.amount}</span>
+                <StatusBadge status={position.status} />
+              </div>
+              <dl className="grid grid-cols-2 gap-y-3 text-xs">
+                <dt className="text-muted">Entry</dt><dd className="text-right tabular-nums">{money(position.entry_price)}</dd>
+                <dt className="text-muted">Stop</dt><dd className="text-right tabular-nums">{money(position.stop_price)}</dd>
+                <dt className="text-muted">Strategy</dt><dd className="truncate text-right">{textValue(position.strategy_key)}</dd>
+                <dt className="text-muted">Net PnL</dt>
+                <dd className={cn("text-right tabular-nums", numberValue(position.net_pnl) >= 0 ? "text-positive" : "text-negative")}>{money(position.net_pnl)}</dd>
+              </dl>
             </div>
-            <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
-              {sidebarSymbols.map((symbol) => (
-                <label key={symbol} className="flex cursor-pointer items-center gap-2 rounded-xl px-2 py-2 text-xs text-muted hover:bg-foreground/[0.03]">
-                  <input type="checkbox" checked={startSymbols.includes(symbol)} onChange={() => toggleSelection(symbol, startSymbols, setStartSymbols)} />
-                  <CoinMark symbol={symbol} small />
-                  <span>{symbol}</span>
-                </label>
-              ))}
-              {!sidebarSymbols.length && <p className="px-2 py-3 text-xs text-muted">No matching symbols.</p>}
+          ) : (
+            <p className="mt-4 text-xs leading-5 text-muted">No open position on this run.</p>
+          )}
+        </section>
+
+        <section>
+          <p className="text-[11px] font-medium text-muted">Current activity</p>
+          {activeStep ? (
+            <div className="mt-4 flex items-start gap-3">
+              <PersonaAvatar name={activeDefinition?.name ?? agentName(activeStep.agent_name)} src={activeDefinition?.persona} size={36} />
+              <div className="min-w-0">
+                <p className="text-xs font-medium">{activeDefinition?.name ?? agentName(activeStep.agent_name)}</p>
+                <p className="mt-1 text-xs leading-5 text-muted">{agentWorkingLabel(activeStep.agent_name, selectedRun?.symbol ?? "")}</p>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 text-xs leading-5 text-muted">
+              {selectedRun?.status === "completed" ? "All run steps have completed." : "No agent is currently working."}
+            </p>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  function renderConversationSkeleton() {
+    return (
+      <div className="space-y-7" aria-label="Loading agent activity">
+        {[0, 1, 2].map((item) => (
+          <div key={item} className="flex gap-4">
+            <div className="skeleton h-10 w-10 shrink-0 rounded-full" />
+            <div className="min-w-0 flex-1 space-y-3 pt-1">
+              <div className="skeleton h-3 w-36 rounded-full" />
+              <div className="skeleton h-3 w-full max-w-xl rounded-full" />
+              <div className="skeleton h-3 w-3/4 max-w-lg rounded-full" />
             </div>
           </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background lg:grid lg:grid-cols-[248px_minmax(0,1fr)] min-[1100px]:grid-cols-[248px_minmax(0,1fr)_300px]">
+      <aside className="hidden h-screen flex-col bg-surface px-3 py-4 lg:sticky lg:top-0 lg:flex">
+        <div className="flex items-center justify-between px-2">
+          <div className="flex items-center gap-3">
+            <div className="grid h-8 w-8 place-items-center rounded-full bg-accent text-white">
+              <Activity className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold tracking-tight">MATS</p>
+              <p className="text-[11px] text-muted">Trading workspace</p>
+            </div>
+          </div>
+          <span className={cn("h-2 w-2 rounded-full", connection === "online" ? "bg-positive" : connection === "offline" ? "bg-negative" : "bg-muted agent-live")} title={`API ${connection}`} />
+        </div>
+
+        <div className="mt-7 flex min-h-0 flex-1 flex-col">
+          <div className="flex items-center justify-between px-2">
+            <p className="text-[11px] font-medium text-muted">Agents</p>
+            <span className="text-[10px] text-muted-foreground">{AGENTS.length}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFeedAgentId("all")}
+            className={cn("mt-2 flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors", feedAgentId === "all" ? "bg-card text-foreground" : "text-muted hover:bg-card/70 hover:text-foreground")}
+          >
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-card-hover text-muted"><Activity className="h-4 w-4" /></span>
+            <span className="min-w-0 flex-1 text-xs font-medium">All activity</span>
+            <span className="text-[10px] text-muted-foreground">{selectedRun?.steps.length ?? 0}</span>
+          </button>
+          <div className="mt-1 space-y-0.5 overflow-y-auto">
+            {AGENTS.map((agent) => {
+              const status = agentStatus(selectedRun, agent.id, data?.operations ?? []);
+              const isWorking = status === "running";
+              const statusLabel = isWorking ? "Working" : status === "completed" ? "Complete" : status === "failed" || status === "rejected" ? "Needs attention" : agent.role;
+              return (
+                <button
+                  type="button"
+                  key={agent.id}
+                  onClick={() => {
+                    setFeedAgentId(agent.id);
+                    setSelectedAgent(agent.id);
+                    setTab("graph");
+                  }}
+                  className={cn("flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors", feedAgentId === agent.id ? "bg-card text-foreground" : "text-muted hover:bg-card/70 hover:text-foreground")}
+                >
+                  <span className="relative">
+                    <PersonaAvatar name={agent.name} src={agent.persona} size={32} />
+                    {isWorking && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-accent ring-2 ring-surface agent-live" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">{agent.name}</span>
+                    <span className={cn("mt-0.5 block text-[10px]", isWorking ? "text-accent" : "text-muted-foreground")}>{statusLabel}</span>
+                  </span>
+                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", isWorking ? "bg-accent agent-live" : status === "failed" || status === "rejected" ? "bg-negative" : status === "completed" ? "bg-positive" : "bg-muted-foreground")} />
+                </button>
+              );
+            })}
+          </div>
+
           <div className="mt-7 flex min-h-0 flex-1 flex-col">
             <div className="flex items-center justify-between px-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted">Runs</p>
-              <span className="rounded-full bg-background px-2 py-1 text-[10px] text-muted">{runs.length}</span>
+              <p className="text-[11px] font-medium text-muted">Recent runs</p>
+              <span className="text-[10px] text-muted-foreground">{runs.length}</span>
             </div>
-            <div className="relative mt-3">
-              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted" />
-              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter runs" className="h-9 min-h-9 pl-9 text-xs" />
+            <div className="relative mt-2">
+              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a run" className="h-9 min-h-9 rounded-lg border-transparent bg-card pl-9 text-xs focus-visible:border-accent" />
             </div>
-            <select
-              className="mt-2 min-h-9 rounded-xl border border-border bg-background px-3 text-xs text-muted"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              aria-label="Filter runs by status"
-            >
-              <option value="">All statuses</option>
-              {[...new Set(runs.map((run) => run.status))].map((status) => <option key={status}>{status}</option>)}
-            </select>
-            <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto">
+            <div className="mt-2 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
               {visibleRuns.slice(0, 30).map((run) => (
                 <button
                   key={run.run_id}
                   type="button"
-                  onClick={() => setSelectedRunId(run.run_id)}
-                  className={cn(
-                    "w-full rounded-xl border px-3 py-2.5 text-left",
-                    selectedRunId === run.run_id ? "border-accent/40 bg-accent/5" : "border-transparent hover:bg-foreground/[0.03]",
-                  )}
+                  onClick={() => {
+                    setSelectedRunId(run.run_id);
+                    setFeedAgentId("all");
+                    setTab("graph");
+                  }}
+                  className={cn("w-full rounded-xl px-2.5 py-2.5 text-left transition-colors", selectedRunId === run.run_id ? "bg-card text-foreground" : "text-muted hover:bg-card/70 hover:text-foreground")}
                 >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-2 truncate text-xs font-medium text-foreground">
-                      <CoinMark symbol={run.symbol} small />
-                      {run.symbol}
-                    </span>
-                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", run.status === "running" ? "bg-accent" : run.status === "failed" ? "bg-negative" : run.status === "completed" ? "bg-positive" : "bg-muted")} />
+                  <span className="flex items-center gap-2.5">
+                    <CoinMark symbol={run.symbol} small />
+                    <span className="min-w-0 flex-1 truncate text-xs font-medium">{run.symbol}</span>
+                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", run.status === "running" ? "bg-accent agent-live" : run.status === "failed" ? "bg-negative" : run.status === "completed" ? "bg-positive" : "bg-muted-foreground")} />
                   </span>
-                  <span className="mt-2 block truncate font-mono text-[9px] text-muted">{run.run_id}</span>
+                  <span className="mt-1.5 block pl-10 text-[10px] text-muted-foreground">
+                    {run.status.replaceAll("_", " ")} · {dateLabel(run.started_at)}
+                  </span>
                 </button>
               ))}
-              {!runs.length && <p className="px-2 py-5 text-xs leading-5 text-muted">No saved runs yet. Start a run to populate the timeline.</p>}
+              {!runs.length && <p className="px-2 py-4 text-xs leading-5 text-muted">Your new research runs will appear here.</p>}
+              {!!runs.length && !visibleRuns.length && <p className="px-2 py-4 text-xs text-muted">No runs match that search.</p>}
             </div>
-            <p className="mt-2 px-2 text-[10px] text-muted">Open positions: {openPositions.length}</p>
           </div>
-          <div className="mt-5 space-y-2 border-t border-border pt-4">
-            <Button className="w-full justify-start" variant="primary" onClick={openStartDialog}>
-              <Plus className="h-4 w-4" /> Start run
+        </div>
+
+        <div className="mt-4 space-y-1 pt-3">
+          <Button className="w-full justify-center rounded-full" variant="primary" onClick={openStartDialog}>
+            <Plus className="h-4 w-4" /> New run
+          </Button>
+          <div className="mt-2 flex gap-1">
+            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={!selectedRun || !data?.active_run_ids.includes(selectedRun.run_id) || selectedRun.status !== "running" || busyAction === "stop"} onClick={submitStop} aria-label="Stop selected run">
+              <Pause className="h-3.5 w-3.5" /> Stop
             </Button>
-            <Button className="w-full justify-start" variant="outline" disabled={!selectedRun || !data?.active_run_ids.includes(selectedRun.run_id) || selectedRun.status !== "running" || busyAction === "stop"} onClick={submitStop}>
-              <Pause className="h-4 w-4" /> Stop run
+            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={!selectedRun || !["failed", "stopped", "running"].includes(selectedRun.status) || Boolean(data?.active_run_ids.includes(selectedRun.run_id)) || busyAction === "resume"} onClick={submitResume} aria-label="Resume selected run">
+              <Play className="h-3.5 w-3.5" /> Resume
             </Button>
-            <Button className="w-full justify-start" variant="outline" disabled={!selectedRun || !["failed", "stopped", "running"].includes(selectedRun.status) || Boolean(data?.active_run_ids.includes(selectedRun.run_id)) || busyAction === "resume"} onClick={submitResume}>
-              <Play className="h-4 w-4" /> Resume run
-            </Button>
-            <Button className="w-full justify-start" variant="outline" disabled={busyAction === "monitor"} onClick={() => act("monitor", {}, "Monitor cycle started.")}>
-              <RefreshCw className="h-4 w-4" /> Run monitor cycle
-            </Button>
-            <Button className="w-full justify-start" variant="danger" disabled={!data?.active_run_ids.length || busyAction === "stop_all"} onClick={submitStopAll}>
-              <Pause className="h-4 w-4" /> Stop all active
-            </Button>
-            <Button className="w-full justify-start" variant="outline" disabled={!data?.runs.some((run) => ["failed", "stopped", "running"].includes(run.status) && !data.active_run_ids.includes(run.run_id)) || busyAction === "resume_all"} onClick={submitResumeAll}>
-              <Play className="h-4 w-4" /> Resume all incomplete
+            <Button size="sm" className="flex-1 rounded-full" variant="ghost" disabled={busyAction === "monitor"} onClick={() => act("monitor", {}, "Monitor cycle started.")} aria-label="Run monitor cycle">
+              <RefreshCw className="h-3.5 w-3.5" /> Monitor
             </Button>
           </div>
-          <div className="mt-4 space-y-2 border-t border-border pt-4">
-            <ToggleRow
-              label="Dry-run"
-              enabled={data?.settings.dry_run ?? true}
-              icon={<ShieldCheck className="h-4 w-4" />}
-              onChange={(enabled) => toggleSetting("dry_run", enabled)}
-            />
-            <ToggleRow
-              label="Kill switch"
-              enabled={data?.settings.kill_switch ?? true}
-              icon={<LockKeyhole className="h-4 w-4" />}
-              onChange={(enabled) => toggleSetting("kill_switch", enabled)}
-            />
+          <div className="mt-3 space-y-0.5 px-1">
+            <ToggleRow label="Dry run" enabled={data?.settings.dry_run ?? true} icon={<ShieldCheck className="h-3.5 w-3.5" />} onChange={(enabled) => toggleSetting("dry_run", enabled)} />
+            <ToggleRow label="Kill switch" enabled={data?.settings.kill_switch ?? true} icon={<LockKeyhole className="h-3.5 w-3.5" />} onChange={(enabled) => toggleSetting("kill_switch", enabled)} />
           </div>
-          </>
+          <div className="flex justify-between px-2 pt-1">
+            <button type="button" onClick={submitStopAll} disabled={!data?.active_run_ids.length || busyAction === "stop_all"} className="text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40">Stop all</button>
+            <button type="button" onClick={submitResumeAll} disabled={!data?.runs.some((run) => ["failed", "stopped", "running"].includes(run.status) && !data.active_run_ids.includes(run.run_id)) || busyAction === "resume_all"} className="text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40">Resume incomplete</button>
+          </div>
+        </div>
+      </aside>
+
+      <main className="min-w-0">
+        <header className="sticky top-0 z-20 bg-background/90 px-4 py-3 backdrop-blur-xl sm:px-7">
+          <div className="flex min-h-10 items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-white lg:hidden"><Activity className="h-4 w-4" /></div>
+              {selectedRun && <CoinMark symbol={selectedRun.symbol} small />}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h1 className="truncate text-sm font-semibold">{selectedRun ? `${selectedRun.symbol} research` : "Research workspace"}</h1>
+                  {selectedRun && <StatusBadge status={selectedRun.status} />}
+                </div>
+                <p className="truncate font-mono text-[10px] text-muted-foreground">{selectedRun?.run_id ?? "Select a run to view its activity"}</p>
+              </div>
+              <span className={cn("hidden h-1.5 w-1.5 rounded-full sm:block", connection === "online" ? "bg-positive" : connection === "offline" ? "bg-negative" : "bg-muted agent-live")} />
+              <span className="hidden text-[11px] text-muted sm:block">{connection === "online" ? "Live updates" : connection === "offline" ? "Reconnecting" : "Connecting"}</span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" disabled={!data} onClick={() => toggleSetting("dry_run", !dryRunEnabled)} className={cn("rounded-full px-3 py-1.5 text-[10px] font-medium transition-colors hover:bg-card disabled:opacity-60", dryRunEnabled ? "bg-card text-muted" : "bg-negative/10 text-negative")} aria-label={`Toggle dry-run; currently ${dryRunEnabled ? "on" : "off"}`}>
+                Dry run {dryRunEnabled ? "on" : "off"}
+              </button>
+              <button type="button" disabled={!data} onClick={() => toggleSetting("kill_switch", !killSwitchEnabled)} className={cn("rounded-full px-3 py-1.5 text-[10px] font-medium transition-colors hover:bg-card disabled:opacity-60", killSwitchEnabled ? "bg-card text-muted" : "bg-negative/10 text-negative")} aria-label={`Toggle kill switch; currently ${killSwitchEnabled ? "on" : "off"}`}>
+                Kill switch {killSwitchEnabled ? "on" : "off"}
+              </button>
+              <Button variant="primary" size="sm" className="rounded-full lg:hidden" onClick={openStartDialog}><Plus className="h-3.5 w-3.5" />Run</Button>
+            </div>
+          </div>
+        </header>
+
+        <div className="px-4 pb-10 sm:px-7">
+          {notice && (
+            <div role="status" className={cn("mb-3 flex items-start justify-between gap-3 rounded-xl px-4 py-3 text-xs", notice.kind === "error" ? "bg-negative/10 text-negative" : notice.kind === "success" ? "bg-positive/10 text-positive" : "bg-accent/10 text-accent")}>
+              <span>{notice.message}</span>
+              <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notification"><X className="h-4 w-4" /></button>
+            </div>
           )}
-        </aside>
-        <main className="min-w-0 flex-1">
-          <header className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 py-3 backdrop-blur md:px-6">
-            <div className="mx-auto flex max-w-[1360px] flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="grid h-9 w-9 place-items-center rounded-xl border border-border bg-card lg:hidden">
-                  <Activity className="h-4 w-4 text-accent" />
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold">{selectedRun?.run_id ?? "No run selected"}</p>
-                  <p className="mt-1 flex items-center gap-2 text-[10px] text-muted">
-                    <span>{selectedRun?.symbol ?? "Select a run"}</span>
-                    <span>·</span>
-                    <span>{tokensForRun.toLocaleString()} tokens</span>
-                    <span className={cn("h-1.5 w-1.5 rounded-full", connection === "online" ? "bg-positive" : connection === "offline" ? "bg-negative" : "bg-accent")} />
-                    <span>{connection === "online" ? "Live" : connection === "offline" ? "Offline" : "Connecting"}</span>
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => toggleSetting("dry_run", !(data?.settings.dry_run ?? true))}
-                  className={cn("rounded-full border px-3 py-1 text-[10px] font-semibold", data?.settings.dry_run ? "border-accent/20 bg-accent/10 text-accent" : "border-negative/20 bg-negative/10 text-negative")}
-                  aria-label={`Toggle dry-run; currently ${data?.settings.dry_run ? "on" : "off"}`}
-                >
-                  Dry-run {data?.settings.dry_run ? "on" : "off"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => toggleSetting("kill_switch", !(data?.settings.kill_switch ?? true))}
-                  className={cn("rounded-full border px-3 py-1 text-[10px] font-semibold", data?.settings.kill_switch ? "border-positive/20 bg-positive/10 text-positive" : "border-negative/20 bg-negative/10 text-negative")}
-                  aria-label={`Toggle kill switch; currently ${data?.settings.kill_switch ? "on" : "off"}`}
-                >
-                  Kill switch {data?.settings.kill_switch ? "on" : "off"}
-                </button>
-                <Button variant="primary" size="sm" className="lg:hidden" onClick={openStartDialog}>
-                  <Plus className="h-3.5 w-3.5" /> Start
-                </Button>
-              </div>
+
+          {!data && connection !== "offline" && <div className="pt-8"><p className="mb-8 text-sm text-muted">Connecting to your research workspace…</p>{renderConversationSkeleton()}</div>}
+          {!data && connection === "offline" && (
+            <div className="mx-auto mt-24 max-w-md text-center">
+              <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-surface text-negative"><AlertCircle className="h-5 w-5" /></div>
+              <h2 className="mt-4 text-base font-semibold">Can’t reach the local API</h2>
+              <p className="mt-2 text-sm leading-6 text-muted">Start the framework service with <code>uv run mats-web</code>. We’ll reconnect automatically when it’s available.</p>
+              <button type="button" onClick={() => window.location.reload()} className="mt-4 rounded-full bg-card px-4 py-2 text-xs font-medium hover:bg-card-hover">Try again</button>
             </div>
-          </header>
-          <div className="mx-auto max-w-[1360px] space-y-4 p-4 md:p-6">
-            <section className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-accent">Trading research / live state</p>
-                <h1 className="mt-2 text-xl font-semibold tracking-tight">Run observability</h1>
-                <p className="mt-2 max-w-2xl text-xs leading-5 text-muted">
-                  Inspect each framework step, its saved evidence, modeled strategy results, and guarded testnet execution state.
-                </p>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-muted">
-                <Database className="h-4 w-4" />
-                SQLite · local API
-              </div>
-            </section>
+          )}
 
-            {notice && (
-              <div
-                role="status"
-                className={cn(
-                  "flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-xs",
-                  notice.kind === "error" ? "border-negative/25 bg-negative/5 text-negative" : notice.kind === "success" ? "border-positive/25 bg-positive/5 text-positive" : "border-accent/25 bg-accent/5 text-accent",
-                )}
-              >
-                <span>{notice.message}</span>
-                <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notification"><X className="h-4 w-4" /></button>
-              </div>
-            )}
-
-            {!data && connection !== "offline" && (
-              <div className="grid gap-4 md:grid-cols-3">
-                {[0, 1, 2].map((item) => <div key={item} className="skeleton h-28" />)}
-              </div>
-            )}
-            {!data && connection === "offline" && (
-              <Card className="p-6">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="mt-0.5 h-5 w-5 text-negative" />
-                  <div>
-                    <CardTitle>Dashboard API unavailable</CardTitle>
-                    <CardDescription className="mt-2">
-                      Start the local service with <code className="rounded bg-background px-1.5 py-1">uv run mats-web</code>, then refresh this page.
-                    </CardDescription>
-                  </div>
-                </div>
-              </Card>
-            )}
-
-            {data && (
-              <>
-                <section className="rounded-xl border border-border bg-card p-3 lg:hidden">
-                  <label className="block text-[10px] text-muted" htmlFor="mobile-run-select">Current run</label>
-                  <select
-                    id="mobile-run-select"
-                    className="mt-2 min-h-10 w-full rounded-xl border border-border bg-background px-3 text-xs text-foreground"
-                    value={selectedRunId ?? ""}
-                    onChange={(event) => setSelectedRunId(event.target.value || null)}
-                  >
-                    <option value="">No run selected</option>
-                    {runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.symbol} · {run.run_id}</option>)}
-                  </select>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" disabled={!selectedRun || !data.active_run_ids.includes(selectedRun.run_id) || selectedRun.status !== "running" || busyAction === "stop"} onClick={submitStop}>
-                      <Pause className="h-3.5 w-3.5" /> Stop
-                    </Button>
-                    <Button size="sm" variant="outline" disabled={!selectedRun || !["failed", "stopped", "running"].includes(selectedRun.status) || data.active_run_ids.includes(selectedRun.run_id) || busyAction === "resume"} onClick={submitResume}>
-                      <Play className="h-3.5 w-3.5" /> Resume
-                    </Button>
-                    <Button size="sm" variant="danger" disabled={!data.active_run_ids.length || busyAction === "stop_all"} onClick={submitStopAll}>
-                      <Pause className="h-3.5 w-3.5" /> Stop all
-                    </Button>
-                    <Button size="sm" variant="outline" disabled={!data.runs.some((run) => ["failed", "stopped", "running"].includes(run.status) && !data.active_run_ids.includes(run.run_id)) || busyAction === "resume_all"} onClick={submitResumeAll}>
-                      <Play className="h-3.5 w-3.5" /> Resume all
-                    </Button>
-                    <Button size="sm" variant="outline" disabled={busyAction === "monitor"} onClick={() => act("monitor", {}, "Monitor cycle started.")}>
-                      <RefreshCw className="h-3.5 w-3.5" /> Monitor cycle
-                    </Button>
-                  </div>
-                </section>
-                <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <SummaryCard label="Open positions" value={String(openPositions.length)} note="Monitor state" icon={<Wallet className="h-4 w-4" />} />
-                  <SummaryCard label="Run tokens" value={tokensForRun.toLocaleString()} note="Recorded usage" icon={<Zap className="h-4 w-4" />} />
-                  <SummaryCard label="Run status" value={selectedRun?.status ?? "idle"} note={selectedRun ? dateLabel(selectedRun.started_at) : "No run selected"} icon={<Activity className="h-4 w-4" />} />
-                  <SummaryCard label="Net backtest" value={money(activeAttempt?.report?.net_pnl)} note={activeAttempt ? `Version ${activeAttempt.version}` : "No strategy attempt"} icon={<BarChart3 className="h-4 w-4" />} tone={numberValue(activeAttempt?.report?.net_pnl) >= 0 ? "positive" : "negative"} />
-                </section>
-
-                <nav className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1" aria-label="Dashboard views">
-                  {TABS.map(({ id, label, icon: Icon }) => (
+          {data && (
+            <>
+              <div className="mb-4 space-y-3 lg:hidden">
+                <select
+                  aria-label="Select research run"
+                  className="min-h-10 w-full border-0 bg-surface px-3 text-xs text-foreground"
+                  value={selectedRunId ?? ""}
+                  onChange={(event) => {
+                    setSelectedRunId(event.target.value || null);
+                    setFeedAgentId("all");
+                  }}
+                >
+                  <option value="">Select a research run</option>
+                  {runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.symbol} · {run.status}</option>)}
+                </select>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  <button type="button" onClick={() => setFeedAgentId("all")} className={cn("flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs", feedAgentId === "all" ? "bg-card text-foreground" : "text-muted")}>
+                    All agents
+                  </button>
+                  {AGENTS.map((agent) => (
                     <button
-                      key={id}
+                      key={agent.id}
                       type="button"
-                      onClick={() => setTab(id)}
-                      className={cn(
-                        "flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-medium",
-                        tab === id ? "border border-accent/30 bg-accent/10 text-accent" : "border border-transparent text-muted hover:bg-foreground/[0.04] hover:text-foreground",
-                      )}
+                      onClick={() => {
+                        setFeedAgentId(agent.id);
+                        setSelectedAgent(agent.id);
+                        setTab("graph");
+                      }}
+                      className={cn("flex shrink-0 items-center gap-2 rounded-full px-2 py-1.5 text-xs", feedAgentId === agent.id ? "bg-card text-foreground" : "text-muted")}
                     >
-                      <Icon className="h-3.5 w-3.5" />{label}
+                      <PersonaAvatar name={agent.name} src={agent.persona} size={24} />
+                      {agent.name}
                     </button>
                   ))}
-                </nav>
+                </div>
+              </div>
+              <nav className="mb-5 flex gap-1 overflow-x-auto py-2" aria-label="Workspace views">
+                {TABS.map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setTab(id)}
+                    className={cn("shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors", tab === id ? "bg-card text-foreground" : "text-muted hover:bg-card/70 hover:text-foreground")}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <span className="ml-auto hidden shrink-0 items-center gap-1.5 px-2 text-[11px] text-muted sm:flex">
+                  <Zap className="h-3 w-3" />{tokensForRun.toLocaleString()} tokens
+                </span>
+              </nav>
 
-                {tab === "graph" && (
-                  <section className="space-y-4">
-                    <Card className="p-5">
-                      <CardHeader>
+              {tab === "graph" && (
+                <section className="mx-auto max-w-3xl">
+                  <div className="mb-5 flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold">{feedAgentId === "all" ? "Agent activity" : `${agentName(feedAgentId)} activity`}</h2>
+                      <p className="mt-1 text-xs text-muted">
+                        {selectedRun?.status === "running" ? "Live updates from each step in the research run." : "A chronological record of persisted agent work."}
+                      </p>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground">{feedSteps.length} {feedSteps.length === 1 ? "step" : "steps"}</span>
+                  </div>
+                  {renderWorkflow()}
+                  {selectedRun?.status === "running" && !feedSteps.some((step) => step.status === "running") && (
+                    <div className="mt-5 flex items-center gap-3 rounded-2xl bg-surface px-4 py-3">
+                      <span className="grid h-8 w-8 place-items-center rounded-full bg-card text-accent"><LoaderCircle className="h-4 w-4 animate-spin" /></span>
+                      <div>
+                        <p className="text-xs font-medium">Run is moving to the next step</p>
+                        <p className="mt-0.5 text-[11px] text-muted">New activity will appear here as it is saved.</p>
+                      </div>
+                    </div>
+                  )}
+                  {selectedRun?.status === "failed" && (
+                    <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl bg-negative/5 px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <AlertCircle className="h-4 w-4 shrink-0 text-negative" />
                         <div>
-                          <CardTitle>Framework workflow</CardTitle>
-                          <CardDescription>Click a node to open the corresponding persisted agent details.</CardDescription>
+                          <p className="text-xs font-medium">This run stopped with an error</p>
+                          <p className="mt-0.5 text-[11px] text-muted">Review the event log or resume the run when ready.</p>
                         </div>
-                        <StatusBadge status={selectedRun?.status ?? "idle"} />
-                      </CardHeader>
-                    </Card>
-                    {renderWorkflow()}
-                  </section>
-                )}
-                {tab === "agent" && renderAgentDetail()}
-                {tab === "strategy" && renderStrategy()}
-                {tab === "positions" && renderPositions()}
-                {tab === "events" && (
-                  <section className="space-y-4">
-                    <Card className="p-5">
-                      <CardHeader>
-                        <div><CardTitle>System events & errors</CardTitle><CardDescription>Latest 200 events across saved runs.</CardDescription></div>
-                        <span className="text-xs text-muted">{allEvents.length} records</span>
-                      </CardHeader>
-                    </Card>
-                    {renderEvents()}
-                  </section>
-                )}
-                <p className="text-[10px] leading-5 text-muted">
-                  Backtests are historical simulations, not realized returns. Browser controls call the local framework API; exchange access remains in the backend.
-                </p>
-              </>
-            )}
+                      </div>
+                      <Button size="sm" variant="ghost" className="rounded-full" disabled={Boolean(data.active_run_ids.includes(selectedRun.run_id)) || busyAction === "resume"} onClick={submitResume}><Play className="h-3.5 w-3.5" />Resume</Button>
+                    </div>
+                  )}
+                </section>
+              )}
+              {tab === "agent" && renderAgentDetail()}
+              {tab === "strategy" && renderStrategy()}
+              {tab === "positions" && renderPositions()}
+              {tab === "events" && (
+                <section className="mx-auto max-w-3xl">
+                  <div className="mb-5">
+                    <h2 className="text-base font-semibold">System events</h2>
+                    <p className="mt-1 text-xs text-muted">Errors, retries, and monitor activity.</p>
+                  </div>
+                  {renderEvents()}
+                </section>
+              )}
+              <p className="mx-auto mt-8 max-w-3xl text-[10px] leading-5 text-muted-foreground">
+                Backtests are historical simulations, not realized returns. Browser controls call the local framework API; exchange access remains in the backend.
+              </p>
+            </>
+          )}
+        </div>
+      </main>
+
+      <aside className="hidden h-screen overflow-y-auto bg-surface/40 px-5 py-6 min-[1100px]:sticky min-[1100px]:top-0 min-[1100px]:block">
+        {data ? renderResearchContext() : (
+          <div className="space-y-6 pt-2" aria-label="Loading market context">
+            <div className="skeleton h-4 w-32 rounded-full" />
+            <div className="flex items-center gap-3"><div className="skeleton h-9 w-9 rounded-full" /><div className="space-y-2"><div className="skeleton h-3 w-28 rounded-full" /><div className="skeleton h-2 w-40 rounded-full" /></div></div>
+            <div className="skeleton h-32 w-full rounded-xl" />
+            <div className="skeleton h-20 w-full rounded-xl" />
           </div>
-        </main>
-      </div>
+        )}
+      </aside>
       {showStart && (
         <StartDialog
           symbols={runSymbols}
@@ -1370,31 +1506,6 @@ export function Dashboard() {
         />
       )}
     </div>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  note,
-  icon,
-  tone,
-}: {
-  label: string;
-  value: string;
-  note: string;
-  icon: React.ReactNode;
-  tone?: "positive" | "negative";
-}) {
-  return (
-    <Card className="flex min-w-0 items-center gap-3 px-4 py-3">
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-surface text-muted">{icon}</span>
-      <div className="min-w-0">
-        <p className="truncate text-[11px] text-muted">{label}</p>
-        <p className={cn("mt-0.5 truncate text-base font-semibold capitalize", tone === "positive" ? "text-positive" : tone === "negative" ? "text-negative" : "")}>{value}</p>
-        <p className="truncate text-[10px] text-muted-foreground">{note}</p>
-      </div>
-    </Card>
   );
 }
 
