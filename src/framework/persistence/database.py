@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS live_positions (
     net_pnl REAL,
     events_json TEXT NOT NULL,
     opened_at TEXT NOT NULL,
+    last_bar_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_live_positions_status_symbol
@@ -134,6 +135,14 @@ class Database:
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA busy_timeout = 30000")
         self.connection.executescript(SCHEMA)
+        position_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(live_positions)")
+        }
+        if "last_bar_timestamp" not in position_columns:
+            self.connection.execute(
+                """ALTER TABLE live_positions
+                   ADD COLUMN last_bar_timestamp TEXT NOT NULL DEFAULT ''"""
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -149,7 +158,7 @@ class Database:
             )
 
     def update_run_status(self, run_id: str, status: str) -> None:
-        finished_at = _now() if status in {"completed", "failed"} else None
+        finished_at = _now() if status in {"completed", "failed", "stopped"} else None
         with self._lock, self.connection:
             self.connection.execute(
                 "UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?",
@@ -334,6 +343,7 @@ class Database:
         take_profit_price: float | None,
         entry_order_id: str | None,
         protective_order_id: str | None,
+        entry_bar_timestamp: str,
     ) -> None:
         now = _now()
         event = {
@@ -349,8 +359,8 @@ class Database:
                 """INSERT INTO live_positions
                    (run_id, symbol, strategy_key, strategy_json, side, amount, entry_price,
                     stop_price, take_profit_price, entry_order_id, protective_order_id, status,
-                    events_json, opened_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                    events_json, opened_at, last_bar_timestamp, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
                    ON CONFLICT(run_id) DO UPDATE SET
                        symbol = excluded.symbol, strategy_key = excluded.strategy_key,
                        strategy_json = excluded.strategy_json, side = excluded.side,
@@ -361,6 +371,7 @@ class Database:
                        protective_order_id = excluded.protective_order_id,
                        status = 'open', stop_reason = NULL, bars_held = 0, net_pnl = NULL,
                        events_json = excluded.events_json, opened_at = excluded.opened_at,
+                       last_bar_timestamp = excluded.last_bar_timestamp,
                        updated_at = excluded.updated_at""",
                 (
                     run_id,
@@ -376,6 +387,7 @@ class Database:
                     protective_order_id,
                     json_dumps([event]),
                     now,
+                    entry_bar_timestamp,
                     now,
                 ),
             )
@@ -410,6 +422,9 @@ class Database:
         reason: str,
         bars_held: int,
         net_pnl: float | None = None,
+        amount: float | None = None,
+        protective_order_id: str | None = None,
+        last_bar_timestamp: str | None = None,
     ) -> None:
         now = _now()
         with self._lock, self.connection:
@@ -430,6 +445,9 @@ class Database:
             self.connection.execute(
                 """UPDATE live_positions
                    SET status = ?, stop_reason = ?, bars_held = ?, net_pnl = ?,
+                       amount = COALESCE(?, amount),
+                       protective_order_id = COALESCE(?, protective_order_id),
+                       last_bar_timestamp = COALESCE(?, last_bar_timestamp),
                        events_json = ?, updated_at = ?
                    WHERE run_id = ?""",
                 (
@@ -437,10 +455,23 @@ class Database:
                     reason,
                     bars_held,
                     net_pnl,
+                    amount,
+                    protective_order_id,
+                    last_bar_timestamp,
                     json_dumps(events),
                     now,
                     run_id,
                 ),
+            )
+
+    def update_position_progress(
+        self, run_id: str, *, bars_held: int, last_bar_timestamp: str
+    ) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """UPDATE live_positions SET bars_held = ?, last_bar_timestamp = ?, updated_at = ?
+                   WHERE run_id = ? AND status = 'open'""",
+                (bars_held, last_bar_timestamp, _now(), run_id),
             )
 
     def recent_strategy_expectancy(self, strategy_key: str, lookback: int) -> float | None:
@@ -485,6 +516,13 @@ class Database:
                 "DELETE FROM strategy_stops WHERE symbol = ? AND strategy_key = ?",
                 (symbol, strategy_key),
             )
+
+    def clear_strategy_stops(self, symbol: str) -> int:
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                "DELETE FROM strategy_stops WHERE symbol = ?", (symbol,)
+            )
+            return cursor.rowcount
 
     def resumable_run(self, run_id: str | None = None) -> sqlite3.Row | None:
         with self._lock:
