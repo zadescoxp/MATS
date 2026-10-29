@@ -6,6 +6,7 @@ from framework.schemas.models import (
     BacktestReport,
     Critique,
     ExecutionReport,
+    LiveSignal,
     MultiTimeframeFindings,
     OHLCVBar,
     RiskAssessment,
@@ -26,9 +27,10 @@ class GraphState(BaseModel):
     critique: Critique | None = None
     revision_count: int = Field(default=0, ge=0)
     risk_assessment: RiskAssessment | None = None
+    live_signal: LiveSignal | None = None
     generated_code: str | None = None
     execution_result: ExecutionReport | None = None
     errors: list[str] = Field(default_factory=list)
     messages: list[dict[str, Any]] = Field(default_factory=list)
-    status: Literal["running", "completed", "failed"] = "running"
+    status: Literal["running", "completed", "failed", "stopped"] = "running"
     account_equity: float | None = Field(default=None, gt=0)
