@@ -31,6 +31,7 @@ class PositionMonitor:
         position_context = {
             "side": position["side"],
             "entry_price": position["entry_price"],
+            "opened_at": position["opened_at"],
             "stop_price": position["stop_price"],
             "take_profit_price": position["take_profit_price"],
             "bars_held": bars_held,
