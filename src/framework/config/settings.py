@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     slippage_fixed: float = Field(default=0.0, ge=0)
     max_risk_per_trade: float = Field(default=0.01, gt=0, le=1)
     max_account_exposure: float = Field(default=0.25, gt=0, le=1)
+    edge_fade_lookback: int = Field(default=10, ge=1)
+    edge_fade_min_expectancy: float = 0.0
+    allow_short: bool = False
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
     exchange_rate_limit_ms: int = Field(default=1000, ge=0)
     request_timeout_ms: int = Field(default=10_000, gt=0)
