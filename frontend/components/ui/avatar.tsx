@@ -9,7 +9,7 @@ interface PersonaAvatarProps {
 export function PersonaAvatar({ name, src, size = 40 }: PersonaAvatarProps) {
   return (
     <div
-      className="relative grid shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-background text-xs font-semibold text-muted"
+      className="relative grid shrink-0 place-items-center overflow-hidden rounded-full bg-surface text-xs font-semibold text-muted ring-1 ring-border"
       style={{ width: size, height: size }}
       aria-label={`${name} persona`}
     >
