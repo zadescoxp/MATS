@@ -127,9 +127,14 @@ class TradingFramework:
         self, symbol: str, config: dict[str, Any] | None = None, *, run_id: str | None = None
     ) -> GraphState:
         options = config or {}
-        unknown = set(options).difference({"timeframes", "account_equity"})
+        unknown = set(options).difference({"timeframes", "account_equity", "dashboard_batch_id"})
         if unknown:
             raise ValueError(f"Unsupported run configuration keys: {', '.join(sorted(unknown))}")
+        dashboard_batch_id = options.get("dashboard_batch_id")
+        if dashboard_batch_id is not None and (
+            not isinstance(dashboard_batch_id, str) or not dashboard_batch_id.strip()
+        ):
+            raise ValueError("dashboard_batch_id must be a non-empty string")
         timeframes = options.get("timeframes", self.settings.timeframes)
         if not timeframes:
             raise ValueError("At least one timeframe is required")
@@ -164,6 +169,8 @@ class TradingFramework:
         }
         config_snapshot["timeframes_to_consider"] = list(timeframes)
         config_snapshot["account_equity"] = options.get("account_equity")
+        if dashboard_batch_id is not None:
+            config_snapshot["dashboard_batch_id"] = dashboard_batch_id
         self.database.create_run(run_id, symbol, config_snapshot)
         return self._invoke(state, run_id)
 
