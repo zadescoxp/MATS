@@ -5,7 +5,11 @@ from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
 from framework.schemas.models import StrategyDefinition
-from framework.strategies.library import STRATEGY_LIBRARY, strategy_library_summary
+from framework.strategies.library import (
+    STRATEGY_LIBRARY,
+    strategy_fingerprint,
+    strategy_library_summary,
+)
 
 _MAX_CANDIDATES_PER_TIMEFRAME = 5
 
@@ -32,12 +36,15 @@ class StrategyBuilderNode:
                     "timeframe": item["strategy"].chosen_timeframe,
                     "template_name": item["strategy"].template_name,
                     "parameters": item["strategy"].parameters,
+                    "exit_rule": item["strategy"].exit_rule,
                     "fast_period": item["strategy"].fast_period,
                     "slow_period": item["strategy"].slow_period,
                     "filters": item["strategy"].filters,
                     "stop_loss_pct": item["strategy"].stop_loss_pct,
                     "take_profit_pct": item["strategy"].take_profit_pct,
                     "position_fraction": item["strategy"].position_fraction,
+                    "time_stop_bars": item["strategy"].time_stop_bars,
+                    "trailing_atr_multiple": item["strategy"].trailing_atr_multiple,
                     "closed_trades": item["trades"],
                     "net_pnl_after_costs": item["net_pnl"],
                     "max_drawdown_pct": item["max_drawdown"],
@@ -56,6 +63,11 @@ class StrategyBuilderNode:
                 reason += " All currently viable candidates were already attempted."
             else:
                 reason += " Review timeframe_coverage for missing or insufficient history."
+            if any(info.get("stopped_candidates") for info in coverage.values()):
+                reason += (
+                    " Previously stopped strategy fingerprints were excluded; reset them "
+                    "explicitly to retry."
+                )
             return AgentResult(
                 updates={
                     "strategy": None,
@@ -186,6 +198,7 @@ class StrategyBuilderNode:
                 info["reason"] = "insufficient_history"
                 continue
 
+            stopped_candidates: list[dict[str, str]] = []
             for template_name, template in STRATEGY_LIBRARY.items():
                 if timeframe not in template["supported_timeframes"]:
                     continue
@@ -210,15 +223,25 @@ class StrategyBuilderNode:
                     chosen_timeframe=timeframe,
                     template_name=template_name,
                     entry_rule=template_name,
-                    exit_rule="opposite_signal",
+                    exit_rule=template["default_exit_rule"],
                     fast_period=fast,
                     slow_period=slow,
                     parameters=parameters,
                     stop_loss_pct=float(risk["stop_loss_pct"]),
                     take_profit_pct=risk["take_profit_pct"],
                     position_fraction=0.1,
+                    time_stop_bars=template.get("default_time_stop_bars"),
+                    trailing_atr_multiple=template.get("default_trailing_atr_multiple"),
                     filters=["volume_positive"] if template_name == "ema_crossover" else [],
                 )
+                stop_reason = self.context.database.strategy_stop_reason(
+                    state.symbol, strategy_fingerprint(strategy)
+                )
+                if stop_reason:
+                    stopped_candidates.append(
+                        {"template_name": template_name, "reason": stop_reason}
+                    )
+                    continue
                 report = self.context.backtester.run(strategy, candles, data=state.raw_data)
                 if report.total_trades >= self.context.settings.min_backtest_trades:
                     candidates.append(
@@ -229,12 +252,27 @@ class StrategyBuilderNode:
                             "max_drawdown": report.max_drawdown_pct,
                         }
                     )
+            if stopped_candidates:
+                info["stopped_candidates"] = stopped_candidates
         return candidates, coverage
 
 
 def _strategy_key(
     strategy: StrategyDefinition,
-) -> tuple[str, str, int, int, str, tuple[str, ...], float, float | None, float]:
+) -> tuple[
+    str,
+    str,
+    int,
+    int,
+    str,
+    tuple[str, ...],
+    float,
+    float | None,
+    float,
+    str,
+    int | None,
+    float | None,
+]:
     return (
         strategy.template_name,
         strategy.chosen_timeframe,
@@ -245,6 +283,9 @@ def _strategy_key(
         strategy.stop_loss_pct,
         strategy.take_profit_pct,
         strategy.position_fraction,
+        strategy.exit_rule,
+        strategy.time_stop_bars,
+        strategy.trailing_atr_multiple,
     )
 
 
