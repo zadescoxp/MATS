@@ -107,6 +107,16 @@ CREATE TABLE IF NOT EXISTS node_checkpoints (
     timestamp TEXT NOT NULL,
     PRIMARY KEY (run_id, node_name, phase, timestamp)
 );
+CREATE TABLE IF NOT EXISTS entry_watchers (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    interval_seconds INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    signal_json TEXT,
+    last_checked_at TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -291,6 +301,64 @@ class Database:
                 (run_id,),
             ).fetchone()
         return json.loads(row["state_json"]) if row else None
+
+    def start_entry_watcher(self, run_id: str, interval_seconds: int) -> None:
+        now = _now()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO entry_watchers
+                   (run_id, interval_seconds, status, created_at, updated_at)
+                   VALUES (?, ?, 'watching', ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                       interval_seconds = excluded.interval_seconds,
+                       status = 'watching',
+                       error = NULL,
+                       updated_at = excluded.updated_at""",
+                (run_id, interval_seconds, now, now),
+            )
+
+    def update_entry_watcher(
+        self,
+        run_id: str,
+        *,
+        status: str | None = None,
+        signal: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        now = _now()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """UPDATE entry_watchers SET
+                       status = COALESCE(?, status),
+                       signal_json = COALESCE(?, signal_json),
+                       last_checked_at = ?,
+                       error = ?,
+                       updated_at = ?
+                   WHERE run_id = ?""",
+                (
+                    status,
+                    json_dumps(signal) if signal is not None else None,
+                    now,
+                    error,
+                    now,
+                    run_id,
+                ),
+            )
+
+    def entry_watchers(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM entry_watchers"
+        if active_only:
+            query += " WHERE status IN ('watching', 'paused')"
+        query += " ORDER BY created_at"
+        with self._lock:
+            rows = self.connection.execute(query).fetchall()
+        return [
+            {
+                **dict(row),
+                "signal": json.loads(row["signal_json"]) if row["signal_json"] else None,
+            }
+            for row in rows
+        ]
 
     def log_event(
         self,
