@@ -345,8 +345,9 @@ def test_stopped_run_can_resume_from_the_latest_checkpoint(candles) -> None:
         assert database.resumable_run("stopped-run")["status"] == "stopped"
 
         stop_event.clear()
-        resumed = framework.resume("stopped-run")
+        resumed = framework.resume("stopped-run", account_equity=5000)
         assert resumed.status == "completed", resumed.errors
+        assert resumed.account_equity == 5000
     finally:
         framework.close()
         database.close()
