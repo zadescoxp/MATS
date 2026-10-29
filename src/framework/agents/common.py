@@ -33,4 +33,8 @@ def result_with_response(
         updates={**updates, "messages": messages},
         tokens_used=response.tokens_used,
         cost=response.cost,
+        tool_calls=[
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in response.tool_calls
+        ],
     )
