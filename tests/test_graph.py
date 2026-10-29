@@ -147,6 +147,7 @@ def _framework(
     fail_analyst_once: bool = False,
     max_revision_loops: int = 2,
     min_backtest_net_pnl: float = 0,
+    stop_event: threading.Event | None = None,
 ):
     settings = Settings(
         database_path=Path(":memory:"),
@@ -170,6 +171,7 @@ def _framework(
         market_data=market,
         llm=llm,
         execution=execution,
+        stop_event=stop_event,
     )
     return framework, database, market, llm, execution
 
@@ -191,10 +193,14 @@ def test_full_graph_uses_one_analyst_and_dry_run(candles) -> None:
         assert result.backtest_report and result.backtest_report.total_trades >= 1
         assert result.backtest_report.net_pnl > 0
         analyst_step = database.connection.execute(
-            "SELECT tokens_used, cost FROM agent_steps WHERE agent_name='multi_timeframe_analyst'"
+            """SELECT tokens_used, cost, tool_calls_json FROM agent_steps
+               WHERE agent_name='multi_timeframe_analyst'"""
         ).fetchone()
         assert analyst_step["tokens_used"] == 125
         assert analyst_step["cost"] == 0.001
+        tool_calls = json.loads(analyst_step["tool_calls_json"])
+        assert tool_calls[0]["name"] == "submit_findings"
+        assert tool_calls[0]["arguments"]["higher_timeframe_bias"] == "bullish"
     finally:
         framework.close()
         database.close()
@@ -324,6 +330,23 @@ def test_run_many_processes_live_symbols_sequentially(candles) -> None:
         results = framework.run_many(["BTC/USDT", "ETH/USDT", "SOL/USDT"], max_workers=3)
         assert calls == ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
         assert [result.symbol for result in results] == calls
+    finally:
+        framework.close()
+        database.close()
+
+
+def test_stopped_run_can_resume_from_the_latest_checkpoint(candles) -> None:
+    stop_event = threading.Event()
+    stop_event.set()
+    framework, database, _, _, _ = _framework(candles, stop_event=stop_event)
+    try:
+        stopped = framework.run("BTC/USDT", run_id="stopped-run")
+        assert stopped.status == "stopped"
+        assert database.resumable_run("stopped-run")["status"] == "stopped"
+
+        stop_event.clear()
+        resumed = framework.resume("stopped-run")
+        assert resumed.status == "completed", resumed.errors
     finally:
         framework.close()
         database.close()
