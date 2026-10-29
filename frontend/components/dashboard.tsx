@@ -5,6 +5,7 @@ import {
   AlertCircle,
   ArrowRight,
   BarChart3,
+  CheckCircle2,
   ChevronRight,
   Circle,
   FileJson,
@@ -352,6 +353,7 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardState | null>(null);
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runGroupIds, setRunGroupIds] = useState<string[]>([]);
   const [selectedAgent, setSelectedAgent] = useState("data_worker");
   const [feedAgentId, setFeedAgentId] = useState("all");
   const [tab, setTab] = useState<DashboardTab>("graph");
@@ -432,10 +434,22 @@ export function Dashboard() {
     }
   }, [data]);
 
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(
+      () => setNotice(null),
+      notice.kind === "error" ? 8000 : 4500,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
   const runs = data?.runs ?? EMPTY_RUNS;
   const dryRunEnabled = data?.settings.dry_run ?? true;
   const killSwitchEnabled = data?.settings.kill_switch ?? true;
   const selectedRun = runs.find((run) => run.run_id === selectedRunId) ?? null;
+  const groupedRuns = runGroupIds
+    .map((runId) => runs.find((run) => run.run_id === runId))
+    .filter((run): run is Run => run !== undefined);
   const activeAttempt = latestAttempt(selectedRun);
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
   const runSymbols = useMemo(
@@ -515,10 +529,18 @@ export function Dashboard() {
       dry_run: startDryRun,
     };
     if (accountEquity.trim()) payload.account_equity = Number(accountEquity);
-    const result = await act("start", payload, "Run started. Live updates will appear as steps are saved.");
+    const result = await act(
+      "start",
+      payload,
+      `${startSymbols.length} ${startSymbols.length === 1 ? "run" : "runs"} started in parallel.`,
+    );
     if (result) {
       const ids = result.run_ids;
-      if (Array.isArray(ids) && typeof ids[0] === "string") setSelectedRunId(ids[0]);
+      if (Array.isArray(ids)) {
+        const validIds = ids.filter((id): id is string => typeof id === "string");
+        setRunGroupIds(validIds);
+        if (validIds[0]) setSelectedRunId(validIds[0]);
+      }
       setShowStart(false);
     }
   }
@@ -1278,6 +1300,7 @@ export function Dashboard() {
                   type="button"
                   onClick={() => {
                     setSelectedRunId(run.run_id);
+                    setRunGroupIds([]);
                     setFeedAgentId("all");
                     setTab("graph");
                   }}
@@ -1355,8 +1378,23 @@ export function Dashboard() {
 
         <div className="px-4 pb-10 sm:px-7">
           {notice && (
-            <div role="status" className={cn("mb-3 flex items-start justify-between gap-3 rounded-xl px-4 py-3 text-xs", notice.kind === "error" ? "bg-negative/10 text-negative" : notice.kind === "success" ? "bg-positive/10 text-positive" : "bg-accent/10 text-accent")}>
-              <span>{notice.message}</span>
+            <div
+              role={notice.kind === "error" ? "alert" : "status"}
+              className={cn(
+                "fixed bottom-5 right-5 z-[60] flex w-[min(26rem,calc(100vw-2.5rem))] items-start gap-3 rounded-2xl border border-border bg-card p-4 text-xs",
+                notice.kind === "error"
+                  ? "text-negative"
+                  : notice.kind === "success"
+                    ? "text-positive"
+                    : "text-accent",
+              )}
+            >
+              {notice.kind === "error" ? (
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              ) : (
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+              )}
+              <span className="min-w-0 flex-1 leading-5">{notice.message}</span>
               <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notification"><X className="h-4 w-4" /></button>
             </div>
           )}
@@ -1380,6 +1418,7 @@ export function Dashboard() {
                   value={selectedRunId ?? ""}
                   onChange={(event) => {
                     setSelectedRunId(event.target.value || null);
+                    setRunGroupIds([]);
                     setFeedAgentId("all");
                   }}
                 >
@@ -1425,6 +1464,74 @@ export function Dashboard() {
 
               {tab === "graph" && (
                 <section className="mx-auto max-w-3xl">
+                  {groupedRuns.length > 1 && (
+                    <div className="mb-7">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <h2 className="text-sm font-semibold">Parallel runs</h2>
+                          <p className="mt-1 text-xs text-muted">Each market has its own worker and activity stream.</p>
+                        </div>
+                        <Badge className="rounded-full bg-card px-2.5 py-1 text-muted">
+                          {groupedRuns.filter((run) => run.status === "running").length} active
+                        </Badge>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        {groupedRuns.map((run) => {
+                          const currentStep = [...run.steps].reverse().find((step) => step.status === "running")
+                            ?? run.steps.at(-1);
+                          const definition = currentStep
+                            ? AGENTS.find((agent) => agent.id === currentStep.agent_name)
+                            : undefined;
+                          return (
+                            <button
+                              key={run.run_id}
+                              type="button"
+                              onClick={() => setSelectedRunId(run.run_id)}
+                              className={cn(
+                                "min-w-0 rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:bg-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                                selectedRunId === run.run_id && "ring-1 ring-accent/50",
+                              )}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                                  <CoinMark symbol={run.symbol} small />
+                                  <span className="truncate">{run.symbol}</span>
+                                </span>
+                                <StatusBadge status={run.status} />
+                              </div>
+                              <div className="mt-4 flex min-w-0 items-start gap-3">
+                                <PersonaAvatar
+                                  name={definition?.name ?? "Agent"}
+                                  src={definition?.persona}
+                                  size={36}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <p className="flex items-center gap-1.5 text-xs font-medium">
+                                    {run.status === "running" && (
+                                      <LoaderCircle className="h-3 w-3 shrink-0 animate-spin text-accent" />
+                                    )}
+                                    <span className="truncate">
+                                      {definition?.name ?? (run.status === "running" ? "Preparing run" : "No active agent")}
+                                    </span>
+                                  </p>
+                                  <p className="mt-1 line-clamp-2 min-h-9 text-xs leading-5 text-muted">
+                                    {currentStep
+                                      ? stepSummary(currentStep, run.symbol)
+                                      : run.status === "running"
+                                        ? "The first agent is getting ready."
+                                        : "No agent activity has been saved yet."}
+                                  </p>
+                                </div>
+                              </div>
+                              <p className="mt-3 border-t border-border pt-3 text-[10px] text-muted-foreground">
+                                {run.steps.length} {run.steps.length === 1 ? "step" : "steps"} · {run.steps.reduce((total, step) => total + step.tokens_used, 0).toLocaleString()} tokens
+                              </p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   <div className="mb-5 flex items-center justify-between gap-3">
                     <div>
                       <h2 className="text-base font-semibold">{feedAgentId === "all" ? "Agent activity" : `${agentName(feedAgentId)} activity`}</h2>
@@ -1620,8 +1727,11 @@ function StartDialog({
             ))}
           </div>
         </fieldset>
-        <label className="mt-5 block text-xs font-medium" htmlFor="account-equity">Optional account equity</label>
-        <Input id="account-equity" type="number" min="0.01" step="any" value={accountEquity} onChange={(event) => setAccountEquity(event.target.value)} placeholder="Leave empty to use framework defaults" className="mt-2" />
+        <label className="mt-5 block text-xs font-medium" htmlFor="account-equity">Total account equity</label>
+        <Input id="account-equity" type="number" min="0.01" step="any" value={accountEquity} onChange={(event) => setAccountEquity(event.target.value)} placeholder="Optional" className="mt-2" />
+        <p className="mt-2 text-[11px] leading-5 text-muted">
+          Split evenly across selected markets. Live runs use the available testnet quote balance when left empty.
+        </p>
         <label className="mt-5 flex cursor-pointer items-center justify-between gap-4 rounded-xl border border-border px-4 py-3">
           <span>
             <span className="block text-xs font-medium">Dry-run mode</span>
@@ -1633,7 +1743,7 @@ function StartDialog({
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
           <Button type="submit" variant="primary" disabled={busy}>
             {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Start run
+            Start {selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}
           </Button>
         </div>
       </form>
