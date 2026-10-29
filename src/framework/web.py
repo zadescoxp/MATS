@@ -101,9 +101,13 @@ class DashboardService:
 
             if dry_run_override is not None:
                 self.settings.dry_run = dry_run_override
+            batch_id = str(uuid.uuid4())
             run_ids = [str(uuid.uuid4()) for _ in symbols]
             for run_id, symbol in zip(run_ids, symbols, strict=True):
-                config: dict[str, Any] = {"timeframes": timeframes}
+                config: dict[str, Any] = {
+                    "timeframes": timeframes,
+                    "dashboard_batch_id": batch_id,
+                }
                 if symbol in equity_by_symbol:
                     config["account_equity"] = equity_by_symbol[symbol]
                 elif account_equity is not None:
@@ -118,7 +122,7 @@ class DashboardService:
                 )
                 self._threads[run_id] = thread
                 thread.start()
-        return {"run_ids": run_ids}
+        return {"run_ids": run_ids, "batch_id": batch_id}
 
     def stop(self, run_id: str) -> dict[str, str]:
         with self._lock:
@@ -331,6 +335,7 @@ class DashboardService:
                             "timeframes", self.settings.timeframes
                         ),
                         "account_equity": config.get("account_equity"),
+                        "dashboard_batch_id": config.get("dashboard_batch_id"),
                     },
                 )
             database.log_event(run_id, "dashboard_run_failed", str(error), error=error)
