@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from framework.config.settings import Settings, get_settings
 from framework.core.graph import TradingFramework
 from framework.persistence.database import Database
+from framework.tools.execution import ExecutionTools
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 _ALLOWED_TIMEFRAMES = {
@@ -82,8 +83,6 @@ class DashboardService:
             effective_dry_run = (
                 self.settings.dry_run if dry_run_override is None else dry_run_override
             )
-            if not effective_dry_run and not self.settings.kill_switch and len(symbols) > 1:
-                raise ValueError("Live multi-symbol runs must be started one symbol at a time.")
             if not effective_dry_run and not self.settings.kill_switch:
                 active = [
                     run_id
@@ -93,13 +92,22 @@ class DashboardService:
                 if active:
                     raise ValueError("A live run is already active.")
 
+            equity_by_symbol: dict[str, float] = {}
+            if len(symbols) > 1 and account_equity is not None:
+                allocation = float(account_equity) / len(symbols)
+                equity_by_symbol = dict.fromkeys(symbols, allocation)
+            elif len(symbols) > 1 and not effective_dry_run and not self.settings.kill_switch:
+                equity_by_symbol = self._allocate_live_equity(symbols)
+
             if dry_run_override is not None:
                 self.settings.dry_run = dry_run_override
             run_ids = [str(uuid.uuid4()) for _ in symbols]
-            config: dict[str, Any] = {"timeframes": timeframes}
-            if account_equity is not None:
-                config["account_equity"] = float(account_equity)
             for run_id, symbol in zip(run_ids, symbols, strict=True):
+                config: dict[str, Any] = {"timeframes": timeframes}
+                if symbol in equity_by_symbol:
+                    config["account_equity"] = equity_by_symbol[symbol]
+                elif account_equity is not None:
+                    config["account_equity"] = float(account_equity)
                 stop_event = threading.Event()
                 self._stop_events[run_id] = stop_event
                 thread = threading.Thread(
@@ -139,13 +147,27 @@ class DashboardService:
             "message": f"Stop requested for {len(active_ids)} run(s); kill switch enabled.",
         }
 
-    def resume(self, run_id: str | None) -> dict[str, str]:
+    def resume(
+        self,
+        run_id: str | None,
+        *,
+        account_equity: float | None = None,
+        allow_parallel_live: bool = False,
+    ) -> dict[str, str]:
         database = Database(self.settings.database_path)
         try:
             row = database.resumable_run(run_id)
             if row is None:
                 raise ValueError(f"No incomplete run found for run_id={run_id!r}.")
             selected_id = str(row["run_id"])
+            saved_config = json.loads(row["config_snapshot"])
+            equity = account_equity
+            if equity is None:
+                configured_equity = saved_config.get("account_equity")
+                if not isinstance(configured_equity, bool) and isinstance(
+                    configured_equity, int | float
+                ):
+                    equity = float(configured_equity)
             with self._lock:
                 if self._run_is_active(selected_id):
                     raise ValueError(f"Run {selected_id} is already active.")
@@ -157,13 +179,13 @@ class DashboardService:
                         for run_id, thread in self._threads.items()
                     )
                 )
-                if active_live_run:
+                if active_live_run and not allow_parallel_live:
                     raise ValueError("A live run is already active.")
                 stop_event = threading.Event()
                 self._stop_events[selected_id] = stop_event
                 thread = threading.Thread(
                     target=self._resume,
-                    args=(selected_id, stop_event),
+                    args=(selected_id, stop_event, equity),
                     name=f"mats-resume-{selected_id[:8]}",
                     daemon=True,
                 )
@@ -177,16 +199,37 @@ class DashboardService:
         snapshot = self.state()
         active = set(snapshot["active_run_ids"])
         candidates = [
-            run["run_id"]
+            run
             for run in snapshot["runs"]
             if run["status"] in {"running", "failed", "stopped"} and run["run_id"] not in active
         ]
         if not candidates:
             raise ValueError("No inactive incomplete runs found.")
+        equity_overrides: dict[str, float] = {}
         if not self.settings.dry_run and not self.settings.kill_switch:
-            if active or len(candidates) > 1:
-                raise ValueError("Resume live runs one at a time to preserve portfolio safety.")
-        resumed = [self.resume(run_id) for run_id in candidates]
+            if active:
+                raise ValueError("Stop active live runs before resuming another live batch.")
+            has_unallocated_runs = any(
+                isinstance(run["config"].get("account_equity"), bool)
+                or not isinstance(run["config"].get("account_equity"), int | float)
+                for run in candidates
+            )
+            if len(candidates) > 1 and has_unallocated_runs:
+                allocations = self._allocate_live_equity([run["symbol"] for run in candidates])
+                equity_overrides = {run["run_id"]: allocations[run["symbol"]] for run in candidates}
+        resumed = [
+            self.resume(
+                run["run_id"],
+                account_equity=equity_overrides.get(
+                    run["run_id"],
+                    run["config"].get("account_equity")
+                    if isinstance(run["config"].get("account_equity"), int | float)
+                    else None,
+                ),
+                allow_parallel_live=True,
+            )
+            for run in candidates
+        ]
         return {
             "run_ids": [item["run_id"] for item in resumed],
             "message": f"Resume requested for {len(resumed)} run(s).",
@@ -295,11 +338,13 @@ class DashboardService:
         except Exception:
             logger.exception("Could not persist startup failure for dashboard run %s", run_id)
 
-    def _resume(self, run_id: str, stop_event: threading.Event) -> None:
+    def _resume(
+        self, run_id: str, stop_event: threading.Event, account_equity: float | None = None
+    ) -> None:
         worker = None
         try:
             worker = TradingFramework(settings=self.settings, stop_event=stop_event)
-            worker.resume(run_id)
+            worker.resume(run_id, account_equity=account_equity)
         except Exception as exc:
             if worker:
                 worker.database.log_event(run_id, "dashboard_resume_failed", str(exc), error=exc)
@@ -311,6 +356,30 @@ class DashboardService:
     def _run_is_active(self, run_id: str) -> bool:
         thread = self._threads.get(run_id)
         return bool(thread and thread.is_alive())
+
+    def _allocate_live_equity(self, symbols: list[str]) -> dict[str, float]:
+        balance = ExecutionTools(self.settings).get_balance()
+        symbols_by_quote: dict[str, list[str]] = {}
+        for symbol in symbols:
+            quote = symbol.split("/")[-1]
+            symbols_by_quote.setdefault(quote, []).append(symbol)
+        allocations: dict[str, float] = {}
+        for quote, quote_symbols in symbols_by_quote.items():
+            available = balance.free.get(quote)
+            if available is None:
+                available = balance.currencies.get(quote, {}).get("free")
+            if available is None:
+                raise ValueError(
+                    f"No available {quote} balance to allocate across the selected live runs."
+                )
+            available_equity = float(available)
+            if not math.isfinite(available_equity) or available_equity <= 0:
+                raise ValueError(
+                    f"No available {quote} balance to allocate across the selected live runs."
+                )
+            allocation = available_equity / len(quote_symbols)
+            allocations.update(dict.fromkeys(quote_symbols, allocation))
+        return allocations
 
     def _set_toggle(self, name: str, enabled: Any) -> None:
         if not isinstance(enabled, bool):
