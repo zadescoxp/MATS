@@ -237,16 +237,41 @@ def _evaluate_position_exit(
         )
     )
     bar = frame.iloc[-1]
+    same_entry_candle = False
+    entry_time = position.get("opened_at")
+    bar_time = bar.get("timestamp")
+    if entry_time is not None and bar_time is not None:
+        same_entry_candle = pd.Timestamp(bar_time) <= pd.Timestamp(entry_time)
     if side == "long":
-        if bar["open"] <= stop or bar["low"] <= stop:
+        stop_hit = (
+            bar["close"] <= stop if same_entry_candle else bar["open"] <= stop or bar["low"] <= stop
+        )
+        if stop_hit:
             return "exit", "Protective stop was hit.", stop
-        if take_profit is not None and (bar["open"] >= take_profit or bar["high"] >= take_profit):
+        target_hit = (
+            bar["close"] >= take_profit
+            if same_entry_candle and take_profit is not None
+            else take_profit is not None
+            and (bar["open"] >= take_profit or bar["high"] >= take_profit)
+        )
+        if target_hit:
             return "exit", "Take-profit target was hit.", stop
         opposite = signal_action == "short"
     else:
-        if bar["open"] >= stop or bar["high"] >= stop:
+        stop_hit = (
+            bar["close"] >= stop
+            if same_entry_candle
+            else bar["open"] >= stop or bar["high"] >= stop
+        )
+        if stop_hit:
             return "exit", "Protective stop was hit.", stop
-        if take_profit is not None and (bar["open"] <= take_profit or bar["low"] <= take_profit):
+        target_hit = (
+            bar["close"] <= take_profit
+            if same_entry_candle and take_profit is not None
+            else take_profit is not None
+            and (bar["open"] <= take_profit or bar["low"] <= take_profit)
+        )
+        if target_hit:
             return "exit", "Take-profit target was hit.", stop
         opposite = signal_action == "long"
 
@@ -262,9 +287,13 @@ def _evaluate_position_exit(
         trailing_stop = (
             anchor - current_atr * multiple if side == "long" else anchor + current_atr * multiple
         )
-        if side == "long" and bar["low"] <= trailing_stop:
+        if side == "long" and (
+            bar["close"] <= trailing_stop if same_entry_candle else bar["low"] <= trailing_stop
+        ):
             return "exit", "Trailing ATR stop was hit.", trailing_stop
-        if side == "short" and bar["high"] >= trailing_stop:
+        if side == "short" and (
+            bar["close"] >= trailing_stop if same_entry_candle else bar["high"] >= trailing_stop
+        ):
             return "exit", "Trailing ATR stop was hit.", trailing_stop
     if opposite:
         return "exit", f"Opposite live signal: {signal_reason}", stop
