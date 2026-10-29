@@ -4,6 +4,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -42,6 +43,7 @@ class TradingFramework:
         llm: LLMClient | None = None,
         execution: ExecutionTools | None = None,
         enable_coder: bool = False,
+        stop_event: Event | None = None,
     ):
         self.settings = settings or get_settings()
         self.database = database or Database(self.settings.database_path)
@@ -49,6 +51,7 @@ class TradingFramework:
         self.llm = llm or LLMClient(self.settings)
         self.execution = execution or ExecutionTools(self.settings)
         self.enable_coder = enable_coder
+        self.stop_event = stop_event
         self._owns_database = database is None
 
         costs = CostAssumptions(
@@ -71,7 +74,7 @@ class TradingFramework:
         self.graph = self._build_graph()
 
     def _build_graph(self) -> Any:
-        runner = NodeRunner(self.context)
+        runner = NodeRunner(self.context, self.stop_event)
         graph = StateGraph(GraphState)
         graph.add_node("initialize", runner.wrap("initialize", _initialize))
         graph.add_node("data_worker", runner.wrap("data_worker", DataWorkerNode(self.context)))
@@ -119,7 +122,9 @@ class TradingFramework:
         graph.add_edge("execution", END)
         return graph.compile(checkpointer=self.checkpointer.saver)
 
-    def run(self, symbol: str, config: dict[str, Any] | None = None) -> GraphState:
+    def run(
+        self, symbol: str, config: dict[str, Any] | None = None, *, run_id: str | None = None
+    ) -> GraphState:
         options = config or {}
         unknown = set(options).difference({"timeframes", "account_equity"})
         if unknown:
@@ -131,7 +136,7 @@ class TradingFramework:
             raise ValueError("timeframes must be a list of timeframe strings")
         if not symbol.strip():
             raise ValueError("symbol must not be empty")
-        run_id = str(uuid.uuid4())
+        run_id = run_id or str(uuid.uuid4())
         state = GraphState(
             run_id=run_id,
             symbol=symbol,
