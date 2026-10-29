@@ -1,6 +1,5 @@
 from typing import Any
 
-
 STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
     "ema_crossover": {
         "name": "EMA crossover",
@@ -90,7 +89,9 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
     },
     "htf_trend_ltf_timing": {
         "name": "Higher-timeframe trend + lower-timeframe timing",
-        "description": "Enter on a lower-timeframe EMA cross only in the higher-timeframe EMA trend.",
+        "description": (
+            "Enter on a lower-timeframe EMA cross only in the higher-timeframe EMA trend."
+        ),
         "required_indicators": ["EMA"],
         "entry_conditions": {
             "long": "lower-timeframe bullish EMA cross with bullish higher-timeframe EMA trend",

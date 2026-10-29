@@ -92,9 +92,9 @@ class StrategyDefinition(BaseModel):
         "bollinger_squeeze",
         "htf_trend_ltf_timing",
     ] = "ema_crossover"
-    exit_rule: Literal[
-        "opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"
-    ] = "opposite_signal"
+    exit_rule: Literal["opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"] = (
+        "opposite_signal"
+    )
     fast_period: int = Field(default=12, ge=2)
     slow_period: int = Field(default=26, ge=3)
     stop_loss_pct: float = Field(default=0.02, gt=0, le=0.5)
@@ -111,7 +111,9 @@ class StrategyDefinition(BaseModel):
     @model_validator(mode="after")
     def validate_periods(self) -> "StrategyDefinition":
         if self.template_name != self.entry_rule:
-            raise ValueError("template_name and entry_rule must identify the same supported template")
+            raise ValueError(
+                "template_name and entry_rule must identify the same supported template"
+            )
         if self.fast_period >= self.slow_period:
             raise ValueError("fast_period must be less than slow_period")
         return self
