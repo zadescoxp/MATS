@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+import time
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,7 +124,28 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + 30
+    delay = 0.05
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            code = exc.sqlite_errorcode
+            is_locked = code is not None and code & 0xFF in {
+                sqlite3.SQLITE_BUSY,
+                sqlite3.SQLITE_LOCKED,
+            }
+            if not is_locked or time.monotonic() >= deadline:
+                raise
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+            delay = min(delay * 2, 0.5)
+
+
 class Database:
+    _initialization_lock = threading.RLock()
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         if str(self.path) != ":memory:":
@@ -133,29 +155,43 @@ class Database:
             str(self.path), check_same_thread=False, timeout=30, isolation_level=None
         )
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA busy_timeout = 30000")
-        self.connection.executescript(SCHEMA)
-        step_columns = {
-            row["name"] for row in self.connection.execute("PRAGMA table_info(agent_steps)")
-        }
-        if "tool_calls_json" not in step_columns:
-            self.connection.execute(
-                """ALTER TABLE agent_steps
-                   ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'"""
-            )
-        position_columns = {
-            row["name"] for row in self.connection.execute("PRAGMA table_info(live_positions)")
-        }
-        if "last_bar_timestamp" not in position_columns:
-            self.connection.execute(
-                """ALTER TABLE live_positions
-                   ADD COLUMN last_bar_timestamp TEXT NOT NULL DEFAULT ''"""
-            )
+        try:
+            with self._initialization_lock:
+                self.connection.execute("PRAGMA busy_timeout = 1000")
+                _enable_wal(self.connection)
+                self.connection.execute("PRAGMA busy_timeout = 30000")
+                self.connection.executescript(SCHEMA)
+                step_columns = {
+                    row["name"] for row in self.connection.execute("PRAGMA table_info(agent_steps)")
+                }
+                if "tool_calls_json" not in step_columns:
+                    self.connection.execute(
+                        """ALTER TABLE agent_steps
+                           ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'"""
+                    )
+                position_columns = {
+                    row["name"]
+                    for row in self.connection.execute("PRAGMA table_info(live_positions)")
+                }
+                if "last_bar_timestamp" not in position_columns:
+                    self.connection.execute(
+                        """ALTER TABLE live_positions
+                           ADD COLUMN last_bar_timestamp TEXT NOT NULL DEFAULT ''"""
+                    )
+        except BaseException:
+            self.connection.close()
+            raise
 
     def close(self) -> None:
         with self._lock:
             self.connection.close()
+
+    def run_exists(self, run_id: str) -> bool:
+        with self._lock:
+            return (
+                self.connection.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+                is not None
+            )
 
     def create_run(self, run_id: str, symbol: str, config: dict[str, Any]) -> None:
         now = _now()
