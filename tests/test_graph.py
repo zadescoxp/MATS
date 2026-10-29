@@ -300,3 +300,30 @@ def test_run_many_executes_symbols_concurrently_and_preserves_order(candles) -> 
     finally:
         framework.close()
         database.close()
+
+
+def test_run_many_processes_live_symbols_sequentially(candles) -> None:
+    framework, database, _, _, _ = _framework(candles)
+    framework.settings.dry_run = False
+    framework.settings.kill_switch = False
+    calls: list[str] = []
+
+    def fake_run(symbol: str, config: dict[str, Any] | None):
+        calls.append(symbol)
+        from framework.core.state import GraphState
+
+        return GraphState(
+            run_id=symbol,
+            symbol=symbol,
+            timeframes_to_consider=["1h"],
+            status="completed",
+        )
+
+    framework._run_isolated_symbol = fake_run
+    try:
+        results = framework.run_many(["BTC/USDT", "ETH/USDT", "SOL/USDT"], max_workers=3)
+        assert calls == ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+        assert [result.symbol for result in results] == calls
+    finally:
+        framework.close()
+        database.close()
