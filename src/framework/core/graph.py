@@ -13,6 +13,7 @@ from framework.agents.critique import CritiqueNode
 from framework.agents.data_worker import DataWorkerNode
 from framework.agents.execution import ExecutionNode
 from framework.agents.multi_timeframe_analyst import MultiTimeframeAnalystNode
+from framework.agents.position_monitor import PositionMonitor
 from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.agents.strategy_builder import StrategyBuilderNode
 from framework.config.settings import Settings, get_settings
@@ -63,6 +64,7 @@ class TradingFramework:
             coder_enabled=enable_coder,
         )
         self.checkpointer = GraphCheckpointer(self.database)
+        self.position_monitor = PositionMonitor(self.context)
         self.graph = self._build_graph()
 
     def _build_graph(self) -> Any:
@@ -174,6 +176,12 @@ class TradingFramework:
         self.database.update_run_status(state.run_id, "running")
         return self._invoke(state, state.run_id)
 
+    def monitor_open_positions(self) -> list[dict[str, Any]]:
+        return self.position_monitor()
+
+    def reset_stopped_strategies(self, symbols: list[str]) -> dict[str, int]:
+        return {symbol: self.database.clear_strategy_stops(symbol) for symbol in symbols}
+
     def run_many(
         self,
         symbols: list[str] | None = None,
@@ -221,7 +229,8 @@ class TradingFramework:
             )
             result = GraphState.model_validate(output)
             self.database.update_run_status(
-                run_id, "failed" if result.status == "failed" else "completed"
+                run_id,
+                result.status if result.status in {"failed", "stopped"} else "completed",
             )
             return result
         except Exception as exc:
@@ -251,6 +260,7 @@ class TradingFramework:
         if not configured_symbols:
             raise ValueError("At least one symbol is required for continuous polling")
         while not event.is_set():
+            self.monitor_open_positions()
             for result in self.run_many(configured_symbols, max_workers=max_workers):
                 if event.is_set():
                     break
@@ -269,12 +279,12 @@ def _initialize(state: GraphState) -> dict[str, str]:
 
 def _next(state: GraphState | dict[str, Any], node: str) -> str:
     current = GraphState.model_validate(state)
-    return END if current.status == "failed" else node
+    return END if current.status in {"failed", "stopped"} else node
 
 
 def _route_after_critique(state: GraphState | dict[str, Any]) -> str:
     current = GraphState.model_validate(state)
-    if current.status == "failed":
+    if current.status in {"failed", "stopped"}:
         return END
     if current.critique is None:
         return END
