@@ -12,7 +12,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from framework.agents.execution import ExecutionNode
 from framework.agents.risk_assessment import RiskAssessmentNode
@@ -21,7 +21,6 @@ from framework.core.graph import TradingFramework
 from framework.core.state import GraphState
 from framework.persistence.database import Database
 from framework.tools.execution import ExecutionTools
-from framework.tools.market_data import MarketDataTools
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 _ALLOWED_TIMEFRAMES = {
@@ -325,16 +324,6 @@ class DashboardService:
             return {"results": results}
         finally:
             worker.close()
-
-    def market_data(self, symbol: str, timeframe: str) -> dict[str, Any]:
-        _symbols([symbol], self.settings.symbols)
-        _timeframes([timeframe], self.settings.timeframes)
-        result = MarketDataTools(self.settings).fetch_ohlcv(symbol, timeframe, limit=300)
-        return {
-            "symbol": result.symbol,
-            "timeframe": result.timeframe,
-            "candles": [candle.model_dump(mode="json") for candle in result.candles],
-        }
 
     def _run(
         self,
@@ -737,34 +726,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if route == "/api/state":
                 self._json_response(HTTPStatus.OK, self.service.state())
-            elif route == "/api/market":
-                query = parse_qs(urlsplit(self.path).query)
-                symbol = query.get("symbol", [self.service.settings.symbols[0]])[0]
-                timeframe = query.get("timeframe", [self.service.settings.timeframes[0]])[0]
-                self._json_response(
-                    HTTPStatus.OK, self.service.market_data(symbol, timeframe)
-                )
             elif route == "/api/events":
                 self._events()
             else:
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "Not found."})
         except ValueError as exc:
-            status = (
-                HTTPStatus.BAD_REQUEST
-                if route == "/api/market"
-                else HTTPStatus.INTERNAL_SERVER_ERROR
-            )
-            self._json_response(status, {"error": str(exc)})
+            self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
         except (OSError, RuntimeError, sqlite3.Error) as exc:
             self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
         except Exception as exc:
             logger.exception("Dashboard GET request failed for %s", route)
             self._json_response(
-                (
-                    HTTPStatus.BAD_GATEWAY
-                    if route == "/api/market"
-                    else HTTPStatus.INTERNAL_SERVER_ERROR
-                ),
+                HTTPStatus.INTERNAL_SERVER_ERROR,
                 {"error": str(exc)},
             )
 
