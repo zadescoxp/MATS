@@ -26,6 +26,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import Image from "next/image";
 import {
   Area,
   AreaChart,
@@ -278,20 +279,27 @@ function StatusBadge({ status }: { status: string }) {
 function CoinMark({ symbol, small = false }: { symbol: string; small?: boolean }) {
   const base = symbol.split("/")[0]?.toUpperCase() ?? "";
   const size = small ? 28 : 34;
+  const logo = base === "BTC"
+    ? "https://cryptologos.cc/logos/bitcoin-btc-logo.png"
+    : base === "ETH"
+      ? "https://cryptologos.cc/logos/ethereum-eth-logo.png"
+      : null;
+  const [failedLogo, setFailedLogo] = useState<string | null>(null);
   return (
     <span
       className="grid shrink-0 place-items-center rounded-full border border-border bg-background text-[10px] font-bold text-foreground"
       style={{ width: size, height: size }}
       aria-label={`${base || "generic"} coin`}
     >
-      {base === "BTC" ? (
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
-          <path d="M9 4v16m6-16v16M7 7h7a3 3 0 0 1 0 6H8m0 0h7a3 3 0 1 1 0 6H7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
-      ) : base === "ETH" ? (
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
-          <path d="m12 2 7 10-7 4-7-4 7-10Zm0 14 7-4-7 10-7-10 7 4Z" fill="currentColor" />
-        </svg>
+      {logo && failedLogo !== base ? (
+        <Image
+          src={logo}
+          alt=""
+          width={size - 10}
+          height={size - 10}
+          className="object-contain"
+          onError={() => setFailedLogo(base)}
+        />
       ) : (
         <span>{base.slice(0, 1) || "$"}</span>
       )}
