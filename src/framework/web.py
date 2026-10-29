@@ -1,8 +1,10 @@
 import hashlib
 import json
+import logging
 import math
 import re
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -32,6 +34,7 @@ _ALLOWED_TIMEFRAMES = {
     "1w",
 }
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
+logger = logging.getLogger(__name__)
 
 
 class DashboardService:
@@ -251,18 +254,46 @@ class DashboardService:
             worker = TradingFramework(settings=self.settings, stop_event=stop_event)
             worker.run(symbol, config, run_id=run_id)
         except Exception as exc:
-            if worker:
-                worker.database.log_event(run_id, "dashboard_run_failed", str(exc), error=exc)
-            else:
-                database = Database(self.settings.database_path)
+            if worker is None:
+                database = None
                 try:
-                    database.log_event(run_id, "dashboard_run_failed", str(exc), error=exc)
-                    database.update_run_status(run_id, "failed")
+                    database = Database(self.settings.database_path)
+                    self._record_run_start_failure(database, run_id, symbol, config, exc)
+                except Exception:
+                    logger.exception("Could not initialize recovery for dashboard run %s", run_id)
                 finally:
-                    database.close()
+                    if database:
+                        database.close()
+            else:
+                self._record_run_start_failure(worker.database, run_id, symbol, config, exc)
         finally:
             if worker:
                 worker.close()
+
+    def _record_run_start_failure(
+        self,
+        database: Database,
+        run_id: str,
+        symbol: str,
+        config: dict[str, Any],
+        error: Exception,
+    ) -> None:
+        try:
+            if not database.run_exists(run_id):
+                database.create_run(
+                    run_id,
+                    symbol,
+                    {
+                        "timeframes_to_consider": config.get(
+                            "timeframes", self.settings.timeframes
+                        ),
+                        "account_equity": config.get("account_equity"),
+                    },
+                )
+            database.log_event(run_id, "dashboard_run_failed", str(error), error=error)
+            database.update_run_status(run_id, "failed")
+        except Exception:
+            logger.exception("Could not persist startup failure for dashboard run %s", run_id)
 
     def _resume(self, run_id: str, stop_event: threading.Event) -> None:
         worker = None
@@ -561,6 +592,16 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+class DashboardHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request: Any, client_address: tuple[str, int]) -> None:
+        if isinstance(
+            sys.exception(),
+            BrokenPipeError | ConnectionAbortedError | ConnectionResetError,
+        ):
+            return
+        super().handle_error(request, client_address)
+
+
 def main() -> None:
     service = DashboardService()
 
@@ -568,7 +609,7 @@ def main() -> None:
         def __init__(self, *args: Any, **kwargs: Any):
             super().__init__(*args, service=service, **kwargs)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 8765), BoundDashboardHandler)
+    server = DashboardHTTPServer(("127.0.0.1", 8765), BoundDashboardHandler)
     server.daemon_threads = True
     print("MATS dashboard API listening on http://127.0.0.1:8765")
     try:
