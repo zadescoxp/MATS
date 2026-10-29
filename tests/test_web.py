@@ -87,6 +87,24 @@ def test_database_adds_tool_call_column_to_existing_agent_steps(tmp_path: Path) 
         migrated.close()
 
 
+def test_dashboard_service_migrates_existing_database_before_reading(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-state.db"
+    database = Database(path)
+    database.create_run("run-1", "BTC/USDT", {})
+    database.close()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("ALTER TABLE agent_steps DROP COLUMN tool_calls_json")
+        connection.commit()
+    finally:
+        connection.close()
+
+    service = DashboardService(Settings(database_path=path))
+
+    assert service.state()["runs"][0]["run_id"] == "run-1"
+    assert service.state()["runs"][0]["steps"] == []
+
+
 def test_start_rejects_live_multi_symbol_without_mutating_safety_state(tmp_path: Path) -> None:
     settings = Settings(database_path=tmp_path / "state.db", dry_run=True, kill_switch=False)
     service = DashboardService(settings)
