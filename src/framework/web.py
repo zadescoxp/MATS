@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from framework.agents.execution import ExecutionNode
 from framework.agents.risk_assessment import RiskAssessmentNode
+from framework.config.connections import ConsoleConnections, snapshot_environment
 from framework.config.settings import Settings, get_settings
 from framework.core.graph import TradingFramework
 from framework.core.state import GraphState
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 class DashboardService:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
+        self._environment = snapshot_environment(self.settings)
+        self.connections = ConsoleConnections(
+            self.settings.database_path.parent / "connections.json"
+        )
+        self.connections.load()
+        self.connections.apply(self.settings)
         if self.settings.database_path.exists():
             database = Database(self.settings.database_path)
             database.close()
@@ -63,6 +70,7 @@ class DashboardService:
                 "symbols": self.settings.symbols,
                 "timeframes": self.settings.timeframes,
             }
+            data["connections"] = self.connections.public(self._environment)
             data["operations"] = list(self._operations.values())
             data["active_run_ids"] = [
                 run_id for run_id, thread in self._threads.items() if thread.is_alive()
@@ -83,8 +91,13 @@ class DashboardService:
         dry_run_override = payload.get("dry_run")
         if dry_run_override is not None and not isinstance(dry_run_override, bool):
             raise ValueError("dry_run must be a boolean.")
+        model_id = payload.get("model_id")
+        if model_id is not None and not isinstance(model_id, str):
+            raise ValueError("model_id must be a string.")
 
         with self._lock:
+            if model_id:
+                self.connections.select_model(self.settings, self._environment, model_id)
             effective_dry_run = (
                 self.settings.dry_run if dry_run_override is None else dry_run_override
             )
@@ -128,6 +141,44 @@ class DashboardService:
                 self._threads[run_id] = thread
                 thread.start()
         return {"run_ids": run_ids, "batch_id": batch_id}
+
+    def save_bybit(self, payload: dict[str, Any]) -> dict[str, str]:
+        api_key = payload.get("api_key")
+        api_secret = payload.get("api_secret")
+        clear = payload.get("clear")
+        if api_key is not None and not isinstance(api_key, str):
+            raise ValueError("api_key must be a string.")
+        if api_secret is not None and not isinstance(api_secret, str):
+            raise ValueError("api_secret must be a string.")
+        if clear is not None and not isinstance(clear, bool):
+            raise ValueError("clear must be a boolean.")
+        with self._lock:
+            self.connections.save_bybit(
+                self.settings,
+                self._environment,
+                api_key,
+                api_secret,
+                clear=bool(clear),
+            )
+        return {"message": "Bybit credentials updated."}
+
+    def save_model(self, payload: dict[str, Any]) -> dict[str, str]:
+        model = payload.get("model")
+        if not isinstance(model, dict):
+            raise ValueError("model must be an object.")
+        with self._lock:
+            model_id = self.connections.save_model(self.settings, model)
+        return {"message": "Model saved.", "model_id": model_id}
+
+    def delete_model(self, model_id: str) -> dict[str, str]:
+        with self._lock:
+            self.connections.delete_model(self.settings, self._environment, model_id)
+        return {"message": "Model removed."}
+
+    def select_model(self, model_id: str) -> dict[str, str]:
+        with self._lock:
+            self.connections.select_model(self.settings, self._environment, model_id)
+        return {"message": "Model selected for the next run."}
 
     def stop(self, run_id: str) -> dict[str, str]:
         with self._lock:
@@ -791,6 +842,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.service.toggle(
                 _required_string(payload, "name"), payload.get("enabled"), payload.get("confirmed")
             )
+        if action == "save_bybit":
+            return self.service.save_bybit(payload)
+        if action == "save_model":
+            return self.service.save_model(payload)
+        if action == "delete_model":
+            return self.service.delete_model(_required_string(payload, "model_id"))
+        if action == "select_model":
+            return self.service.select_model(_required_string(payload, "model_id"))
         raise ValueError(f"Unsupported action: {action!r}.")
 
     def _events(self) -> None:
