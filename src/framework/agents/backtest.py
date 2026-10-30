@@ -13,7 +13,12 @@ class BacktestNode:
         candles = state.raw_data.get(state.strategy.chosen_timeframe)
         if not candles:
             raise ValueError("No candles are available for the strategy timeframe")
-        report = self.context.backtester.run(state.strategy, candles)
+        capital = (
+            state.account_equity
+            if state.account_equity is not None
+            else self.context.settings.initial_capital
+        )
+        report = self.context.backtester.run(state.strategy, candles, initial_capital=capital)
         strategy_id = f"{state.run_id}-v{state.revision_count}"
         backtest_id = strategy_id
         costs = CostAssumptions(
