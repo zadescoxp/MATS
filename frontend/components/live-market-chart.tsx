@@ -154,8 +154,8 @@ export function LiveMarketChart({
         fontSize: 10,
       },
       grid: {
-        vertLines: { color: "#27272a" },
-        horzLines: { color: "#27272a" },
+        vertLines: { color: "#1c1c20" },
+        horzLines: { color: "#1c1c20" },
       },
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
@@ -166,11 +166,11 @@ export function LiveMarketChart({
       },
     });
     const priceSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#22c55e",
-      downColor: "#ef4444",
+      upColor: "#34d399",
+      downColor: "#f87171",
       borderVisible: false,
-      wickUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
+      wickUpColor: "#34d399",
+      wickDownColor: "#f87171",
       priceLineVisible: true,
     });
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -197,7 +197,7 @@ export function LiveMarketChart({
         candles.map(({ time, open, close, volume }) => ({
           time,
           value: volume,
-          color: close >= open ? "#22c55e40" : "#ef444440",
+          color: close >= open ? "#34d39955" : "#f8717155",
         })),
       );
       latestChartTimeRef.current = candles.at(-1)?.time ?? null;
@@ -217,7 +217,7 @@ export function LiveMarketChart({
       volumeSeries.update({
         time: candle.time,
         value: candle.volume,
-        color: candle.close >= candle.open ? "#22c55e40" : "#ef444440",
+        color: candle.close >= candle.open ? "#34d39955" : "#f8717155",
       });
       latestChartTimeRef.current = candle.time;
     };
@@ -373,36 +373,40 @@ export function LiveMarketChart({
     <section aria-label={`Live ${symbol} price chart`}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] font-medium text-muted">Live market</p>
-          <p className="mt-1 truncate text-sm font-semibold">{symbol}</p>
+          <p className="truncate text-[11px] font-medium text-muted-foreground">{symbol}</p>
+          <p className="mt-0.5 text-base font-semibold tabular-nums tracking-tight">
+            {lastPrice === null
+              ? "—"
+              : lastPrice.toLocaleString(undefined, { maximumFractionDigits: 8 })}
+          </p>
         </div>
-        <label className="sr-only" htmlFor={timeframeId}>Chart timeframe</label>
-        <select
-          id={timeframeId}
-          value={timeframe}
-          onChange={(event) => setTimeframe(event.target.value)}
-          className="rounded-full bg-card px-2.5 py-1.5 text-[11px] text-muted outline-none transition-colors focus:ring-1 focus:ring-accent"
-        >
-          {TIMEFRAMES.map((item) => <option key={item.label} value={item.label}>{item.label}</option>)}
-        </select>
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            {loading && connection !== "live" ? (
+              <RefreshCw className="h-3 w-3 animate-spin" />
+            ) : (
+              <Radio className={connection === "live" ? "h-3 w-3 text-positive" : "h-3 w-3"} />
+            )}
+            {statusLabel}
+            {updatedAt && (
+              <span className="hidden sm:inline">
+                {" · "}
+                {updatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </span>
+            )}
+          </span>
+          <label className="sr-only" htmlFor={timeframeId}>Chart timeframe</label>
+          <select
+            id={timeframeId}
+            value={timeframe}
+            onChange={(event) => setTimeframe(event.target.value)}
+            className="rounded-full bg-card px-2.5 py-1.5 text-[11px] text-muted outline-none transition-colors"
+          >
+            {TIMEFRAMES.map((item) => <option key={item.label} value={item.label}>{item.label}</option>)}
+          </select>
+        </div>
       </div>
-      <div className="mt-3 flex items-baseline justify-between gap-2">
-        <span className="text-lg font-semibold tabular-nums">
-          {lastPrice === null
-            ? "—"
-            : lastPrice.toLocaleString(undefined, { maximumFractionDigits: 8 })}
-        </span>
-        <span className="flex items-center gap-1 text-[10px] text-muted">
-          {loading && connection !== "live" ? (
-            <RefreshCw className="h-3 w-3 animate-spin" />
-          ) : (
-            <Radio className={connection === "live" ? "h-3 w-3 text-positive" : "h-3 w-3"} />
-          )}
-          {statusLabel}
-          {updatedAt && ` · ${updatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`}
-        </span>
-      </div>
-      <div className="relative mt-2 h-56 overflow-hidden rounded-xl bg-card/60 p-1">
+      <div className="relative mt-3 h-52 overflow-hidden rounded-xl bg-background/50 p-1">
         <div ref={containerRef} className="h-full w-full" />
         {loading && latestChartTimeRef.current === null && (
           <div className="absolute inset-0 grid place-items-center px-5">
