@@ -63,3 +63,23 @@ def test_backtest_costs_reduce_equity(candles: list[OHLCVBar]) -> None:
     assert paid_report.final_equity < free_report.final_equity
     assert paid_report.total_fees > 0
     assert paid_report.total_slippage > 0
+
+
+def test_run_uses_requested_capital_instead_of_the_tool_default(candles: list[OHLCVBar]) -> None:
+    strategy = StrategyDefinition(
+        name="rising trend",
+        description="Short EMA crossover test",
+        chosen_timeframe="1h",
+        entry_rule="ema_crossover",
+        exit_rule="ema_crossover",
+        fast_period=2,
+        slow_period=5,
+        stop_loss_pct=0.2,
+        position_fraction=0.5,
+    )
+    tool = BacktestTool(CostAssumptions(), initial_capital=10_000)
+    default_report = tool.run(strategy, candles)
+    sized_report = tool.run(strategy, candles, initial_capital=25_000)
+    assert default_report.initial_capital == 10_000
+    assert sized_report.initial_capital == 25_000
+    assert sized_report.final_equity == pytest.approx(default_report.final_equity * 2.5)
