@@ -109,6 +109,27 @@ export interface DashboardState {
   };
   operations: Operation[];
   active_run_ids: string[];
+  connections?: ConnectionsState;
+}
+
+export interface SavedModel {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  base_url: string | null;
+  supports_tools: boolean;
+  api_key_hint: string | null;
+  builtin?: boolean;
+}
+
+export interface ConnectionsState {
+  bybit_api_key_hint: string | null;
+  bybit_api_secret_hint: string | null;
+  bybit_configured: boolean;
+  bybit_source: "saved" | "environment" | "missing";
+  active_model_id: string | null;
+  models: SavedModel[];
 }
 
 export type DashboardTab =
