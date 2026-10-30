@@ -4,17 +4,17 @@
 
 :root {
   color-scheme: dark;
-  --background: #09090b;
-  --surface: #0f0f12;
-  --card: #141418;
-  --card-hover: #1a1a1f;
-  --border: #27272a;
-  --foreground: #fafafa;
+  --background: #0c0c0e;
+  --surface: #141416;
+  --card: #1a1a1e;
+  --card-hover: #222226;
+  --border: #2a2a2e;
+  --foreground: #f5f5f6;
   --muted: #a1a1aa;
   --muted-foreground: #71717a;
   --accent: #3b82f6;
-  --positive: #22c55e;
-  --negative: #ef4444;
+  --positive: #34d399;
+  --negative: #f87171;
 }
 
 * {
@@ -34,6 +34,7 @@ body {
   font-size: 14px;
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -65,12 +66,33 @@ textarea {
   border-radius: 12px;
 }
 
+button,
+input,
+select,
+textarea,
+summary,
+a {
+  outline: none;
+}
+
+button:focus,
 button:focus-visible,
+input:focus,
 input:focus-visible,
+select:focus,
 select:focus-visible,
-summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+textarea:focus,
+textarea:focus-visible,
+summary:focus,
+summary:focus-visible,
+a:focus,
+a:focus-visible,
+.outline-none,
+.outline-none:focus,
+.outline-none:focus-visible {
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
 }
 
 ::selection {
@@ -117,8 +139,155 @@ code,
 
 @keyframes agent-live-pulse {
   50% {
-    opacity: 0.45;
+    opacity: 0.35;
   }
+}
+
+.rise-in {
+  animation: rise-in 0.45s ease both;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.think-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.think-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: think-bounce 1.15s infinite ease-in-out;
+}
+
+.think-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.think-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.text-shimmer {
+  background-image: linear-gradient(100deg, #6b6b73 0%, #f5f5f6 45%, #6b6b73 80%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-shimmer 1.7s linear infinite;
+}
+
+@keyframes text-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes think-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.3;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.step-running {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.035) 50%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  animation: sheen 2.8s ease-in-out infinite;
+}
+
+@keyframes sheen {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+.step-failed {
+  animation: fail-in 0.55s ease both;
+}
+
+@keyframes fail-in {
+  0% {
+    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0);
+  }
+  40% {
+    box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.12);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0);
+  }
+}
+
+.progress-rail {
+  position: relative;
+  overflow: hidden;
+  height: 2px;
+  background: transparent;
+}
+
+.progress-rail::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: progress-slide 1.6s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(380%);
+  }
+}
+
+.thought-node {
+  animation: rise-in 0.4s ease both;
+}
+
+.thought-node:nth-child(2) {
+  animation-delay: 0.06s;
+}
+
+.thought-node:nth-child(3) {
+  animation-delay: 0.12s;
+}
+
+.thought-node:nth-child(4) {
+  animation-delay: 0.18s;
 }
 
 @media (prefers-reduced-motion: reduce) {
