@@ -76,13 +76,14 @@ class NodeRunner:
                     if transient and attempt + 1 < attempts:
                         time.sleep(min(2**attempt, 8))
                         continue
-                    self.context.database.finish_step(step_id, error=str(exc))
+                    detail = describe_error(exc)
+                    self.context.database.finish_step(step_id, error=detail)
                     self.context.database.log_event(
-                        state.run_id, "node_failed", f"{name}: {exc}", error=exc
+                        state.run_id, "node_failed", f"{name}: {detail}", error=exc
                     )
                     failed = state.model_copy(
                         update={
-                            "errors": [*state.errors, f"{name}: {type(exc).__name__}: {exc}"],
+                            "errors": [*state.errors, f"{name}: {type(exc).__name__}: {detail}"],
                             "status": "failed",
                         }
                     )
@@ -102,6 +103,41 @@ class NodeRunner:
             state.run_id, name, "after", updated.model_dump(mode="json")
         )
         return updates
+
+
+def describe_error(exc: BaseException) -> str:
+    texts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(texts) < 5:
+        seen.add(id(current))
+        text = " ".join(str(current).split())
+        if text and text not in texts:
+            texts.append(text)
+        current = current.__cause__ or current.__context__
+    joined = " ".join(texts)
+    if (
+        "Failed to resolve" in joined
+        or "nodename nor servname" in joined
+        or "Name or service not known" in joined
+    ):
+        host = _host_from(joined) or "the exchange host"
+        return (
+            f"Could not resolve {host}. DNS lookup failed, "
+            "so the request never reached the exchange."
+        )
+    summary = texts[0] if texts else type(exc).__name__
+    extra = next((text for text in texts[1:] if text not in summary), "")
+    if extra:
+        summary = f"{summary} — {extra}"
+    return summary[:500]
+
+
+def _host_from(text: str) -> str | None:
+    for marker in ("Failed to resolve '", "host='"):
+        if marker in text:
+            return text.split(marker, 1)[1].split("'", 1)[0]
+    return None
 
 
 def _is_transient(error: Exception) -> bool:
