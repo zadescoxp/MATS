@@ -242,7 +242,14 @@ class StrategyBuilderNode:
                         {"template_name": template_name, "reason": stop_reason}
                     )
                     continue
-                report = self.context.backtester.run(strategy, candles, data=state.raw_data)
+                capital = (
+                    state.account_equity
+                    if state.account_equity is not None
+                    else self.context.settings.initial_capital
+                )
+                report = self.context.backtester.run(
+                    strategy, candles, data=state.raw_data, initial_capital=capital
+                )
                 if report.total_trades >= self.context.settings.min_backtest_trades:
                     candidates.append(
                         {
