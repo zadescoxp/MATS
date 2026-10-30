@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -29,7 +30,16 @@ class BacktestTool:
         candles: Sequence[OHLCVBar],
         *,
         data: dict[str, Sequence[OHLCVBar]] | None = None,
+        initial_capital: float | None = None,
     ) -> BacktestReport:
+        capital = self.initial_capital if initial_capital is None else initial_capital
+        if (
+            isinstance(capital, bool)
+            or not isinstance(capital, int | float)
+            or not math.isfinite(capital)
+            or capital <= 0
+        ):
+            raise ValueError("initial_capital must be positive")
         if len(candles) < 2:
             raise ValueError("Backtesting requires at least two candles")
         frame = pd.DataFrame(
@@ -69,7 +79,7 @@ class BacktestTool:
             }
             available_data[strategy.chosen_timeframe] = candles[: index + 1]
             signals.append(evaluate_live_signal(strategy, available_data))
-        cash = self.initial_capital
+        cash = capital
         position: dict[str, Any] | None = None
         trades: list[TradeRecord] = []
         equity_curve: list[dict[str, Any]] = []
@@ -155,7 +165,7 @@ class BacktestTool:
         repriced = reprice_trade_list(trades, self.costs)
         final_equity = float(equity_curve[-1]["equity"])
         equity_values = np.array([point["equity"] for point in equity_curve], dtype=float)
-        drawdown_values = np.concatenate(([self.initial_capital], equity_values))
+        drawdown_values = np.concatenate(([capital], equity_values))
         running_max = np.maximum.accumulate(drawdown_values)
         drawdowns = np.divide(
             running_max - drawdown_values,
@@ -174,13 +184,13 @@ class BacktestTool:
         wins = sum(trade.net_pnl > 0 for trade in repriced)
         total_fees = sum(trade.fees for trade in repriced)
         total_slippage = sum(trade.slippage for trade in repriced)
-        net_pnl = final_equity - self.initial_capital
+        net_pnl = final_equity - capital
 
         return BacktestReport(
-            initial_capital=self.initial_capital,
+            initial_capital=capital,
             final_equity=final_equity,
             net_pnl=net_pnl,
-            net_return_pct=net_pnl / self.initial_capital,
+            net_return_pct=net_pnl / capital,
             max_drawdown_pct=float(drawdowns.max(initial=0)),
             sharpe_ratio=sharpe,
             win_rate=wins / len(repriced) if repriced else 0.0,
