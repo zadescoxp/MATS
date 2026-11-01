@@ -19,6 +19,7 @@ from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.config.connections import ConsoleConnections, snapshot_environment
 from framework.config.settings import Settings, get_settings
 from framework.core.graph import TradingFramework
+from framework.core.logging_config import configure_logging
 from framework.core.state import GraphState
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 class DashboardService:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
+        configure_logging(self.settings.log_level)
         self._environment = snapshot_environment(self.settings)
         self.connections = ConsoleConnections(
             self.settings.database_path.parent / "connections.json"
@@ -62,6 +64,12 @@ class DashboardService:
         self._threads: dict[str, threading.Thread] = {}
         self._operations: dict[str, dict[str, str]] = {}
         self._restore_entry_watchers()
+        logger.info(
+            "Dashboard service ready (database=%s, dry_run=%s, kill_switch=%s).",
+            self.settings.database_path,
+            self.settings.dry_run,
+            self.settings.kill_switch,
+        )
 
     def state(self) -> dict[str, Any]:
         data = _read_snapshot(self.settings.database_path)
@@ -142,6 +150,14 @@ class DashboardService:
                 )
                 self._threads[run_id] = thread
                 thread.start()
+        logger.info(
+            "Dashboard run batch accepted (runs=%d, symbols=%s, timeframes=%s, mode=%s).",
+            len(run_ids),
+            ", ".join(symbols),
+            ", ".join(timeframes),
+            "dry-run" if effective_dry_run or self.settings.kill_switch else "testnet",
+            extra={"mats_run_id": batch_id},
+        )
         return {"run_ids": run_ids, "batch_id": batch_id}
 
     def save_bybit(self, payload: dict[str, Any]) -> dict[str, str]:
@@ -189,6 +205,10 @@ class DashboardService:
                 raise ValueError(f"No active dashboard run found for run_id={run_id!r}.")
             self.settings.kill_switch = True
             event.set()
+        logger.warning(
+            "Stop requested; kill switch enabled.",
+            extra={"mats_run_id": run_id},
+        )
         return {
             "message": "Stop requested. The run or entry watcher will stop; "
             "the kill switch is now enabled."
@@ -204,6 +224,10 @@ class DashboardService:
                 event = self._stop_events.get(run_id)
                 if event:
                     event.set()
+        logger.warning(
+            "Stop requested for %d dashboard runs; kill switch enabled.",
+            len(active_ids),
+        )
         return {
             "run_ids": active_ids,
             "message": f"Stop requested for {len(active_ids)} run(s); kill switch enabled.",
@@ -333,6 +357,7 @@ class DashboardService:
             raise ValueError(f"Confirmation is required to disable {name.replace('_', ' ')}.")
         with self._lock:
             self._set_toggle(name, enabled)
+        logger.warning("Safety setting changed (%s=%s).", name, enabled)
         return {"settings": {name: getattr(self.settings, name)}}
 
     def monitor(self, run_ids: list[str] | None = None) -> dict[str, str]:
@@ -389,6 +414,10 @@ class DashboardService:
             result = worker.run(symbol, config, run_id=run_id)
             self._maybe_start_entry_watcher(run_id, result, stop_event)
         except Exception as exc:
+            logger.exception(
+                "Dashboard run failed before completion.",
+                extra={"mats_run_id": run_id, "mats_symbol": symbol},
+            )
             if worker is None:
                 database = None
                 try:
@@ -440,6 +469,7 @@ class DashboardService:
             result = worker.resume(run_id, account_equity=account_equity)
             self._maybe_start_entry_watcher(run_id, result, stop_event)
         except Exception as exc:
+            logger.exception("Dashboard run resume failed.", extra={"mats_run_id": run_id})
             if worker:
                 worker.database.log_event(run_id, "dashboard_resume_failed", str(exc), error=exc)
                 worker.database.update_run_status(run_id, "failed")
@@ -856,6 +886,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.service = service
         super().__init__(*args, **kwargs)
 
+    def log_message(self, _format: str, *args: Any) -> None:
+        route = urlsplit(self.path).path
+        status = str(args[1]) if len(args) > 1 else "unknown"
+        if status.isdigit() and int(status) >= 500:
+            logger.warning("HTTP %s %s -> %s", self.command, route, status)
+        else:
+            logger.info("HTTP %s %s -> %s", self.command, route, status)
+
     def do_OPTIONS(self) -> None:
         if not self._origin_allowed():
             self._json_response(HTTPStatus.FORBIDDEN, {"error": "Origin not allowed."})
@@ -903,6 +941,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except (OSError, RuntimeError) as exc:
+            self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+        except Exception as exc:
+            logger.exception("Dashboard action request failed.")
             self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def _dispatch(self, route: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1031,7 +1072,9 @@ class DashboardHTTPServer(ThreadingHTTPServer):
 
 
 def main() -> None:
-    service = DashboardService()
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    service = DashboardService(settings)
 
     class BoundDashboardHandler(DashboardHandler):
         def __init__(self, *args: Any, **kwargs: Any):
@@ -1039,13 +1082,15 @@ def main() -> None:
 
     server = DashboardHTTPServer(("127.0.0.1", 8765), BoundDashboardHandler)
     server.daemon_threads = True
-    print("MATS dashboard API listening on http://127.0.0.1:8765")
+    logger.info("Dashboard API listening on http://127.0.0.1:8765.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        logger.info("Dashboard API shutdown requested.")
         server.shutdown()
     finally:
         server.server_close()
+        logger.info("Dashboard API stopped.")
 
 
 if __name__ == "__main__":
