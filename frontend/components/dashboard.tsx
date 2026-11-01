@@ -17,6 +17,7 @@ import {
   Play,
   Plus,
   Search,
+  Settings2,
   ShieldCheck,
   Square,
   X,
@@ -570,10 +571,10 @@ function ChainOfThought({ step, symbol }: { step: AgentStep; symbol: string }) {
 function EventCard({ event }: { event: SystemEvent }) {
   const failed = /fail|error/i.test(`${event.type} ${event.message}`);
   return (
-    <li className="grid grid-cols-[4.5rem_minmax(0,9rem)_minmax(0,1fr)] items-baseline gap-3 py-2 text-xs">
+    <li className="grid grid-cols-[3.4rem_minmax(0,7rem)_minmax(0,1fr)] items-baseline gap-2 py-2 text-xs sm:grid-cols-[4.5rem_minmax(0,9rem)_minmax(0,1fr)] sm:gap-3">
       <span className="text-[11px] text-muted-foreground">{clockLabel(event.timestamp)}</span>
       <span className={cn("truncate text-foreground/80", failed && "text-negative")}>{event.type.replaceAll("_", " ")}</span>
-      <span className="truncate text-muted" title={event.message}>{event.message}</span>
+      <span className="break-words leading-5 text-muted" title={event.message}>{event.message}</span>
     </li>
   );
 }
@@ -758,7 +759,6 @@ export function Dashboard() {
       (!symbolFilter || execution.symbol === symbolFilter) &&
       (!executionStatusFilter || execution.status === executionStatusFilter),
   );
-  const allEvents = data?.system_events ?? [];
   const feedSteps = useMemo(
     () =>
       (selectedRun?.steps ?? [])
@@ -1658,13 +1658,28 @@ export function Dashboard() {
   }
 
   function renderEvents() {
-    if (!allEvents.length) {
-      return <p className="py-16 text-center text-xs text-muted-foreground">No system events yet.</p>;
+    if (!selectedRun) {
+      return <p className="py-16 text-center text-xs text-muted-foreground">Select a run to view its activity log.</p>;
+    }
+    const runEvents = selectedRun.events ?? [];
+    if (!runEvents.length) {
+      return <p className="py-16 text-center text-xs text-muted-foreground">No activity recorded for this run yet.</p>;
     }
     return (
-      <ul className="mx-auto max-w-3xl divide-y divide-white/[0.04]">
-        {allEvents.map((event) => <EventCard key={event.event_id} event={event} />)}
-      </ul>
+      <div className="mx-auto max-w-3xl">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Activity Log</h2>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Events for {selectedRun.symbol} · {shortId(selectedRun.run_id)}
+            </p>
+          </div>
+          {selectedEntryWatcher && <StatusBadge status={selectedEntryWatcher.status} />}
+        </div>
+        <ul className="divide-y divide-white/[0.04]">
+          {runEvents.map((event) => <EventCard key={event.event_id} event={event} />)}
+        </ul>
+      </div>
     );
   }
 
@@ -1852,7 +1867,6 @@ export function Dashboard() {
     { id: "graph", label: "All activity" },
     { id: "strategy", label: "Backtest" },
     { id: "positions", label: "Positions" },
-    { id: "events", label: "Events" },
     ...(wideViewport === true ? [] : [{ id: "agent" as const, label: "Details" }]),
   ];
 
@@ -1920,6 +1934,33 @@ export function Dashboard() {
                     </div>
                     <button
                       type="button"
+                      onClick={() => setTab("events")}
+                      aria-pressed={centerTab === "events"}
+                      className={cn(
+                        "inline-flex h-8 w-8 items-center justify-center gap-1.5 rounded-full text-muted transition-colors hover:bg-card hover:text-foreground sm:w-auto sm:px-2.5",
+                        centerTab === "events" && "bg-card text-foreground",
+                      )}
+                      aria-label="Open Activity Log"
+                      title="Activity Log"
+                    >
+                      <History className="h-4 w-4" />
+                      <span className="hidden text-xs font-medium sm:inline">Activity Log</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSettingsSection("usage");
+                        setSettingsOpen(true);
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center gap-1.5 rounded-full text-muted transition-colors hover:bg-card hover:text-foreground sm:w-auto sm:px-2.5"
+                      aria-label="Open usage"
+                      title="Usage"
+                    >
+                      <Gauge className="h-4 w-4" />
+                      <span className="hidden text-xs font-medium sm:inline">Usage</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
                         setSettingsSection("connections");
                         setSettingsOpen(true);
@@ -1927,7 +1968,7 @@ export function Dashboard() {
                       className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-card hover:text-foreground"
                       aria-label="Open settings"
                     >
-                      <Gauge className="h-4 w-4" />
+                      <Settings2 className="h-4 w-4" />
                     </button>
                   </div>
                 </div>
