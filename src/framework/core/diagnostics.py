@@ -93,6 +93,9 @@ def diagnose_run(run: dict[str, Any], watcher: dict[str, Any] | None = None) -> 
     """Summarize a run's outcome for the console, or None while it is simply running."""
     status = run.get("status")
     events = run.get("events") or []
+    if status == "rejected" or (status == "failed" and _hit_attempt_limit(run)):
+        # Runs saved before the rejected status existed were marked failed.
+        return _rejected(run)
     if status == "failed":
         return _failure(run, events)
     if status == "stopped":
@@ -154,6 +157,29 @@ def _failure(run: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any
         message.strip()[:600],
         hint,
         agent=agent,
+    )
+
+
+def _hit_attempt_limit(run: dict[str, Any]) -> bool:
+    last_errors = next(
+        (
+            (step.get("output") or {}).get("errors") or []
+            for step in reversed(run.get("steps") or [])
+            if step.get("status") == "completed"
+        ),
+        [],
+    )
+    return any("attempt limit reached" in str(error).lower() for error in last_errors)
+
+
+def _rejected(run: dict[str, Any]) -> dict[str, Any]:
+    attempts = len(run.get("strategies") or [])
+    return _result(
+        "rejected",
+        f"No strategy approved after {attempts} attempt{'s' if attempts != 1 else ''}",
+        _critique_issues(run) or "The critique rejected every strategy attempt.",
+        "This is not an error: every candidate missed the net-of-cost or regime checks. "
+        "Give the run more attempts, change its settings, or dismiss it.",
     )
 
 
