@@ -57,8 +57,23 @@ def test_attempt_limit_lists_each_rejected_strategy() -> None:
         ],
     )
     diagnosis = diagnose_run(run)
-    assert diagnosis["title"] == "Critique rejected every strategy attempt"
+    assert diagnosis["kind"] == "rejected"
+    assert diagnosis["title"] == "No strategy approved after 1 attempt"
     assert "mean_reversion on 1h: Net PnL" in diagnosis["detail"]
+    assert "not an error" in diagnosis["hint"]
+
+
+def test_rejected_status_is_a_notice_not_a_failure() -> None:
+    run = _run(
+        "rejected",
+        strategies=[
+            {"strategy": {"template_name": "breakout_confirmed"}, "decision": "REJECT"},
+            {"strategy": {"template_name": "bollinger_squeeze"}, "decision": "REJECT"},
+        ],
+    )
+    diagnosis = diagnose_run(run)
+    assert diagnosis["kind"] == "rejected"
+    assert diagnosis["title"] == "No strategy approved after 2 attempts"
 
 
 def test_paused_watcher_explains_the_safety_switch() -> None:
