@@ -23,6 +23,7 @@ from framework.core.diagnostics import diagnose_run
 from framework.core.graph import TradingFramework
 from framework.core.logging_config import configure_logging
 from framework.core.state import GraphState
+from framework.persistence.candle_series import is_series_ref
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
 from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
@@ -959,6 +960,8 @@ _BULK_KEYS = {"raw_data", "messages", "pair_candles", "funding_history"}
 
 
 def _compact_payload(value: Any) -> Any:
+    if is_series_ref(value):
+        return {"bars": value.get("count"), "last_timestamp": value.get("last")}
     if isinstance(value, dict):
         compacted: dict[str, Any] = {}
         for key, item in value.items():
@@ -977,6 +980,8 @@ def _compact_payload(value: Any) -> Any:
 
 
 def _bulk_summary(value: Any) -> Any:
+    if is_series_ref(value):
+        return {"count": value.get("count")}
     if isinstance(value, dict):
         return {key: _bulk_summary(item) for key, item in value.items()}
     if isinstance(value, list):
