@@ -189,3 +189,68 @@ def test_tool_parser_still_rejects_strings_that_are_not_containers() -> None:
         parse_tool_response(
             _response({"bias": "neutral", "key_levels": "around 2400"}), "submit", _Findings
         )
+
+
+def test_text_tool_calls_recovers_json_written_in_the_reply() -> None:
+    from framework.llm.client import text_tool_calls
+
+    content = '{\n "name": "submit_findings",\n "arguments": {"key_levels": [2250]}\n}'
+    calls = text_tool_calls(content, {"submit_findings"})
+    assert [(call.name, call.arguments) for call in calls] == [
+        ("submit_findings", {"key_levels": [2250]})
+    ]
+    fenced = '```json\n{"name": "submit_findings", "parameters": "{\\"a\\": 1}"}\n```'
+    assert text_tool_calls(fenced, {"submit_findings"})[0].arguments == {"a": 1}
+
+
+def test_text_tool_calls_ignores_unoffered_tools_and_prose() -> None:
+    from framework.llm.client import text_tool_calls
+
+    assert text_tool_calls('{"name": "delete_everything", "arguments": {}}', {"submit"}) == []
+    assert text_tool_calls("The market looks bullish {maybe}.", {"submit"}) == []
+
+
+class _ScriptedLLM:
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self.responses = responses
+        self.conversations: list[list[dict]] = []
+
+    def invoke_with_tools(self, messages, tools, route):
+        self.conversations.append(list(messages))
+        return self.responses.pop(0)
+
+
+def test_invoke_structured_sends_the_error_back_once_and_sums_usage() -> None:
+    from framework.agents.common import invoke_structured
+
+    llm = _ScriptedLLM(
+        [
+            LLMResponse(content="I think it is bullish.", prompt_tokens=10, cost=0.01),
+            LLMResponse(
+                tool_calls=[ToolCall(id="1", name="submit", arguments={"bias": "up"})],
+                prompt_tokens=12,
+                completion_tokens=3,
+                cost=0.02,
+            ),
+        ]
+    )
+    tool = ToolDefinition(name="submit", description="Submit.", parameters={"type": "object"})
+
+    parsed, response = invoke_structured(
+        llm, [{"role": "user", "content": "go"}], tool, _Findings, "x"
+    )
+
+    assert parsed.bias == "up"
+    assert response.tokens_used == 25
+    assert response.cost == pytest.approx(0.03)
+    assert "submit call was invalid" in llm.conversations[1][-1]["content"]
+
+
+def test_invoke_structured_raises_after_the_repair_attempt() -> None:
+    from framework.agents.common import invoke_structured
+
+    llm = _ScriptedLLM([LLMResponse(content="no"), LLMResponse(content="still no")])
+    tool = ToolDefinition(name="submit", description="Submit.", parameters={"type": "object"})
+
+    with pytest.raises(ValueError, match="received none"):
+        invoke_structured(llm, [{"role": "user", "content": "go"}], tool, _Findings, "x")
