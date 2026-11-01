@@ -267,6 +267,37 @@ def test_resume_does_not_refetch_completed_data_or_repeat_finished_agents(candle
         database.close()
 
 
+def test_checkpoints_reference_candles_and_resume_restores_them_exactly(candles) -> None:
+    framework, database, _market, llm, _execution = _framework(candles, fail_analyst_once=True)
+    try:
+        first = framework.run("BTC/USDT")
+        assert first.status == "failed"
+        llm.fail_analyst_once = False
+
+        resumed = framework.resume(first.run_id)
+
+        assert resumed.status == "completed", resumed.errors
+        assert resumed.raw_data == first.raw_data
+        stored_series = [
+            series
+            for (state_json,) in database.connection.execute(
+                "SELECT state_json FROM node_checkpoints"
+            )
+            for series in json.loads(state_json).get("raw_data", {}).values()
+        ]
+        assert stored_series
+        assert all(isinstance(series, dict) and "$candles" in series for series in stored_series)
+        series_rows = database.connection.execute("SELECT COUNT(*) FROM candle_series")
+        distinct = {
+            json.dumps([bar.model_dump(mode="json") for bar in bars])
+            for bars in first.raw_data.values()
+        }
+        assert series_rows.fetchone()[0] == len(distinct)  # identical series stored once
+    finally:
+        framework.close()
+        database.close()
+
+
 def test_critic_cycle_stops_after_three_total_strategy_attempts(candles) -> None:
     framework, database, _, llm, execution = _framework(
         candles,
