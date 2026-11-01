@@ -47,6 +47,11 @@ def main() -> None:
         help="Evaluate and flatten persisted open positions once without starting new runs.",
     )
     parser.add_argument(
+        "--compact-database",
+        action="store_true",
+        help="Store old runs' candles once and reclaim space. Stop mats-web first.",
+    )
+    parser.add_argument(
         "--reset-stopped-strategies",
         action="store_true",
         help="Clear stopped-strategy checkpoints for the selected symbol(s).",
@@ -69,7 +74,13 @@ def main() -> None:
                 else arguments.symbols
             )
             print(framework.reset_stopped_strategies(reset_symbols))
-        if arguments.monitor_open_positions:
+        if arguments.compact_database:
+            result = framework.database.compact_storage()
+            print(
+                f"Rewrote {result['rows_rewritten']} rows; database "
+                f"{result['bytes_before'] / 1e6:.1f} MB -> {result['bytes_after'] / 1e6:.1f} MB."
+            )
+        elif arguments.monitor_open_positions:
             print(framework.monitor_open_positions())
         elif arguments.resume is not None:
             result = framework.resume(
