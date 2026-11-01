@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_base_url: str | None = "https://inference.baseten.co/v1"
     llm_supports_tools: bool = True
+    # Ollama defaults to a ~4k-token window, which truncates agent prompts and tool schemas.
+    ollama_num_ctx: int = Field(default=16_384, ge=2_048, le=131_072)
+    ollama_max_output_tokens: int = Field(default=2_048, ge=256, le=32_768)
     dry_run: bool = True
     kill_switch: bool = True
     log_level: str = "INFO"
