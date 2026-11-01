@@ -60,6 +60,39 @@ def test_llm_client_uses_openai_compatible_baseten_transport(monkeypatch) -> Non
     assert captured["tool_choice"] == "required"
     assert captured["parallel_tool_calls"] is False
     assert captured["drop_params"] is True
+    assert "num_ctx" not in captured
+
+
+@pytest.mark.parametrize("provider", ["ollama", "ollama_chat"])
+def test_ollama_uses_native_chat_with_a_larger_context_window(monkeypatch, provider) -> None:
+    import framework.llm.client as llm_module
+
+    captured = {}
+
+    class FakeResponse:
+        choices = [
+            type(
+                "Choice",
+                (),
+                {"message": type("Message", (), {"content": None, "tool_calls": []})()},
+            )()
+        ]
+        usage = None
+        _hidden_params = {}
+
+    monkeypatch.setattr(
+        llm_module, "completion", lambda **kwargs: captured.update(kwargs) or FakeResponse()
+    )
+    route = ModelRoute(provider=provider, model="llama3.2:3b", base_url="http://127.0.0.1:11434")
+    LLMClient(Settings(ollama_num_ctx=8192, ollama_max_output_tokens=512)).invoke_with_tools(
+        [{"role": "user", "content": "Call the tool."}],
+        [ToolDefinition(name="echo", description="Echo.", parameters={"type": "object"})],
+        route,
+    )
+    assert captured["model"] == "ollama_chat/llama3.2:3b"
+    assert captured["num_ctx"] == 8192
+    assert captured["max_tokens"] == 512
+    assert captured["api_base"] == "http://127.0.0.1:11434"
 
 
 def test_shared_baseten_route_is_used_for_each_agent_role() -> None:
@@ -128,3 +161,31 @@ def test_conflicting_duplicate_tool_calls_are_rejected() -> None:
     )
     with pytest.raises(ValueError, match="conflicting"):
         parse_tool_response(response, "echo", Echo)
+
+
+class _Findings(BaseModel):
+    bias: str
+    key_levels: list[float] = []
+    notes: dict[str, str] = {}
+
+
+def _response(arguments: dict) -> LLMResponse:
+    return LLMResponse(tool_calls=[ToolCall(id="1", name="submit", arguments=arguments)])
+
+
+def test_tool_parser_decodes_lists_and_objects_sent_as_strings() -> None:
+    parsed = parse_tool_response(
+        _response({"bias": "[]", "key_levels": "[1.5, 2]", "notes": "{'a': 'b'}"}),
+        "submit",
+        _Findings,
+    )
+    assert parsed.bias == "[]"
+    assert parsed.key_levels == [1.5, 2.0]
+    assert parsed.notes == {"a": "b"}
+
+
+def test_tool_parser_still_rejects_strings_that_are_not_containers() -> None:
+    with pytest.raises(ValueError):
+        parse_tool_response(
+            _response({"bias": "neutral", "key_levels": "around 2400"}), "submit", _Findings
+        )
