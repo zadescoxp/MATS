@@ -49,6 +49,7 @@ import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
+import { PanelResizeHandle, usePanelWidth, useViewportWidth } from "@/components/resizable-panel";
 import { RejectedRunNotice, RunDiagnosisBanner } from "@/components/run-diagnosis";
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
@@ -67,6 +68,10 @@ import type {
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"];
 const EMPTY_RUNS: Run[] = [];
+const RAIL_BOUNDS = { defaultWidth: 248, min: 208, max: 420 };
+const INSPECTOR_BOUNDS = { defaultWidth: 340, min: 288, max: 620 };
+// The activity feed never gets narrower than this when side panels grow.
+const FEED_MIN_WIDTH = 440;
 const DEFAULT_ATTEMPTS = 3;
 const MAX_ATTEMPTS = 10;
 const EXTRA_ATTEMPTS = 2;
@@ -618,6 +623,9 @@ export function Dashboard() {
   const [now, setNow] = useState(() => Date.now());
   const [wideViewport, setWideViewport] = useState<boolean | null>(null);
   const notifiedFailures = useRef(new Set<string>());
+  const rail = usePanelWidth("mats.panel.rail", RAIL_BOUNDS);
+  const inspector = usePanelWidth("mats.panel.inspector", INSPECTOR_BOUNDS);
+  const viewportWidth = useViewportWidth();
   const stickToEnd = useRef(true);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -1937,10 +1945,32 @@ export function Dashboard() {
     ...(wideViewport === true ? [] : [{ id: "agent" as const, label: "Details" }]),
   ];
 
+  const inspectorShown = Boolean(showRun && selectedRun && wideViewport);
+  const fitMax = (own: { min: number; max: number }, other: number) =>
+    viewportWidth
+      ? Math.max(own.min, Math.min(own.max, viewportWidth - other - FEED_MIN_WIDTH))
+      : own.max;
+  const inspectorWidth = Math.min(inspector.width, fitMax(inspector, rail.width));
+  const railMax = fitMax(rail, inspectorShown ? inspectorWidth : 0);
+  const railWidth = Math.min(rail.width, railMax);
+  const inspectorMax = fitMax(inspector, railWidth);
+
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <aside className="hidden w-[248px] shrink-0 border-r border-white/[0.05] lg:block">
+      <aside
+        className="relative hidden shrink-0 border-r border-white/[0.06] lg:block"
+        style={{ width: railWidth }}
+      >
         {renderRail()}
+        <PanelResizeHandle
+          side="right"
+          label="Resize runs panel"
+          width={railWidth}
+          min={rail.min}
+          max={railMax}
+          onResize={rail.setWidth}
+          onReset={rail.reset}
+        />
       </aside>
       {railOpen && (
         <div className="fixed inset-0 z-40 lg:hidden" onMouseDown={() => setRailOpen(false)}>
@@ -2233,7 +2263,19 @@ export function Dashboard() {
           </section>
 
           {showRun && selectedRun && (
-            <aside className="hidden w-[332px] shrink-0 flex-col border-l border-white/[0.05] min-[1100px]:flex">
+            <aside
+              className="relative hidden shrink-0 flex-col border-l border-white/[0.06] min-[1100px]:flex"
+              style={{ width: inspectorWidth }}
+            >
+              <PanelResizeHandle
+                side="left"
+                label="Resize details panel"
+                width={inspectorWidth}
+                min={inspector.min}
+                max={inspectorMax}
+                onResize={inspector.setWidth}
+                onReset={inspector.reset}
+              />
               <div className="shrink-0 border-b border-white/[0.05] px-4 py-4">
                 <LiveMarketChart symbol={selectedRun.symbol} enabled={wideViewport === true} />
               </div>
