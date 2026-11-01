@@ -111,4 +111,30 @@ def test_protective_stop_is_created_as_testnet_conditional_order() -> None:
     )
     assert order.orders[0].id == "order-1"
     assert exchange.created_params[0]["triggerPrice"] == 90
-    assert exchange.created_params[0]["triggerDirection"] == 2
+    assert "triggerDirection" not in exchange.created_params[0]
+
+
+class ClosedFillExchange(PartialFillExchange):
+    def create_order(self, symbol, order_type, side, amount, price, params):
+        self.created_params.append(params)
+        return {"id": "order-2", "status": "closed", "filled": 0.0999, "amount": 0.1}
+
+
+def test_market_order_is_sized_in_base_units_and_closed_fill_counts_as_filled() -> None:
+    settings = Settings(
+        bybit_api_key=SecretStr("test-key"),
+        bybit_api_secret=SecretStr("test-secret"),
+        bybit_testnet=True,
+    )
+    exchange = ClosedFillExchange()
+    tools = ExecutionTools(settings, exchange=exchange)
+    result = tools.place_order(
+        "BTC/USDT",
+        "buy",
+        0.1,
+        dry_run=False,
+        idempotency_key="run-entry",
+    )
+    assert exchange.created_params[0]["marketUnit"] == "baseCoin"
+    assert result.status == "filled"
+    assert result.filled == 0.0999
