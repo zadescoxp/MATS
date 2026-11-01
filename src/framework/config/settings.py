@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     )
 
     database_path: Path = Path("./data/state.db")
+    # Closed candles are cached here so runs only download candles they do not have yet.
+    candle_cache_enabled: bool = True
+    candle_cache_path: Path = Path("./data/candles.db")
+    candle_refresh_bars: int = Field(default=2, ge=1, le=50)
     symbols: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
     timeframes: list[str] = Field(default_factory=lambda: ["1h", "4h", "1d"])
     bybit_testnet: bool = True
