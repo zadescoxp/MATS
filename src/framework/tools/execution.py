@@ -94,6 +94,10 @@ class ExecutionTools:
             raise ValueError("Bybit testnet API credentials are required for live execution")
 
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
+        params: dict[str, Any] = {"orderLinkId": link_id}
+        if order_type == "market":
+            # Bybit spot market buys default to quote-currency qty; size is in base units.
+            params["marketUnit"] = "baseCoin"
         started_at = self._monotonic()
         try:
             order = self.exchange.create_order(
@@ -102,7 +106,7 @@ class ExecutionTools:
                 side,
                 amount,
                 price,
-                {"orderLinkId": link_id},
+                params,
             )
         except ccxt.DuplicateOrderId:
             logger.warning("Order idempotency key already exists; retrieving existing order.")
@@ -125,7 +129,8 @@ class ExecutionTools:
 
         filled = float(current.get("filled") or 0)
         requested = float(current.get("amount") or amount)
-        if current.get("status") == "closed" and filled >= requested:
+        if current.get("status") == "closed" and filled > 0:
+            # A closed order is done; exchange lot rounding can leave filled just below amount.
             status = "filled"
         elif filled > 0:
             status = "partially_filled"
@@ -205,10 +210,10 @@ class ExecutionTools:
             trigger_price,
         )
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
+        # Spot conditional orders infer their direction; ccxt rejects triggerDirection on spot.
         params = {
             "orderLinkId": link_id,
             "triggerPrice": trigger_price,
-            "triggerDirection": 2 if side == "sell" else 1,
             "triggerBy": "LastPrice",
         }
         try:
