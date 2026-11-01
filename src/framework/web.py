@@ -565,27 +565,33 @@ class DashboardService:
                 try:
                     bar_key = _closed_bar_key(worker, state)
                     previous_bar = _watcher_bar(database, run_id)
-                    if bar_already_evaluated(previous_bar, bar_key):
-                        database.update_entry_watcher(
-                            run_id, status="watching", last_bar=bar_key, error=None
-                        )
-                        stop_event.wait(interval_seconds)
-                        continue
+                    is_new_bar = bool(bar_key) and not bar_already_evaluated(
+                        previous_bar, bar_key
+                    )
                     risk_update = RiskAssessmentNode(worker.context)(state)
                     state = state.model_copy(update=risk_update)
                     signal = state.live_signal
                     if signal is None:
                         raise RuntimeError("Risk assessment returned no live signal.")
+                    price = getattr(signal, "price", None)
+                    price_detail = f" at {price:g}" if isinstance(price, int | float) else ""
+                    execution_detail = (
+                        "New candle; entry may be evaluated."
+                        if is_new_bar
+                        else "No new candle; entry execution is held to prevent duplicate orders."
+                    )
                     database.log_event(
                         run_id,
                         "algorithm_check",
                         (
-                            f"Bar {bar_key or 'latest'} evaluated once: "
-                            f"{signal.action}. {getattr(signal, 'reason', '')}"
+                            f"Minute check on bar {bar_key or 'unknown'}: "
+                            f"{signal.action}{price_detail}. "
+                            f"{getattr(signal, 'reason', '')} {execution_detail}"
                         ),
                     )
                     if (
-                        signal.action in {"long", "short"}
+                        is_new_bar
+                        and signal.action in {"long", "short"}
                         and state.risk_assessment is not None
                         and state.risk_assessment.approved
                         and not stop_event.is_set()
@@ -752,6 +758,22 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
                    FROM system_events ORDER BY timestamp DESC LIMIT 200"""
             )
         ]
+        run_events = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT event_id, run_id, type, message, traceback, timestamp
+                   FROM (
+                       SELECT event_id, run_id, type, message, traceback, timestamp,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY run_id ORDER BY timestamp DESC, event_id DESC
+                              ) AS run_event_rank
+                       FROM system_events
+                       WHERE run_id IS NOT NULL
+                   )
+                   WHERE run_event_rank <= 200
+                   ORDER BY timestamp DESC, event_id DESC"""
+            )
+        ]
         entry_watchers = [
             {
                 **dict(row),
@@ -767,7 +789,7 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
                     "steps": [step for step in steps if step["run_id"] == run["run_id"]],
                     "strategies": [item for item in strategies if item["run_id"] == run["run_id"]],
                     "executions": [item for item in executions if item["run_id"] == run["run_id"]],
-                    "events": [item for item in system_events if item["run_id"] == run["run_id"]],
+                    "events": [item for item in run_events if item["run_id"] == run["run_id"]],
                 }
                 for run in runs
             ],
