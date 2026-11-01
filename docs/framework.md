@@ -5,11 +5,18 @@
 The production graph is:
 
 ```text
-initialize -> DataWorkerNode -> MultiTimeframeAnalystNode -> StrategyBuilderNode
-           -> BacktestNode -> CritiqueNode
-Critique REJECT -> StrategyBuilderNode (bounded revision loop)
+initialize -> DataWorkerNode -> MultiTimeframeAnalystNode -> RegimeNode
+           -> StrategyBuilderNode -> BacktestNode -> CritiqueNode
+Critique REJECT -> StrategyBuilderNode (bounded by the run's revision limit)
+Critique REJECT at the limit -> END with status "rejected"
 Critique APPROVE -> RiskAssessmentNode -> [optional CoderNode] -> ExecutionNode
 ```
+
+`RegimeNode` is deterministic: it labels the market from trend strength, ATR percentile,
+return autocorrelation, and the Hurst exponent, and the strategy builder and critique use
+the label to match strategy families to conditions. After the graph ends, the dashboard
+API (`framework.web`) runs an approved live strategy as a continuous algorithm; see
+"Live strategy algorithm" below.
 
 There is exactly one primary analyst. It receives every configured timeframe in one
 call, computes the technical indicator suite, and emits one combined finding object.
@@ -34,20 +41,22 @@ orders remain constrained to Bybit testnet. Testnet OHLCV history may be very sp
 | `symbol` | `str` | Active spot market |
 | `timeframes_to_consider` | `list[str]` | All timeframes fetched and analyzed together |
 | `raw_data` | `dict[str, list[OHLCVBar]]` | Normalized historical bars by timeframe |
-| `market_context` | `dict` | Ticker, and optionally order book/recent trades |
+| `market_context` | `dict` | Ticker, news and sentiment, reference-pair candles, funding, optional order book/trades |
+| `regime` | `dict` | Deterministic regime label and the measurements behind it |
 | `analyst_findings` | `list[MultiTimeframeFindings]` | Unified higher-bias/lower-timing findings |
-| `strategy_diagnostics` | `dict` | Historical coverage and measured, net-of-cost candidate results |
+| `strategy_diagnostics` | `dict` | Per-timeframe coverage, why templates were skipped, and measured candidates |
 | `strategy` | `StrategyDefinition \| None` | Supported strategy DSL definition |
 | `backtest_report` | `BacktestReport \| None` | Net-of-fee/slippage backtest and trades |
 | `critique` | `Critique \| None` | `APPROVE`/`REJECT`, issues, revision instructions |
-| `revision_count` | `int` | Bounded number of strategy revisions |
+| `revision_count` | `int` | Strategy revisions so far |
+| `max_revision_loops` | `int \| None` | Per-run revision limit; `None` uses `MATS_MAX_REVISION_LOOPS` |
 | `risk_assessment` | `RiskAssessment \| None` | Sized quantity, notional, loss, and stop |
 | `live_signal` | `LiveSignal \| None` | Fresh deterministic long/short/exit/hold signal and reason |
 | `generated_code` | `str \| None` | Optional Python signal skeleton; never executed |
 | `execution_result` | `ExecutionReport \| None` | Dry-run/testnet orders, fills, and errors |
 | `errors` | `list[str]` | Resumable node/graph failure details |
 | `messages` | `list[dict]` | LLM call history summaries |
-| `status` | `running \| completed \| failed \| stopped` | Run lifecycle |
+| `status` | `running \| completed \| failed \| stopped \| rejected` | Run lifecycle; `rejected` means every attempt was refused |
 | `account_equity` | `float \| None` | Optional per-run equity override |
 
 Nodes return partial state updates; the runner validates each update against
@@ -57,7 +66,9 @@ LangGraph's SQLite saver can restore it without serializing DataFrame internals.
 ## Persistence and resume
 
 The SQLite database has `runs`, `agent_steps`, `strategies`, `backtests`, `critiques`,
-`executions`, `live_positions`, `strategy_stops`, `system_events`, and `node_checkpoints`
+`executions`, `live_positions`, `strategy_trades` (closed live trades, used for edge fade),
+`strategy_stops`, `strategy_family_memory`, `entry_watchers` (live algorithms),
+`system_events`, and `node_checkpoints`
 tables. LangGraph `SqliteSaver`
 stores graph-level checkpoints in the same database. The node runner stores a complete
 state checkpoint immediately before and after each node and records step inputs,
@@ -74,9 +85,18 @@ bounded exponential backoff. An interrupted or failed run can be resumed with
 All tools are Python-callable and return validated Pydantic objects or structured
 records:
 
-- `MarketDataTools.fetch_ohlcv(symbol, timeframe, limit)` returns ordered
-  `OHLCVResult` bars normalized to UTC. The ticker, order book, and recent-trade
-  methods expose the corresponding Bybit/CCXT snapshots.
+- `MarketDataTools.fetch_ohlcv(symbol, timeframe, limit)` returns the latest `limit`
+  ordered `OHLCVResult` bars normalized to UTC, ending with the still-forming candle.
+  When the tool builds its own Bybit client, bars come through `CandleCache`
+  (`framework.tools.candle_store`): closed candles and the time ranges verified with the
+  exchange are kept in `MATS_CANDLE_CACHE_PATH`, so only unverified ranges and the last
+  `MATS_CANDLE_REFRESH_BARS` closed candles are downloaded. The ticker, order book,
+  funding-history, and recent-trade methods expose the corresponding Bybit/CCXT snapshots.
+- `collect_context(symbol)` and `news_sentiment(symbol)` (`framework.tools.context_feed`)
+  gather keyless RSS headlines, the Fear & Greed index, macro series, filings, and
+  fundamentals, tagging each item with a holding horizon and each headline with a tone
+  score and shock flag. `assess_news_risk` (`framework.strategies.news_risk`) turns a
+  sentiment snapshot into "block entry" and "force exit" decisions for the live algorithm.
 - `compute_indicators(candles, timeframe)` returns the requested SMA, EMA, MACD, RSI,
   Stochastic, Bollinger, ATR, ADX, Supertrend, VWAP, OBV, CCI, ROC, Donchian, and
   Keltner values with last-value signals. `compute_multi_timeframe` applies it to all
@@ -85,13 +105,16 @@ records:
   evaluator shared by backtests, risk assessment, execution, and the position monitor.
   It returns `action`, `reason`, `strength`, `price`, `stop`, and `strategy_over`.
 - The hard-coded, structured strategy library in `framework.strategies.library`
-  contains six templates: EMA crossover; RSI recovery from oversold/overbought in the
-  EMA trend; Supertrend direction change filtered by ATR percentage; MACD histogram
-  zero-cross with higher-timeframe EMA bias; Bollinger squeeze breakout; and
-  higher-timeframe EMA trend with lower-timeframe EMA crossover timing. Each saved
-  strategy JSON includes its `template_name` and exact parameter values. The model
-  sees the library summary and may only select a measured candidate; arbitrary
-  generated strategy code is not executed.
+  contains 13 templates in eight families: EMA crossover, Supertrend with an ATR filter,
+  and MACD with higher-timeframe bias (momentum); RSI pullback and z-score mean
+  reversion; a pair-spread statistical arbitrage (relative value); Bollinger squeeze and
+  volatility fade (volatility); confirmed breakout; funding carry; regime-gated trend;
+  and two multi-timeframe templates (higher-timeframe trend with lower-timeframe timing,
+  and a hybrid). Together they trade 5m, 15m, 1h, 4h, and 1d; each template lists its
+  own `supported_timeframes`, and templates with a `higher_timeframe` parameter need a
+  higher timeframe in the same run. Each saved strategy JSON includes its
+  `template_name` and exact parameter values. The model picks one measured candidate by
+  `candidate_id`; arbitrary generated strategy code is never executed.
 - Library defaults use a 2% protective stop. EMA crossover exits on the opposite
   crossover; RSI pullback and Bollinger breakout use a 4% target; Supertrend trails at
   3 ATR; MACD-with-bias has a 48-bar time stop; and higher/lower-timeframe timing has
@@ -117,7 +140,10 @@ records:
   combinations using configured costs. It only offers candidates that meet configured
   history and trade-count thresholds, ranks candidates by net PnL and drawdown, and
   supplies at most the top five per timeframe. Template, parameters, exit rule, risk
-  values, and timeframe are stored in the strategy JSON and diagnostics.
+  values, and timeframe are stored in the strategy JSON and diagnostics. When nothing
+  qualifies, `strategy_diagnostics.timeframe_coverage` records for each timeframe which
+  templates do not trade it, need a higher timeframe, do not fit the regime, lack pair
+  or funding data, or made too few closed trades, and the run error lists those reasons.
 - `reprice_trade_list(trades, CostAssumptions)` recomputes fees, slippage, and net PnL
   without changing the source trade objects.
 - `ExecutionTools` exposes market/limit placement, conditional protective stops,
@@ -159,14 +185,27 @@ override them. Each route includes provider, model, credentials, optional API ba
 and `supports_tools`; nodes reject routes without tool support before making a request.
 Token counts and reported model cost are written to `agent_steps`.
 
+Ollama routes (`provider: ollama`) use LiteLLM's native `ollama_chat/` transport with
+`MATS_OLLAMA_NUM_CTX` and a reply cap of `MATS_OLLAMA_MAX_OUTPUT_TOKENS`. Unsupported
+parameters are dropped for every provider, and a reply that writes a tool call as JSON
+text is accepted when it names one of the offered tools.
+
+Agents call models through `invoke_structured` (`framework.agents.common`), which
+parses the matching tool call, decodes lists or objects sent as JSON strings, validates
+the result, and on failure sends the error back for one corrected attempt. Token use and
+cost cover both calls. Submission schemas are deliberately small: the analyst submits
+`AnalystSubmission` (timeframes and indicator snapshots are filled in by code) and the
+strategy model submits a `StrategyChoice` naming a measured candidate.
+
 ## Adding an agent
 
 1. Define and validate its I/O contract in `framework.schemas.models`.
 2. Add one focused node class under `framework.agents`; accept `GraphState`, read
    inputs, and return only the changed state keys (or `AgentResult` with token/cost
    metadata).
-3. If it calls a model, define a `ToolDefinition` and parse its structured tool call;
-   never parse unvalidated free-form output.
+3. If it calls a model, define a small submission model with `submit_tool` and call
+   `invoke_structured`; never trust unvalidated free-form output. Ask the model only for
+   judgments, and fill in facts the code already knows.
 4. Register the node in `TradingFramework._build_graph`, wrap it with
    `NodeRunner.wrap`, and add explicit success/failure/conditional edges.
 5. Add unit tests using fake market/model/exchange clients. Check checkpoint recovery
@@ -182,5 +221,29 @@ balance unless the run explicitly supplies `account_equity`. Never place live or
 with credentials outside a controlled testnet setup.
 
 The default critique limit is two revision loops, for a maximum of three strategy
-attempts per symbol including the initial attempt. `MATS_SYMBOLS` can be processed
-concurrently with `mats --all`; each symbol gets a separate persisted run.
+attempts per symbol including the initial attempt. A run can set its own limit
+(`max_revision_loops` in the run config, `--max-attempts` on the CLI), and a run that
+ends `rejected` can be resumed with extra attempts (`resume(run_id, extra_attempts=N)`,
+`--extra-attempts`). `MATS_SYMBOLS` can be processed concurrently with `mats --all`; each
+symbol gets a separate persisted run.
+
+## Live strategy algorithm
+
+When a dashboard run with dry-run off ends with an approved strategy,
+`DashboardService` starts an algorithm for it (`entry_watchers` row, 60-second loop):
+
+- With an open position it calls `PositionMonitor.monitor_positions`, passing a
+  `news_risk_exit` when `assess_news_risk` reports a coin-specific shock.
+- When flat it checks edge fade, re-runs `RiskAssessmentNode` for a fresh signal and size,
+  and runs `ExecutionNode` only on a new closed candle when news risk does not block entry.
+  Entry and stop order keys include the bar, so a re-armed strategy can enter again.
+- Ordinary exits close the position, record the trade in `strategy_trades`, and keep the
+  strategy armed. Edge fade (`PositionMonitor.edge_fade_reason`) or a manual flatten marks
+  the fingerprint stopped, which retires the algorithm.
+- While dry-run or the kill switch is on the algorithm is paused and logs why. Stopping a
+  single run does not change the kill switch; `stop_all` turns it on.
+
+Every run in the dashboard snapshot carries a `diagnosis` from `diagnose_run`
+(`framework.core.diagnostics`): a kind (`failed`, `rejected`, `paused`, `waiting`,
+`in_position`, `no_trade`, `dry_run`, `retired`, `stopped`), a title, the detail, and a
+suggested next step.
