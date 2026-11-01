@@ -156,3 +156,10 @@ def test_critique_stops_when_revision_limit_is_zero() -> None:
     assert "status" not in per_run.updates
     assert per_run.updates["revision_count"] == 1
     database.close()
+
+
+def test_critique_decision_accepts_common_wordings() -> None:
+    from framework.schemas.models import Critique
+
+    assert Critique.model_validate({"decision": "approve"}).decision == "APPROVE"
+    assert Critique.model_validate({"decision": " Rejected "}).decision == "REJECT"
