@@ -21,3 +21,9 @@ def candles() -> list[OHLCVBar]:
         )
         for index, price in enumerate(values)
     ]
+
+
+@pytest.fixture(autouse=True)
+def isolated_candle_cache(tmp_path, monkeypatch):
+    """Keep any test that builds a real market-data client away from ./data/candles.db."""
+    monkeypatch.setenv("MATS_CANDLE_CACHE_PATH", str(tmp_path / "candles.db"))

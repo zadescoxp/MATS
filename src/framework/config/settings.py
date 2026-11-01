@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     )
 
     database_path: Path = Path("./data/state.db")
+    # Closed candles are cached here so runs only download candles they do not have yet.
+    candle_cache_enabled: bool = True
+    candle_cache_path: Path = Path("./data/candles.db")
+    candle_refresh_bars: int = Field(default=2, ge=1, le=50)
     symbols: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
     timeframes: list[str] = Field(default_factory=lambda: ["1h", "4h", "1d"])
     bybit_testnet: bool = True
@@ -58,7 +62,9 @@ class Settings(BaseSettings):
     edge_fade_min_trades: int = Field(default=3, ge=1)
     allow_short: bool = False
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
-    exchange_rate_limit_ms: int = Field(default=1000, ge=0)
+    # None keeps ccxt's per-exchange throttle (20ms for Bybit, scaled by endpoint cost).
+    # ccxt multiplies this by each endpoint's cost, so 1000 meant ~5s per Bybit request.
+    exchange_rate_limit_ms: int | None = Field(default=None, ge=0)
     request_timeout_ms: int = Field(default=10_000, gt=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
     include_orderbook: bool = False

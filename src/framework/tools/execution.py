@@ -31,8 +31,9 @@ class ExecutionTools:
         config: dict[str, Any] = {
             "enableRateLimit": True,
             "timeout": settings.request_timeout_ms,
-            "rateLimit": settings.exchange_rate_limit_ms,
         }
+        if settings.exchange_rate_limit_ms is not None:
+            config["rateLimit"] = settings.exchange_rate_limit_ms
         if settings.bybit_api_key:
             config["apiKey"] = settings.bybit_api_key.get_secret_value()
         if settings.bybit_api_secret:
