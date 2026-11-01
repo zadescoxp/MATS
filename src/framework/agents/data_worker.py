@@ -1,25 +1,43 @@
 import logging
+import math
 from time import perf_counter
 from typing import Any
 
+from framework.config.settings import Settings
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
+from framework.strategies.signals import LIVE_SIGNAL_BARS
+from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import collect_context, reference_pair
 
 logger = logging.getLogger(__name__)
 
 
+def history_bars(timeframe: str, settings: Settings) -> int:
+    """Candles to research on: enough days of history, but never fewer than live uses."""
+    length = timeframe_ms(timeframe)
+    if length is None:
+        return LIVE_SIGNAL_BARS
+    wanted = math.ceil(settings.min_history_days * 86_400_000 / length)
+    return min(settings.max_history_bars, max(LIVE_SIGNAL_BARS, wanted))
+
+
 class DataWorkerNode:
-    def __init__(self, context: AgentContext, candle_limit: int = 500):
+    def __init__(self, context: AgentContext, candle_limit: int | None = None):
         self.context = context
         self.candle_limit = candle_limit
+
+    def _limit(self, timeframe: str) -> int:
+        if self.candle_limit is not None:
+            return self.candle_limit
+        return history_bars(timeframe, self.context.settings)
 
     def __call__(self, state: GraphState) -> dict[str, Any]:
         data: dict[str, Any] = {}
         for timeframe in state.timeframes_to_consider:
             started_at = perf_counter()
             result = self.context.market_data.fetch_ohlcv(
-                state.symbol, timeframe, limit=self.candle_limit
+                state.symbol, timeframe, limit=self._limit(timeframe)
             )
             data[timeframe] = result.candles
             logger.info(
@@ -52,7 +70,7 @@ class DataWorkerNode:
                 for timeframe in state.timeframes_to_consider:
                     try:
                         candles = self.context.market_data.fetch_ohlcv(
-                            pair, timeframe, limit=self.candle_limit
+                            pair, timeframe, limit=self._limit(timeframe)
                         ).candles
                         pair_candles[timeframe] = [
                             candle.model_dump(mode="json") for candle in candles
