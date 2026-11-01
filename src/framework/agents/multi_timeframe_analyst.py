@@ -2,11 +2,11 @@ import json
 import math
 from typing import Any
 
-from framework.agents.common import parse_tool_response, result_with_response, submit_tool
+from framework.agents.common import invoke_structured, result_with_response, submit_tool
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
-from framework.schemas.models import MultiTimeframeFindings, OHLCVBar
+from framework.schemas.models import AnalystSubmission, MultiTimeframeFindings, OHLCVBar
 from framework.tools.technicals import compute_multi_timeframe
 
 
@@ -51,18 +51,28 @@ class MultiTimeframeAnalystNode:
                 ),
             },
         ]
+        # The model only judges; timeframes and indicator snapshots are already known here.
         tool = submit_tool(
             "submit_findings",
-            MultiTimeframeFindings,
-            "Submit one combined multi-timeframe market finding.",
+            AnalystSubmission,
+            (
+                f"Submit one combined finding: bias on {highest}, entry timing on {lowest}, "
+                "plus regime, momentum, volatility, key price levels, and divergences."
+            ),
         )
-        response = self.context.llm.invoke_with_tools(
-            messages, [tool], self.context.settings.model_for("analyst")
+        submission, response = invoke_structured(
+            self.context.llm,
+            messages,
+            tool,
+            AnalystSubmission,
+            self.context.settings.model_for("analyst"),
         )
-        finding = parse_tool_response(response, "submit_findings", MultiTimeframeFindings)
-        if finding.higher_timeframe != highest or finding.lower_timeframe != lowest:
-            raise ValueError("Analyst findings must use the highest and lowest supplied timeframes")
-        finding = finding.model_copy(update={"technical_snapshots": snapshot_payload})
+        finding = MultiTimeframeFindings(
+            **submission.model_dump(),
+            higher_timeframe=highest,
+            lower_timeframe=lowest,
+            technical_snapshots=snapshot_payload,
+        )
         history = [
             *state.messages,
             {"role": "assistant", "content": response.content, "tool": "submit_findings"},
