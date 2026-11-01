@@ -1,5 +1,5 @@
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -27,9 +27,9 @@ class BacktestTool:
     def run(
         self,
         strategy: StrategyDefinition,
-        candles: Sequence[OHLCVBar],
+        candles: Sequence[OHLCVBar | Mapping[str, Any]],
         *,
-        data: dict[str, Sequence[OHLCVBar]] | None = None,
+        data: dict[str, Sequence[OHLCVBar | Mapping[str, Any]]] | None = None,
         initial_capital: float | None = None,
     ) -> BacktestReport:
         capital = self.initial_capital if initial_capital is None else initial_capital
@@ -40,6 +40,7 @@ class BacktestTool:
             or capital <= 0
         ):
             raise ValueError("initial_capital must be positive")
+        candles = [_normalize_candle(candle) for candle in candles]
         if len(candles) < 2:
             raise ValueError("Backtesting requires at least two candles")
         frame = pd.DataFrame(
@@ -58,7 +59,10 @@ class BacktestTool:
         if not frame["timestamp"].is_monotonic_increasing:
             raise ValueError("Candles must be time-ordered")
 
-        all_candles = data or {strategy.chosen_timeframe: candles}
+        all_candles = {
+            timeframe: [_normalize_candle(candle) for candle in series]
+            for timeframe, series in (data or {strategy.chosen_timeframe: candles}).items()
+        }
         signals = [
             LiveSignal(
                 action="hold",
@@ -273,6 +277,10 @@ def _annualization(timeframe: str) -> float:
         "1w": 604_800,
     }.get(timeframe, 86_400)
     return float(np.sqrt(365.25 * 24 * 60 * 60 / seconds))
+
+
+def _normalize_candle(candle: OHLCVBar | Mapping[str, Any]) -> OHLCVBar:
+    return candle if isinstance(candle, OHLCVBar) else OHLCVBar.model_validate(candle)
 
 
 def _profit_factor(trades: list[TradeRecord]) -> float | None:
