@@ -230,6 +230,79 @@ class Database:
         except BaseException:
             self.connection.close()
             raise
+        self.series = CandleSeriesStore(self.connection, self._lock)
+
+    def _dumps_packed(self, value: Any) -> str:
+        """JSON for a state or step record, with candle lists stored once by reference."""
+        return json_dumps(self.series.pack(json.loads(json_dumps(value))))
+
+    def _loads_unpacked(self, text: str) -> Any:
+        return self.series.unpack(json.loads(text))
+
+    def compact_storage(self, *, batch_size: int = 200) -> dict[str, int]:
+        """Move inline candles in old rows to the series table and reclaim the space.
+
+        Also clears the tables LangGraph's checkpointer used to fill; MATS never read them
+        back. Run it while no other process is writing to this database.
+        """
+        size_before = self._file_bytes()
+        rewritten = 0
+        for table, key, columns in (
+            ("node_checkpoints", "rowid", ("state_json",)),
+            ("agent_steps", "rowid", ("input_json", "output_json")),
+        ):
+            last = 0
+            while True:
+                with self._lock:
+                    rows = self.connection.execute(
+                        f"SELECT {key} AS row_key, {', '.join(columns)} FROM {table} "
+                        f"WHERE {key} > ? ORDER BY {key} LIMIT ?",
+                        (last, batch_size),
+                    ).fetchall()
+                if not rows:
+                    break
+                with self._lock, self.connection:
+                    for row in rows:
+                        updates = {
+                            column: self._dumps_packed(json.loads(row[column]))
+                            for column in columns
+                            if row[column]
+                        }
+                        changed = {
+                            column: text
+                            for column, text in updates.items()
+                            if len(text) < len(row[column])
+                        }
+                        if changed:
+                            assignments = ", ".join(f"{column} = ?" for column in changed)
+                            self.connection.execute(
+                                f"UPDATE {table} SET {assignments} WHERE {key} = ?",
+                                (*changed.values(), row["row_key"]),
+                            )
+                            rewritten += 1
+                last = rows[-1]["row_key"]
+        with self._lock:
+            existing = {
+                row["name"]
+                for row in self.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            for table in ("checkpoints", "writes", "checkpoint_blobs", "checkpoint_writes"):
+                if table in existing:
+                    self.connection.execute(f"DROP TABLE {table}")
+            self.connection.execute("VACUUM")
+        return {
+            "rows_rewritten": rewritten,
+            "bytes_before": size_before,
+            "bytes_after": self._file_bytes(),
+        }
+
+    def _file_bytes(self) -> int:
+        with self._lock:
+            pages = self.connection.execute("PRAGMA page_count").fetchone()[0]
+            page_size = self.connection.execute("PRAGMA page_size").fetchone()[0]
+        return int(pages) * int(page_size)
 
     def close(self) -> None:
         with self._lock:
