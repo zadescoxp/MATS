@@ -2,7 +2,7 @@ import json
 
 from pydantic import BaseModel, Field
 
-from framework.agents.common import parse_tool_response, result_with_response, submit_tool
+from framework.agents.common import invoke_structured, result_with_response, submit_tool
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
@@ -41,12 +41,13 @@ class CoderNode:
                 ),
             },
         ]
-        response = self.context.llm.invoke_with_tools(
+        output, response = invoke_structured(
+            self.context.llm,
             messages,
-            [submit_tool("submit_code", GeneratedCode, "Submit a Python signal function.")],
+            submit_tool("submit_code", GeneratedCode, "Submit a Python signal function."),
+            GeneratedCode,
             self.context.settings.model_for("coder"),
         )
-        output = parse_tool_response(response, "submit_code", GeneratedCode)
         history = [
             *state.messages,
             {"role": "assistant", "content": response.content, "tool": "submit_code"},
