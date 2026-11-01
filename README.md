@@ -38,6 +38,13 @@ Baseten Muse; configure an API key before starting a run. Every routed model mus
 support tool calling. Baseten calls use the OpenAI-compatible Model API at
 `https://inference.baseten.co/v1`; the Muse model ID is passed unchanged.
 
+Local Ollama models (provider `ollama`) go through Ollama's native chat API, which supports
+tool calls. Ollama's default context window is about 4k tokens, so MATS requests
+`MATS_OLLAMA_NUM_CTX` (16384 by default) and caps replies at `MATS_OLLAMA_MAX_OUTPUT_TOKENS`.
+Prompts carry indicator snapshots and summaries rather than raw candles. Very small models
+(around 3B parameters) can run the pipeline but give weak analysis; a 7B+ tool-calling model
+or a hosted model is recommended for strategy research.
+
 ## Backend logs
 
 The CLI and dashboard API write readable, timestamped backend logs to stderr. Logs
