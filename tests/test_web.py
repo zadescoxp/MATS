@@ -93,6 +93,23 @@ def test_snapshot_decodes_run_steps_backtests_executions_and_positions(tmp_path:
     assert snapshot["entry_watchers"][0]["signal"]["action"] == "hold"
 
 
+def test_snapshot_keeps_activity_events_scoped_to_their_run(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    database = Database(path)
+    try:
+        database.create_run("run-1", "BTC/USDT", {})
+        database.create_run("run-2", "ETH/USDT", {})
+        database.log_event("run-1", "algorithm_check", "BTC watcher check")
+        database.log_event("run-2", "algorithm_check", "ETH watcher check")
+    finally:
+        database.close()
+
+    runs = {run["run_id"]: run for run in _read_snapshot(path)["runs"]}
+
+    assert [event["message"] for event in runs["run-1"]["events"]] == ["BTC watcher check"]
+    assert [event["message"] for event in runs["run-2"]["events"]] == ["ETH watcher check"]
+
+
 def test_dashboard_registers_entry_watcher_only_for_live_approved_runs(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -151,8 +168,16 @@ def test_dashboard_resumes_stopped_entry_watcher(tmp_path: Path, monkeypatch) ->
     assert threads[0].name == "mats-entry-watch-run-watc"
 
 
-def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize(
+    ("previous_bar", "expected_calls", "expected_detail"),
+    [
+        (None, ["risk", "execution"], "New candle"),
+        ("bar-1", ["risk"], "No new candle"),
+    ],
+)
+def test_entry_watcher_checks_every_interval_without_repeating_same_bar_execution(
+    tmp_path: Path, monkeypatch, previous_bar: str | None,
+    expected_calls: list[str], expected_detail: str,
 ) -> None:
     path = tmp_path / "state.db"
     settings = Settings(database_path=path, dry_run=False, kill_switch=False)
@@ -163,6 +188,7 @@ def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
     database.close()
     stop_event = Event()
     calls: list[str] = []
+    logged_events: list[tuple[str, str]] = []
 
     class WatchState:
         critique = SimpleNamespace(decision="APPROVE")
@@ -182,14 +208,17 @@ def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
         def latest_checkpoint(self, _run_id):
             return {}
 
+        def entry_watchers(self):
+            return [{"run_id": "run-watch", "last_bar_timestamp": previous_bar}]
+
         def update_entry_watcher(self, *_args, **_kwargs):
-            pass
+            stop_event.set()
 
         def open_positions(self):
             return []
 
-        def log_event(self, *_args, **_kwargs):
-            pass
+        def log_event(self, _run_id, event_type, message, **_kwargs):
+            logged_events.append((event_type, message))
 
     class FakeWorker:
         def __init__(self, **_kwargs):
@@ -201,9 +230,11 @@ def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
 
     class FakeSignal:
         action = "long"
+        price = 100.0
+        reason = "Entry condition met."
 
         def model_dump(self, **_kwargs):
-            return {"action": self.action, "reason": "Entry condition met."}
+            return {"action": self.action, "price": self.price, "reason": self.reason}
 
     class FakeRiskAssessment:
         def __init__(self, _context):
@@ -226,6 +257,7 @@ def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
             return {}
 
     monkeypatch.setattr("framework.web.TradingFramework", FakeWorker)
+    monkeypatch.setattr("framework.web._closed_bar_key", lambda *_args: "bar-1")
     monkeypatch.setattr(
         "framework.web.GraphState.model_validate", classmethod(lambda _cls, _value: state)
     )
@@ -234,7 +266,12 @@ def test_entry_watcher_rechecks_risk_and_execution_for_actionable_signal(
 
     service._watch_entries("run-watch", stop_event, 60)
 
-    assert calls == ["risk", "execution"]
+    assert calls == expected_calls
+    check_events = [event for event in logged_events if event[0] == "algorithm_check"]
+    assert len(check_events) == 1
+    assert "Minute check on bar bar-1" in check_events[0][1]
+    assert "at 100" in check_events[0][1]
+    assert expected_detail in check_events[0][1]
 
 
 @pytest.mark.parametrize(
