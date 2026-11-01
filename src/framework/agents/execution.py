@@ -128,13 +128,13 @@ class ExecutionNode:
             }
 
         side = "buy" if signal.action == "long" else "sell"
+        entry_bar = data[state.strategy.chosen_timeframe][-1].timestamp.isoformat()
+        # One entry per bar; a re-armed strategy needs fresh keys for its next entry.
+        order_key = f"{state.run_id}:{entry_bar}"
         self.context.database.log_event(
             state.run_id,
             "algorithm_order",
-            (
-                f"Bar {data[state.strategy.chosen_timeframe][-1].timestamp.isoformat()} "
-                f"action={signal.action} amount={amount:.8g}. Placing one order."
-            ),
+            (f"Bar {entry_bar} action={signal.action} amount={amount:.8g}. Placing one order."),
         )
         outcome = self.context.execution.place_order(
             state.symbol,
@@ -142,7 +142,7 @@ class ExecutionNode:
             amount,
             "market",
             dry_run=dry_run,
-            idempotency_key=f"{state.run_id}:spot-entry",
+            idempotency_key=f"{order_key}:spot-entry",
         )
         orders = [_order_dict(order) for order in outcome.orders]
         errors = list(outcome.errors)
@@ -165,7 +165,7 @@ class ExecutionNode:
                 amount,
                 stop,
                 dry_run=True,
-                idempotency_key=f"{state.run_id}:spot-stop",
+                idempotency_key=f"{order_key}:spot-stop",
                 side="sell" if signal.action == "long" else "buy",
             )
             protective_orders = stop_result.orders
@@ -177,7 +177,7 @@ class ExecutionNode:
                     filled,
                     stop,
                     dry_run=False,
-                    idempotency_key=f"{state.run_id}:spot-stop",
+                    idempotency_key=f"{order_key}:spot-stop",
                     side="sell" if signal.action == "long" else "buy",
                 )
                 protective_orders = stop_result.orders
@@ -211,7 +211,7 @@ class ExecutionNode:
                         filled,
                         "market",
                         dry_run=False,
-                        idempotency_key=f"{state.run_id}:protective-failure-exit",
+                        idempotency_key=f"{order_key}:protective-failure-exit",
                     )
                     emergency_orders = flatten.orders
                     orders.extend(_order_dict(order) for order in emergency_orders)
@@ -258,7 +258,7 @@ class ExecutionNode:
                 ),
                 entry_order_id=entry_order_id,
                 protective_order_id=protective_order_id,
-                entry_bar_timestamp=data[state.strategy.chosen_timeframe][-1].timestamp.isoformat(),
+                entry_bar_timestamp=entry_bar,
             )
             if emergency_flattened:
                 self.context.database.update_live_position(
