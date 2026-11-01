@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from framework.agents.execution import ExecutionNode
+from framework.agents.position_monitor import PositionMonitor
 from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.config.connections import ConsoleConnections, snapshot_environment
 from framework.config.settings import Settings, get_settings
@@ -23,7 +24,10 @@ from framework.core.logging_config import configure_logging
 from framework.core.state import GraphState
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
+from framework.strategies.library import strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
+from framework.strategies.news_risk import NewsRisk, assess_news_risk
+from framework.tools.context_feed import news_sentiment
 from framework.tools.execution import ExecutionTools
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
@@ -203,15 +207,12 @@ class DashboardService:
             event = self._stop_events.get(run_id)
             if event is None or not self._run_is_active(run_id):
                 raise ValueError(f"No active dashboard run found for run_id={run_id!r}.")
-            self.settings.kill_switch = True
+            # Stopping one run must not silently force every other run into dry-run.
             event.set()
-        logger.warning(
-            "Stop requested; kill switch enabled.",
-            extra={"mats_run_id": run_id},
-        )
+        logger.warning("Stop requested.", extra={"mats_run_id": run_id})
         return {
-            "message": "Stop requested. The run or entry watcher will stop; "
-            "the kill switch is now enabled."
+            "message": "Stop requested. The run or strategy algorithm will stop at its next "
+            "check. Other runs keep trading; use Stop all to engage the kill switch."
         }
 
     def stop_all(self) -> dict[str, Any]:
@@ -489,15 +490,19 @@ class DashboardService:
         ):
             return
         with self._lock:
-            if self.settings.dry_run or self.settings.kill_switch or stop_event.is_set():
-                return
             database = Database(self.settings.database_path)
             try:
-                if any(
-                    position["run_id"] == run_id
-                    for position in database.open_positions(state.symbol)
-                ):
+                if self.settings.dry_run:
+                    database.log_event(
+                        run_id,
+                        "algorithm_not_started",
+                        "Strategy approved, but dry-run is on, so no live algorithm was "
+                        "started. Start the run with dry-run off to trade it on testnet.",
+                    )
                     return
+                if stop_event.is_set():
+                    return
+                # With the kill switch on the algorithm starts paused and resumes on its own.
                 database.start_entry_watcher(run_id, _ENTRY_WATCH_INTERVAL_SECONDS)
             finally:
                 database.close()
@@ -541,6 +546,13 @@ class DashboardService:
     def _watch_entries(
         self, run_id: str, stop_event: threading.Event, interval_seconds: int
     ) -> None:
+        """Run an approved strategy as a live algorithm until it is stopped.
+
+        Each interval the loop either manages the open position (exits, news risk) or,
+        when flat, re-checks the strategy signal and risk plan and enters on a new closed
+        candle. Ordinary exits re-arm the strategy; it only retires when its live edge
+        fades, it is flattened manually, or the operator stops it.
+        """
         worker = None
         database = None
         try:
@@ -556,70 +568,40 @@ class DashboardService:
                 or state.strategy is None
             ):
                 raise ValueError(f"Watcher run {run_id} has no approved strategy to monitor.")
+            fingerprint = strategy_fingerprint(state.strategy)
+            paused_reason: str | None = None
 
             while not stop_event.is_set():
-                if self.settings.dry_run or self.settings.kill_switch:
-                    database.update_entry_watcher(run_id, status="paused")
+                reason = _paused_reason(self.settings)
+                if reason:
+                    database.update_entry_watcher(run_id, status="paused", error=reason)
+                    if reason != paused_reason:
+                        database.log_event(run_id, "algorithm_paused", reason)
+                        paused_reason = reason
                     stop_event.wait(interval_seconds)
                     continue
-                try:
-                    bar_key = _closed_bar_key(worker, state)
-                    previous_bar = _watcher_bar(database, run_id)
-                    is_new_bar = bool(bar_key) and not bar_already_evaluated(
-                        previous_bar, bar_key
-                    )
-                    risk_update = RiskAssessmentNode(worker.context)(state)
-                    state = state.model_copy(update=risk_update)
-                    signal = state.live_signal
-                    if signal is None:
-                        raise RuntimeError("Risk assessment returned no live signal.")
-                    price = getattr(signal, "price", None)
-                    price_detail = f" at {price:g}" if isinstance(price, int | float) else ""
-                    execution_detail = (
-                        "New candle; entry may be evaluated."
-                        if is_new_bar
-                        else "No new candle; entry execution is held to prevent duplicate orders."
-                    )
+                if paused_reason:
                     database.log_event(
-                        run_id,
-                        "algorithm_check",
-                        (
-                            f"Minute check on bar {bar_key or 'unknown'}: "
-                            f"{signal.action}{price_detail}. "
-                            f"{getattr(signal, 'reason', '')} {execution_detail}"
-                        ),
+                        run_id, "algorithm_resumed", "Safety switches are off; trading resumed."
                     )
-                    if (
-                        is_new_bar
-                        and signal.action in {"long", "short"}
-                        and state.risk_assessment is not None
-                        and state.risk_assessment.approved
-                        and not stop_event.is_set()
-                        and not self.settings.dry_run
-                        and not self.settings.kill_switch
-                        and not any(
-                            position["run_id"] == run_id for position in database.open_positions()
-                        )
-                    ):
-                        execution_update = ExecutionNode(worker.context)(state)
-                        state = state.model_copy(update=execution_update)
-                    database.update_entry_watcher(
-                        run_id,
-                        status="watching",
-                        signal=signal.model_dump(mode="json"),
-                        last_bar=bar_key,
-                        error=None,
+                    paused_reason = None
+                stop_reason = database.strategy_stop_reason(state.symbol, fingerprint)
+                if stop_reason:
+                    database.update_entry_watcher(run_id, status="stopped", error=stop_reason)
+                    database.log_event(run_id, "algorithm_retired", stop_reason)
+                    return
+                try:
+                    news_risk = assess_news_risk(_live_sentiment(state.symbol))
+                    position = next(
+                        (item for item in database.open_positions() if item["run_id"] == run_id),
+                        None,
                     )
-                    if any(position["run_id"] == run_id for position in database.open_positions()):
-                        database.update_entry_watcher(run_id, status="triggered")
-                        database.log_event(
-                            run_id,
-                            "entry_watcher_triggered",
-                            "The entry watcher placed an order and saved an open position.",
-                        )
-                        return
+                    if position is not None:
+                        self._manage_position(worker, database, run_id, news_risk)
+                    else:
+                        state = self._check_entry(worker, database, run_id, state, news_risk)
                 except Exception as exc:
-                    database.update_entry_watcher(run_id, status="watching", error=str(exc))
+                    database.update_entry_watcher(run_id, error=str(exc))
                     database.log_event(run_id, "entry_watcher_check_failed", str(exc), error=exc)
                     logger.exception("Entry watcher check failed for run %s", run_id)
                 stop_event.wait(interval_seconds)
@@ -635,6 +617,96 @@ class DashboardService:
         finally:
             if worker:
                 worker.close()
+
+    def _manage_position(
+        self, worker: Any, database: Any, run_id: str, news_risk: NewsRisk
+    ) -> None:
+        external_exits = (
+            {run_id: ("news_risk_exit", f"News risk exit: {news_risk.reason}")}
+            if news_risk.force_exit
+            else None
+        )
+        result = PositionMonitor(worker.context).monitor_positions(
+            [run_id], external_exits=external_exits
+        )[0]
+        database.log_event(
+            run_id,
+            "position_check",
+            f"Position check: {result['action']}. {result['reason']} {news_risk.reason}",
+        )
+        database.update_entry_watcher(
+            run_id,
+            status="in_position" if result["action"] == "hold" else "watching",
+            error=None,
+        )
+
+    def _check_entry(
+        self, worker: Any, database: Any, run_id: str, state: GraphState, news_risk: NewsRisk
+    ) -> GraphState:
+        if state.strategy is not None:
+            fade = PositionMonitor(worker.context).edge_fade_reason(
+                strategy_fingerprint(state.strategy)
+            )
+            if fade:
+                database.mark_strategy_stopped(
+                    state.symbol, strategy_fingerprint(state.strategy), run_id, fade
+                )
+                database.update_run_status(run_id, "stopped")
+                return state
+        bar_key = _closed_bar_key(worker, state)
+        previous_bar = _watcher_bar(database, run_id)
+        is_new_bar = bool(bar_key) and not bar_already_evaluated(previous_bar, bar_key)
+        risk_update = RiskAssessmentNode(worker.context)(state)
+        state = state.model_copy(update=risk_update)
+        signal = state.live_signal
+        if signal is None:
+            raise RuntimeError("Risk assessment returned no live signal.")
+        price = getattr(signal, "price", None)
+        price_detail = f" at {price:g}" if isinstance(price, int | float) else ""
+        actionable = (
+            signal.action in {"long", "short"}
+            and state.risk_assessment is not None
+            and state.risk_assessment.approved
+        )
+        if not is_new_bar:
+            execution_detail = "No new candle; entry execution is held to prevent duplicate orders."
+        elif actionable and news_risk.block_entry:
+            execution_detail = f"Entry blocked by news risk: {news_risk.reason}"
+        else:
+            execution_detail = f"New candle; entry may be evaluated. {news_risk.reason}"
+        database.log_event(
+            run_id,
+            "algorithm_check",
+            (
+                f"Minute check on bar {bar_key or 'unknown'}: "
+                f"{signal.action}{price_detail}. "
+                f"{getattr(signal, 'reason', '')} {execution_detail}"
+            ),
+        )
+        if (
+            is_new_bar
+            and actionable
+            and not news_risk.block_entry
+            and not self.settings.dry_run
+            and not self.settings.kill_switch
+        ):
+            execution_update = ExecutionNode(worker.context)(state)
+            state = state.model_copy(update=execution_update)
+        entered = any(position["run_id"] == run_id for position in database.open_positions())
+        database.update_entry_watcher(
+            run_id,
+            status="in_position" if entered else "watching",
+            signal=signal.model_dump(mode="json"),
+            last_bar=bar_key,
+            error=None,
+        )
+        if entered:
+            database.log_event(
+                run_id,
+                "entry_watcher_triggered",
+                "The strategy algorithm placed an entry and is now managing the position.",
+            )
+        return state
 
     def _run_is_active(self, run_id: str) -> bool:
         thread = self._threads.get(run_id)
@@ -799,6 +871,22 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
         }
     finally:
         connection.close()
+
+
+def _paused_reason(settings: Settings) -> str | None:
+    if settings.kill_switch:
+        return "Paused: the kill switch is on. Turn it off to let this strategy trade."
+    if settings.dry_run:
+        return "Paused: dry-run is on. Turn it off to let this strategy trade on testnet."
+    return None
+
+
+def _live_sentiment(symbol: str) -> dict[str, Any] | None:
+    try:
+        return news_sentiment(symbol)
+    except Exception:
+        logger.warning("Live news sentiment unavailable for %s.", symbol, exc_info=True)
+        return None
 
 
 def _closed_bar_key(worker: Any, state: Any) -> str | None:
