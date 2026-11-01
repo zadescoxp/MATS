@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     candle_cache_enabled: bool = True
     candle_cache_path: Path = Path("./data/candles.db")
     candle_refresh_bars: int = Field(default=2, ge=1, le=50)
+    # Research history per timeframe: at least this many days, never fewer than 500 candles,
+    # capped so short timeframes stay fast to backtest.
+    min_history_days: float = Field(default=30, ge=0, le=3650)
+    max_history_bars: int = Field(default=5000, ge=500, le=20_000)
     symbols: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
     timeframes: list[str] = Field(default_factory=lambda: ["1h", "4h", "1d"])
     bybit_testnet: bool = True

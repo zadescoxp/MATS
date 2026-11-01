@@ -17,6 +17,10 @@ from framework.tools.technicals import (
     supertrend,
 )
 
+# Candles per timeframe a live signal is evaluated on. Backtests evaluate each bar on the
+# same trailing window so a backtested signal is the signal live trading would have seen.
+LIVE_SIGNAL_BARS = 500
+
 
 def evaluate_live_signal(
     strategy_def: StrategyDefinition | Mapping[str, Any],

@@ -767,3 +767,30 @@ def test_state_lists_timeframes_that_strategies_can_trade(tmp_path: Path) -> Non
 
     assert "1h" in timeframes
     assert "1m" not in timeframes
+
+
+def test_snapshot_summarises_stored_candle_series(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    database = Database(path)
+    bars = [
+        {
+            "timestamp": f"2026-11-01T{index:02d}:00:00Z",
+            "open": 1.0,
+            "high": 2.0,
+            "low": 0.5,
+            "close": 1.5,
+            "volume": 3.0,
+        }
+        for index in range(24)
+    ]
+    try:
+        database.create_run("run-1", "BTC/USDT", {})
+        database.start_step("step-1", "run-1", "data_worker", {"raw_data": {"1h": bars}})
+        database.finish_step("step-1", output={"raw_data": {"1h": bars}})
+    finally:
+        database.close()
+
+    step = _read_snapshot(path)["runs"][0]["steps"][0]
+
+    assert step["output"]["raw_data"] == {"1h": {"count": 24}}
+    assert step["input"]["raw_data"] == {"1h": {"count": 24}}

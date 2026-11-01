@@ -60,19 +60,26 @@ orders remain constrained to Bybit testnet. Testnet OHLCV history may be very sp
 | `account_equity` | `float \| None` | Optional per-run equity override |
 
 Nodes return partial state updates; the runner validates each update against
-`GraphState`. Data is serialized as typed OHLCV lists so both SQLite checkpoints and
-LangGraph's SQLite saver can restore it without serializing DataFrame internals.
+`GraphState`. Data is serialized as typed OHLCV lists so SQLite checkpoints can restore
+it without serializing DataFrame internals.
 
 ## Persistence and resume
 
 The SQLite database has `runs`, `agent_steps`, `strategies`, `backtests`, `critiques`,
 `executions`, `live_positions`, `strategy_trades` (closed live trades, used for edge fade),
 `strategy_stops`, `strategy_family_memory`, `entry_watchers` (live algorithms),
-`system_events`, and `node_checkpoints`
-tables. LangGraph `SqliteSaver`
-stores graph-level checkpoints in the same database. The node runner stores a complete
-state checkpoint immediately before and after each node and records step inputs,
-outputs, status, token usage, cost, and traceback details.
+`system_events`, `node_checkpoints`, and `candle_series` tables. The node runner stores a
+complete state checkpoint immediately before and after each node and records step inputs,
+outputs, status, token usage, cost, and traceback details. LangGraph's own checkpointer is
+not attached: recovery only ever used these records.
+
+Candle lists are stored once. When a checkpoint or step record is written, every list of
+OHLCV bars (20 or more) is saved to `candle_series`, compressed and keyed by a hash of its
+exact JSON, and the record keeps a small `{"$candles": id, "count", "first", "last"}`
+reference (`framework.persistence.candle_series`). Reads restore the exact list, so resume
+sees byte-identical candles, including the still-forming candle the run used. Rows written
+before this change hold plain lists and read back unchanged; `mats --compact-database`
+rewrites them, drops LangGraph's old tables, and runs `VACUUM`.
 
 Step IDs are deterministic per run, node, and revision. On resume, completed steps
 return their stored outputs without calling the node or model again. Failed steps are
@@ -90,7 +97,11 @@ records:
   When the tool builds its own Bybit client, bars come through `CandleCache`
   (`framework.tools.candle_store`): closed candles and the time ranges verified with the
   exchange are kept in `MATS_CANDLE_CACHE_PATH`, so only unverified ranges and the last
-  `MATS_CANDLE_REFRESH_BARS` closed candles are downloaded. The ticker, order book,
+  `MATS_CANDLE_REFRESH_BARS` closed candles are downloaded. Requests longer than Bybit's
+  1000-candle page are paged even with the cache disabled (an in-memory store is used).
+  `DataWorkerNode` sizes research history per timeframe with `history_bars`: at least
+  `MATS_MIN_HISTORY_DAYS` of candles, never fewer than 500, capped at
+  `MATS_MAX_HISTORY_BARS`; the reference pair uses the same depth. The ticker, order book,
   funding-history, and recent-trade methods expose the corresponding Bybit/CCXT snapshots.
 - `collect_context(symbol)` and `news_sentiment(symbol)` (`framework.tools.context_feed`)
   gather keyless RSS headlines, the Fear & Greed index, macro series, filings, and
@@ -122,8 +133,11 @@ records:
   opposite signal. These are starting templates; the persisted strategy JSON is the
   runtime source of truth.
 - `BacktestTool.run(strategy, candles, data=...)` evaluates candidates using the same
-  signal function as live execution. A crossover is acted on at the next candle open to
-  avoid look-ahead. Current spot backtests open long positions only; bearish signals
+  signal function as live execution, on the same trailing window: each bar's signal sees
+  the last `LIVE_SIGNAL_BARS` (500) candles of every series, as live trading fetches, and
+  never a candle from after that bar. This keeps backtests linear in history length and
+  makes a backtested signal the one live trading would have produced. A crossover is
+  acted on at the next candle open to avoid look-ahead. Current spot backtests open long positions only; bearish signals
   close an open long, and do not simulate borrowed/derivative shorts. Fees and slippage
   are charged on entry and exit.
 - Template exits include the opposite signal, configured percentage stop, optional
