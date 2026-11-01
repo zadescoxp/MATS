@@ -36,9 +36,12 @@ class DataWorkerNode:
                 pair_candles: dict[str, Any] = {}
                 for timeframe in state.timeframes_to_consider:
                     try:
-                        pair_candles[timeframe] = self.context.market_data.fetch_ohlcv(
+                        candles = self.context.market_data.fetch_ohlcv(
                             pair, timeframe, limit=self.candle_limit
                         ).candles
+                        pair_candles[timeframe] = [
+                            candle.model_dump(mode="json") for candle in candles
+                        ]
                     except Exception:
                         continue
                 if pair_candles:
