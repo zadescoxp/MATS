@@ -58,7 +58,9 @@ class Settings(BaseSettings):
     edge_fade_min_trades: int = Field(default=3, ge=1)
     allow_short: bool = False
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
-    exchange_rate_limit_ms: int = Field(default=1000, ge=0)
+    # None keeps ccxt's per-exchange throttle (20ms for Bybit, scaled by endpoint cost).
+    # ccxt multiplies this by each endpoint's cost, so 1000 meant ~5s per Bybit request.
+    exchange_rate_limit_ms: int | None = Field(default=None, ge=0)
     request_timeout_ms: int = Field(default=10_000, gt=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
     include_orderbook: bool = False
