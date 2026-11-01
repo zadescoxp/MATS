@@ -61,3 +61,46 @@ def test_exact_copy_is_reported_as_exact():
 
     assert match == "exact"
     assert chosen is measured
+
+
+def test_choice_by_candidate_id_uses_that_measured_row():
+    from framework.agents.strategy_builder import _resolve_choice
+    from framework.schemas.models import StrategyChoice
+
+    first = _strategy("mean_reversion", "1h")
+    second = _strategy("supertrend_atr", "15m")
+    rows = [
+        {**_row(first, 30.0), "candidate_id": "c1"},
+        {**_row(second, 5.0), "candidate_id": "c2"},
+    ]
+
+    chosen, match = _resolve_choice(StrategyChoice(candidate_id="c2"), rows)
+
+    assert chosen is second
+    assert match == "exact"
+
+
+def test_choice_by_template_and_timeframe_without_name_or_description():
+    from framework.agents.strategy_builder import _resolve_choice
+    from framework.schemas.models import StrategyChoice
+
+    hourly = _strategy("mean_reversion", "1h")
+    rows = [{**_row(hourly, 30.0), "candidate_id": "c1"}]
+    choice = StrategyChoice.model_validate(
+        {"template_name": "mean_reversion", "chosen_timeframe": "1h"}
+    )
+
+    chosen, match = _resolve_choice(choice, rows)
+
+    assert chosen is hourly
+    assert match == "exact"
+
+
+def test_choice_must_name_a_candidate():
+    import pytest
+    from pydantic import ValidationError
+
+    from framework.schemas.models import StrategyChoice
+
+    with pytest.raises(ValidationError):
+        StrategyChoice.model_validate({"description": "anything"})
