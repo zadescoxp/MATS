@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 from framework.schemas.models import OHLCVBar, StrategyDefinition
+from framework.strategies.signals import LIVE_SIGNAL_BARS
 from framework.tools.market_data import MarketDataTools
 
 
@@ -9,7 +10,7 @@ def fetch_strategy_ohlcv(
     symbol: str,
     strategy: StrategyDefinition,
     *,
-    limit: int = 500,
+    limit: int = LIVE_SIGNAL_BARS,
 ) -> dict[str, Sequence[OHLCVBar]]:
     timeframes = {strategy.chosen_timeframe}
     higher_timeframe = strategy.parameters.get("higher_timeframe")
