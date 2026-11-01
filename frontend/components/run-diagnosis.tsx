@@ -72,21 +72,21 @@ export function RejectedRunNotice({
               type="button"
               disabled={busy}
               onClick={onMoreAttempts}
-              className="inline-flex h-8 items-center rounded-full bg-accent px-3.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="inline-flex h-8 items-center rounded-lg bg-foreground px-3.5 text-xs font-medium text-background transition-colors duration-150 hover:bg-foreground/90 disabled:opacity-40"
             >
               Try {extraAttempts} more attempts
             </button>
             <button
               type="button"
               onClick={onChangeSettings}
-              className="inline-flex h-8 items-center rounded-full border border-border px-3.5 text-xs font-medium text-foreground transition-colors hover:bg-card"
+              className="inline-flex h-8 items-center rounded-lg border border-border px-3.5 text-xs font-medium text-foreground transition-colors duration-150 hover:bg-card"
             >
               Change run settings
             </button>
             <button
               type="button"
               onClick={onDismiss}
-              className="inline-flex h-8 items-center rounded-full px-3.5 text-xs font-medium text-muted transition-colors hover:text-foreground"
+              className="inline-flex h-8 items-center rounded-lg px-3.5 text-xs font-medium text-muted transition-colors duration-150 hover:text-foreground"
             >
               Dismiss
             </button>

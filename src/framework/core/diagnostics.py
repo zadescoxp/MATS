@@ -66,9 +66,10 @@ _KNOWN_FAILURES: list[tuple[tuple[str, ...], str, str]] = [
     ),
     (
         ("no untried library/timeframe candidate",),
-        "No strategy survived the measured backtests",
-        "No template had enough history and closed trades after costs. Try more or "
-        "lower timeframes, or another symbol; strategy_diagnostics shows the coverage.",
+        "No strategy could be tested on these timeframes",
+        "No template trades 1m, and the multi-timeframe ones need a higher timeframe for "
+        "trend bias. Include 15m or 1h with your short timeframes (for example 5m + 1h), "
+        "or try another symbol.",
     ),
     (
         ("expected a 'submit_", "tool call; received none", "conflicting"),

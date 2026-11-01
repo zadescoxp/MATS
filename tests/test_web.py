@@ -758,3 +758,12 @@ def test_rejected_run_resumes_only_with_extra_attempts(tmp_path: Path, monkeypat
 
     assert response["message"] == "Trying 2 more strategy attempt(s)."
     assert threads[0].args[3] == 2
+
+
+def test_state_lists_timeframes_that_strategies_can_trade(tmp_path: Path) -> None:
+    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
+
+    timeframes = service.state()["settings"]["strategy_timeframes"]
+
+    assert "1h" in timeframes
+    assert "1m" not in timeframes

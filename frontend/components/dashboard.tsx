@@ -49,6 +49,7 @@ import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
+import { PanelResizeHandle, usePanelWidth, useViewportWidth } from "@/components/resizable-panel";
 import { RejectedRunNotice, RunDiagnosisBanner } from "@/components/run-diagnosis";
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
@@ -67,6 +68,10 @@ import type {
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"];
 const EMPTY_RUNS: Run[] = [];
+const RAIL_BOUNDS = { defaultWidth: 248, min: 208, max: 420 };
+const INSPECTOR_BOUNDS = { defaultWidth: 340, min: 288, max: 620 };
+// The activity feed never gets narrower than this when side panels grow.
+const FEED_MIN_WIDTH = 440;
 const DEFAULT_ATTEMPTS = 3;
 const MAX_ATTEMPTS = 10;
 const EXTRA_ATTEMPTS = 2;
@@ -445,13 +450,13 @@ function Switch({
       onClick={() => onChange(!checked)}
       className={cn(
         "relative h-6 w-11 shrink-0 rounded-full p-0 transition-colors duration-200 disabled:opacity-40",
-        checked ? "bg-accent" : "bg-white/15",
+        checked ? "bg-foreground" : "bg-white/[0.12]",
       )}
     >
       <span
         className={cn(
-          "absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200",
-          checked && "translate-x-5",
+          "absolute left-0.5 top-0.5 h-5 w-5 rounded-full transition-transform duration-200",
+          checked ? "translate-x-5 bg-background" : "bg-foreground/80",
         )}
       />
     </button>
@@ -468,7 +473,7 @@ function RawSection({
   defaultOpen?: boolean;
 }) {
   return (
-    <details className="group rounded-xl bg-background/70" open={defaultOpen}>
+    <details className="group rounded-xl border border-white/[0.06]" open={defaultOpen}>
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-3 text-xs font-medium text-foreground">
         <span>{title}</span>
         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-open:rotate-90" />
@@ -613,11 +618,17 @@ export function Dashboard() {
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
   const [startAttempts, setStartAttempts] = useState(DEFAULT_ATTEMPTS);
+  const [backtestVersion, setBacktestVersion] = useState<number | null>(null);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [wideViewport, setWideViewport] = useState<boolean | null>(null);
   const notifiedFailures = useRef(new Set<string>());
+  // Failures already in history on first load are shown in the run list, not toasted.
+  const historyAcknowledged = useRef(false);
+  const rail = usePanelWidth("mats.panel.rail", RAIL_BOUNDS);
+  const inspector = usePanelWidth("mats.panel.inspector", INSPECTOR_BOUNDS);
+  const viewportWidth = useViewportWidth();
   const stickToEnd = useRef(true);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -661,6 +672,10 @@ export function Dashboard() {
   }, [updateState]);
 
   useEffect(() => {
+    setBacktestVersion(null);
+  }, [selectedRunId]);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 1100px)");
     const updateViewport = () => setWideViewport(mediaQuery.matches);
     updateViewport();
@@ -678,6 +693,16 @@ export function Dashboard() {
 
   useEffect(() => {
     if (!data) return;
+    if (!historyAcknowledged.current) {
+      historyAcknowledged.current = true;
+      for (const run of data.runs) {
+        if (["failed", "rejected"].includes(run.status)) notifiedFailures.current.add(run.run_id);
+      }
+      for (const operation of data.operations) {
+        if (operation.status === "failed") notifiedFailures.current.add(operation.operation_id);
+      }
+      return;
+    }
     for (const operation of data.operations) {
       if (operation.status !== "failed" || notifiedFailures.current.has(operation.operation_id)) continue;
       notifiedFailures.current.add(operation.operation_id);
@@ -747,6 +772,10 @@ export function Dashboard() {
   }, [selectedRun]);
 
   const activeAttempt = latestAttempt(selectedRun);
+  // The Backtest tab follows the newest attempt unless an earlier one is picked.
+  const backtestAttempts = [...(selectedRun?.strategies ?? [])].sort((a, b) => a.version - b.version);
+  const shownAttempt =
+    backtestAttempts.find((attempt) => attempt.version === backtestVersion) ?? activeAttempt;
   const curve = equityPoints(activeAttempt);
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
   const costForRun = selectedRun?.steps.reduce((sum, step) => sum + step.cost, 0) ?? 0;
@@ -1249,7 +1278,7 @@ export function Dashboard() {
                       {!open && !!tools.length && (
                         <span className="mt-2 flex flex-wrap gap-1.5">
                           {tools.slice(0, 3).map((tool, index) => (
-                            <span key={`${step.step_id}-pill-${index}`} className="rounded-full bg-card px-2 py-0.5 text-[10px] text-muted">
+                            <span key={`${step.step_id}-pill-${index}`} className="rounded-md border border-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-muted">
                               {textValue(tool.name ?? tool.tool_name, "tool")}
                             </span>
                           ))}
@@ -1368,15 +1397,15 @@ export function Dashboard() {
                 {latest.status === "running" && <ThinkDots />}
               </div>
               <div className="mt-4 grid grid-cols-3 gap-2">
-                <div className="rounded-2xl bg-card px-3 py-3">
+                <div className="rounded-xl border border-white/[0.06] px-3 py-2.5">
                   <p className="text-[10px] text-muted-foreground">Tokens</p>
                   <p className="mt-1 text-sm font-semibold tabular-nums">{latest.tokens_used.toLocaleString()}</p>
                 </div>
-                <div className="rounded-2xl bg-card px-3 py-3">
+                <div className="rounded-xl border border-white/[0.06] px-3 py-2.5">
                   <p className="text-[10px] text-muted-foreground">Cost</p>
                   <p className="mt-1 text-sm font-semibold tabular-nums">{money(latest.cost, 4)}</p>
                 </div>
-                <div className="rounded-2xl bg-card px-3 py-3">
+                <div className="rounded-xl border border-white/[0.06] px-3 py-2.5">
                   <p className="text-[10px] text-muted-foreground">Duration</p>
                   <p className="mt-1 text-sm font-semibold tabular-nums">{formatDuration(latest.started_at, latest.finished_at, now)}</p>
                 </div>
@@ -1405,7 +1434,7 @@ export function Dashboard() {
             </div>
           )}
           {inspectorAgentId === "critique" && activeAttempt && (
-            <div className="mt-4 rounded-2xl bg-card p-3">
+            <div className="mt-4 rounded-xl border border-white/[0.06] p-3">
               <p className="text-xs font-medium">Critique decision</p>
               <div className="mt-2"><StatusBadge status={textValue(activeAttempt.decision, "unknown")} /></div>
               {activeAttempt.revision_instructions && (
@@ -1414,7 +1443,7 @@ export function Dashboard() {
             </div>
           )}
           {inspectorAgentId === "execution" && latest && (
-            <div className="mt-4 rounded-2xl bg-card p-3">
+            <div className="mt-4 rounded-xl border border-white/[0.06] p-3">
               <p className="text-xs font-medium">Live signal and order outcome</p>
               <p className="mt-1 text-[11px] leading-5 text-muted">{textValue(liveSignal.reason, "No live signal reason was recorded.")}</p>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -1527,7 +1556,7 @@ export function Dashboard() {
   }
 
   function renderStrategy() {
-    const attempt = activeAttempt;
+    const attempt = shownAttempt;
     if (!selectedRun || !attempt) {
       return <EmptyState title="No strategy or backtest yet" body="Strategy, critique, and backtest data appear when the framework saves an attempt." />;
     }
@@ -1553,10 +1582,57 @@ export function Dashboard() {
     ];
     return (
       <div className="mx-auto max-w-5xl">
+        {backtestAttempts.length > 1 && (
+          <div role="tablist" aria-label="Strategy attempts" className="mb-6 flex gap-2 overflow-x-auto pb-1">
+            {backtestAttempts.map((item, index) => {
+              const selected = item.version === attempt.version;
+              const pnl = numberValue(item.report?.net_pnl);
+              return (
+                <button
+                  key={item.strategy_id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() =>
+                    setBacktestVersion(item.version === activeAttempt?.version ? null : item.version)
+                  }
+                  className={cn(
+                    "min-w-[9.5rem] shrink-0 rounded-xl border px-3 py-2 text-left transition-colors duration-150",
+                    selected
+                      ? "border-white/[0.16] bg-card"
+                      : "border-white/[0.06] hover:border-white/[0.1] hover:bg-card/60",
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium">Attempt {index + 1}</span>
+                    {item.decision && (
+                      <span
+                        className={cn(
+                          "text-[10px] font-medium",
+                          item.decision === "APPROVE" ? "text-positive" : "text-negative",
+                        )}
+                      >
+                        {item.decision === "APPROVE" ? "Approved" : "Rejected"}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-1 block truncate text-[11px] text-muted">
+                    {textValue(item.strategy.template_name, "strategy")} · {textValue(item.strategy.chosen_timeframe, "—")}
+                  </span>
+                  <span className={cn("mt-0.5 block text-[11px] tabular-nums", item.report ? (pnl >= 0 ? "text-positive" : "text-negative") : "text-muted-foreground")}>
+                    {item.report ? money(pnl) : "Not backtested"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 className="truncate text-lg font-semibold tracking-tight">{strategyName}</h2>
-            <p className="mt-1 text-xs text-muted">Version {attempt.version} · {selectedRun.symbol}</p>
+            <p className="mt-1 text-xs text-muted">
+              Attempt {backtestAttempts.findIndex((item) => item.version === attempt.version) + 1} of {backtestAttempts.length} · {selectedRun.symbol}
+            </p>
           </div>
           {attempt.decision && <StatusBadge status={attempt.decision} />}
         </div>
@@ -1588,11 +1664,21 @@ export function Dashboard() {
           />
         </div>
         <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
-          {attempt.decision && <span>Critique {attempt.decision.toLowerCase()}{attempt.issues?.length ? ` · ${attempt.issues[0]}` : ""}</span>}
+          {attempt.decision && <span>Critique {attempt.decision.toLowerCase()}</span>}
           <button type="button" className="inline-flex items-center gap-1 text-accent hover:underline" onClick={() => focusAgent("strategy_builder")}>Strategy builder <ArrowRight className="h-3 w-3" /></button>
           <button type="button" className="inline-flex items-center gap-1 text-accent hover:underline" onClick={() => focusAgent("backtest")}>Backtest <ArrowRight className="h-3 w-3" /></button>
           <button type="button" className="inline-flex items-center gap-1 text-accent hover:underline" onClick={() => focusAgent("critique")}>Critique <ArrowRight className="h-3 w-3" /></button>
         </div>
+        {attempt.issues && attempt.issues.length > 0 && (
+          <div className="mt-4 rounded-xl border border-white/[0.06] px-4 py-3">
+            <p className="text-xs font-medium">Why the critique {attempt.decision === "APPROVE" ? "flagged" : "rejected"} this attempt</p>
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5 text-muted">
+              {attempt.issues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <details className="mt-4">
           <summary className="cursor-pointer text-[11px] text-muted-foreground">Record</summary>
           <div className="mt-3 space-y-3">
@@ -1606,7 +1692,7 @@ export function Dashboard() {
           {trades.length ? (
             <div className="mt-5 overflow-x-auto">
               <table className="w-full min-w-[740px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                <thead className="text-[11px] text-muted-foreground">
                   <tr>
                     {["#", "Entry", "Exit", "Gross PnL", "Fees", "Slippage", "Net PnL", "Exit reason"].map((heading) => (
                       <th key={heading} className="pb-3 pr-4 font-medium">{heading}</th>
@@ -1671,7 +1757,7 @@ export function Dashboard() {
         )}
         {rows.length ? (
           <ul className="mt-2 divide-y divide-white/[0.04]">
-            <li className="flex items-center gap-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <li className="flex items-center gap-3 py-1.5 text-[11px] text-muted-foreground">
               <input type="checkbox" checked={allSelected} onChange={(event) => setSelectedPositions(event.target.checked ? rows.map((row) => row.run_id) : [])} aria-label="Select all positions" />
               <span className="w-28">Symbol</span>
               <span className="w-24">Side</span>
@@ -1771,7 +1857,7 @@ export function Dashboard() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="settings-title"
-          className="rise-in grid h-[min(680px,calc(100vh-2rem))] w-full max-w-4xl overflow-hidden rounded-[28px] border border-white/[0.06] bg-[#141416] shadow-[0_24px_80px_rgba(0,0,0,0.45)] sm:grid-cols-[240px_minmax(0,1fr)]"
+          className="rise-in grid h-[min(680px,calc(100vh-2rem))] w-full max-w-4xl overflow-hidden rounded-3xl border border-white/[0.07] bg-surface shadow-[0_20px_60px_rgba(0,0,0,0.5)] sm:grid-cols-[240px_minmax(0,1fr)]"
         >
           <div className="border-b border-white/[0.05] p-5 sm:border-b-0 sm:border-r">
             <p id="settings-title" className="text-sm text-muted">Settings</p>
@@ -1937,10 +2023,32 @@ export function Dashboard() {
     ...(wideViewport === true ? [] : [{ id: "agent" as const, label: "Details" }]),
   ];
 
+  const inspectorShown = Boolean(showRun && selectedRun && wideViewport);
+  const fitMax = (own: { min: number; max: number }, other: number) =>
+    viewportWidth
+      ? Math.max(own.min, Math.min(own.max, viewportWidth - other - FEED_MIN_WIDTH))
+      : own.max;
+  const inspectorWidth = Math.min(inspector.width, fitMax(inspector, rail.width));
+  const railMax = fitMax(rail, inspectorShown ? inspectorWidth : 0);
+  const railWidth = Math.min(rail.width, railMax);
+  const inspectorMax = fitMax(inspector, railWidth);
+
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <aside className="hidden w-[248px] shrink-0 border-r border-white/[0.05] lg:block">
+      <aside
+        className="relative hidden shrink-0 border-r border-white/[0.06] lg:block"
+        style={{ width: railWidth }}
+      >
         {renderRail()}
+        <PanelResizeHandle
+          side="right"
+          label="Resize runs panel"
+          width={railWidth}
+          min={rail.min}
+          max={railMax}
+          onResize={rail.setWidth}
+          onReset={rail.reset}
+        />
       </aside>
       {railOpen && (
         <div className="fixed inset-0 z-40 lg:hidden" onMouseDown={() => setRailOpen(false)}>
@@ -2137,7 +2245,7 @@ export function Dashboard() {
 
             <div className="shrink-0 px-4 pb-4 sm:px-6">
               <form
-                className="relative mx-auto flex max-w-3xl items-center gap-1 rounded-[28px] bg-[#1a1a1e] py-1.5 pl-1.5 pr-1.5"
+                className="relative mx-auto flex max-w-3xl items-center gap-1 rounded-2xl border border-white/[0.07] bg-surface py-1.5 pl-1.5 pr-1.5 transition-colors focus-within:border-white/[0.14]"
                 onSubmit={submitCommand}
               >
                 <button
@@ -2152,7 +2260,7 @@ export function Dashboard() {
                 {modelMenuOpen && (
                   <>
                     <button type="button" className="fixed inset-0 z-30 cursor-default" aria-label="Close model menu" onClick={() => setModelMenuOpen(false)} />
-                    <div className="absolute bottom-14 left-0 z-40 w-72 rounded-2xl border border-white/10 bg-[#2a2a2e] p-1.5 shadow-[0_16px_50px_rgba(0,0,0,0.45)]">
+                    <div className="absolute bottom-14 left-0 z-40 w-72 rounded-xl border border-white/[0.08] bg-card p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.4)]">
                       {(data?.connections?.models ?? []).map((model) => {
                         const selected = model.id === (data?.connections?.active_model_id ?? "environment");
                         return (
@@ -2208,7 +2316,13 @@ export function Dashboard() {
                       }
                     }}
                     rows={1}
-                    placeholder={agentsAreWorking ? "" : "Start trading BTC/USDT and ETH/USDT"}
+                    placeholder={
+                      agentsAreWorking
+                        ? ""
+                        : viewportWidth && viewportWidth < 480
+                          ? "Trade BTC and ETH…"
+                          : "Start trading BTC/USDT and ETH/USDT"
+                    }
                     aria-label="Tell the agents what to run"
                     className="max-h-32 min-h-10 w-full resize-none bg-transparent px-1 py-2.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground"
                   />
@@ -2217,7 +2331,7 @@ export function Dashboard() {
                   type="button"
                   onClick={selectedIsActive && !command.trim() ? submitStop : () => submitCommand()}
                   disabled={!data || (selectedIsActive && !command.trim() ? busyAction === "stop" : busyAction === "start")}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent text-white transition-colors hover:bg-accent/85 disabled:opacity-50"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-foreground text-background transition-colors duration-150 hover:bg-foreground/85 disabled:opacity-40"
                   aria-label={selectedIsActive && !command.trim() ? "Stop selected run or entry watcher" : "Send"}
                 >
                   {busyAction === "start" || busyAction === "stop" ? (
@@ -2233,7 +2347,19 @@ export function Dashboard() {
           </section>
 
           {showRun && selectedRun && (
-            <aside className="hidden w-[332px] shrink-0 flex-col border-l border-white/[0.05] min-[1100px]:flex">
+            <aside
+              className="relative hidden shrink-0 flex-col border-l border-white/[0.06] min-[1100px]:flex"
+              style={{ width: inspectorWidth }}
+            >
+              <PanelResizeHandle
+                side="left"
+                label="Resize details panel"
+                width={inspectorWidth}
+                min={inspector.min}
+                max={inspectorMax}
+                onResize={inspector.setWidth}
+                onReset={inspector.reset}
+              />
               <div className="shrink-0 border-b border-white/[0.05] px-4 py-4">
                 <LiveMarketChart symbol={selectedRun.symbol} enabled={wideViewport === true} />
               </div>
@@ -2249,7 +2375,7 @@ export function Dashboard() {
         <div className="pointer-events-none fixed inset-x-0 bottom-28 z-[60] flex justify-center px-4">
           <div
             role={notice.kind === "error" ? "alert" : "status"}
-            className="rise-in pointer-events-auto flex max-w-md items-center gap-3 rounded-full bg-[#1c1c20] px-4 py-2.5 text-sm text-foreground shadow-[0_16px_40px_rgba(0,0,0,0.45)]"
+            className="rise-in pointer-events-auto flex max-w-md items-center gap-3 rounded-xl border border-white/[0.08] bg-card px-4 py-2.5 text-sm text-foreground shadow-[0_12px_32px_rgba(0,0,0,0.4)]"
           >
             {notice.kind === "error" ? <AlertCircle className="h-4 w-4 shrink-0 text-negative" /> : <CheckCircle2 className="h-4 w-4 shrink-0 text-positive" />}
             <span className="min-w-0 leading-5">{notice.message}</span>
@@ -2263,6 +2389,7 @@ export function Dashboard() {
       {settingsOpen && renderSettings()}
       {showStart && (
         <StartDialog
+          strategyTimeframes={data?.settings.strategy_timeframes ?? []}
           symbols={runSymbols}
           selectedSymbols={startSymbols}
           setSelectedSymbols={setStartSymbols}
@@ -2290,7 +2417,35 @@ export function Dashboard() {
 
 const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
 
+/** Warn before a run whose timeframes cannot produce a testable strategy. */
+function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
+  if (!selected.length || !strategyTimeframes.length) return null;
+  const tradable = selected.filter((item) => strategyTimeframes.includes(item));
+  const contextOnly = selected.filter((item) => !strategyTimeframes.includes(item));
+  if (!tradable.length) {
+    return {
+      warn: true,
+      text: `No strategy template trades ${selected.join(", ")}, so the run will stop at the strategy step. Add ${strategyTimeframes.join(", ")}.`,
+    };
+  }
+  const highest = Math.max(...tradable.map((item) => TIMEFRAMES.indexOf(item)));
+  if (highest < TIMEFRAMES.indexOf("15m")) {
+    return {
+      warn: true,
+      text: "Only 5m is tradable here: few templates fit it and the multi-timeframe ones need a higher timeframe. Add 15m or 1h for a much better chance of an approved strategy.",
+    };
+  }
+  if (contextOnly.length) {
+    return {
+      warn: false,
+      text: `${contextOnly.join(", ")} will inform the analysis, but no strategy trades ${contextOnly.length === 1 ? "it" : "them"}.`,
+    };
+  }
+  return null;
+}
+
 function StartDialog({
+  strategyTimeframes,
   symbols,
   selectedSymbols,
   setSelectedSymbols,
@@ -2311,6 +2466,7 @@ function StartDialog({
   onSubmit,
   busy,
 }: {
+  strategyTimeframes: string[];
   symbols: string[];
   selectedSymbols: string[];
   setSelectedSymbols: (value: string[]) => void;
@@ -2343,6 +2499,7 @@ function StartDialog({
     return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
   });
   const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
+  const advice = timeframeAdvice(selectedTimeframes, strategyTimeframes);
 
   function continueStep() {
     if (!canContinue) return;
@@ -2369,7 +2526,7 @@ function StartDialog({
           }
           onSubmit(event);
         }}
-        className="rise-in relative flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/[0.08] bg-surface shadow-[0_28px_90px_rgba(0,0,0,0.55)] sm:max-h-[calc(100dvh-2rem)]"
+        className="rise-in relative flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/[0.07] bg-surface shadow-[0_20px_60px_rgba(0,0,0,0.5)] sm:max-h-[calc(100dvh-2rem)]"
       >
         {busy && (
           <div
@@ -2381,7 +2538,7 @@ function StartDialog({
         <header className="shrink-0 border-b border-white/[0.06] px-4 pb-4 pt-5 sm:px-6 sm:pb-5 sm:pt-6">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-accent">New analysis</p>
+              <p className="text-[11px] font-medium text-muted-foreground">New analysis</p>
               <h2 id="start-run-title" className="mt-1 text-xl font-semibold tracking-tight">Set up your run</h2>
               <p className="mt-1 text-xs leading-5 text-muted">
                 {step === 0 && "Choose the markets to analyze. Each gets its own run."}
@@ -2416,7 +2573,7 @@ function StartDialog({
                       <span className={cn(
                         "grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] transition-colors",
                         index === step
-                          ? "border-accent bg-accent text-white"
+                          ? "border-foreground bg-foreground text-background"
                           : complete
                             ? "border-positive/40 bg-positive/10 text-positive"
                             : "border-white/10 bg-white/[0.03] text-muted",
@@ -2576,7 +2733,7 @@ function StartDialog({
                             {timeframe}
                             <span className={cn(
                               "grid h-4 w-4 place-items-center rounded-full border",
-                              selected ? "border-accent bg-accent text-white" : "border-white/15",
+                              selected ? "border-foreground bg-foreground text-background" : "border-white/15",
                             )}>
                               {selected && <CheckCircle2 className="h-3 w-3" />}
                             </span>
@@ -2591,6 +2748,18 @@ function StartDialog({
                 <Gauge className="h-4 w-4 shrink-0 text-accent" />
                 <span>{selectedSymbols.length} {selectedSymbols.length === 1 ? "market" : "markets"} will be analyzed across {selectedTimeframes.length} {selectedTimeframes.length === 1 ? "timeframe" : "timeframes"}.</span>
               </div>
+              {advice && (
+                <p
+                  role={advice.warn ? "alert" : "status"}
+                  className={cn(
+                    "mt-2 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-[11px] leading-5",
+                    advice.warn ? "border-negative/25 text-foreground/85" : "border-white/[0.06] text-muted",
+                  )}
+                >
+                  <AlertCircle className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", advice.warn ? "text-negative" : "text-muted-foreground")} />
+                  <span>{advice.text}</span>
+                </p>
+              )}
             </section>
           )}
 

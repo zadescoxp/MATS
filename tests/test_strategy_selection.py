@@ -104,3 +104,27 @@ def test_choice_must_name_a_candidate():
 
     with pytest.raises(ValidationError):
         StrategyChoice.model_validate({"description": "anything"})
+
+
+def test_no_candidate_detail_names_the_real_reason_per_timeframe():
+    from framework.agents.strategy_builder import _no_candidate_detail
+
+    coverage = {
+        "5m": {
+            "bars": 500,
+            "skipped_templates": {
+                "timeframe_not_supported": ["a", "b"],
+                "needs_higher_timeframe": ["macd_htf_bias"],
+            },
+            "too_few_trades": [{"template_name": "supertrend_atr", "closed_trades": 0}],
+        },
+        "1m": {"bars": 500, "skipped_templates": {"timeframe_not_supported": ["a"] * 13}},
+        "1h": {"bars": 40, "reason": "insufficient_history"},
+    }
+
+    detail = _no_candidate_detail(coverage, min_bars=100, min_trades=3)
+
+    assert detail.startswith("1m: no strategy template trades this timeframe.")
+    assert "5m: 2 templates do not trade 5m; 1 need a timeframe above 5m in the run" in detail
+    assert "too few closed trades (supertrend_atr 0; need 3)" in detail
+    assert "1h: only 40 bars (need 100)." in detail
