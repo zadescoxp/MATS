@@ -135,14 +135,18 @@ class CritiqueNode:
         )
         updates: dict[str, object] = {"critique": critique}
         if critique.decision == "REJECT":
-            if state.revision_count >= self.context.settings.max_revision_loops:
+            limit = (
+                state.max_revision_loops
+                if state.max_revision_loops is not None
+                else self.context.settings.max_revision_loops
+            )
+            if state.revision_count >= limit:
                 updates.update(
-                    status="failed",
+                    status="rejected",
                     errors=[
                         *state.errors,
-                        "Strategy attempt limit reached "
-                        f"({self.context.settings.max_revision_loops + 1} total attempts); "
-                        "strategy was not approved.",
+                        f"Strategy attempt limit reached ({state.revision_count + 1} total "
+                        "attempts); strategy was not approved.",
                     ],
                 )
             else:
