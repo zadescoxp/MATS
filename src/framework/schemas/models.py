@@ -59,6 +59,54 @@ class AnalystFinding(BaseModel):
     indicators: dict[str, float | str | None] = Field(default_factory=dict)
 
 
+_BIAS_SYNONYMS = {
+    "bullish": "bullish",
+    "bull": "bullish",
+    "long": "bullish",
+    "up": "bullish",
+    "uptrend": "bullish",
+    "positive": "bullish",
+    "bearish": "bearish",
+    "bear": "bearish",
+    "short": "bearish",
+    "down": "bearish",
+    "downtrend": "bearish",
+    "negative": "bearish",
+    "neutral": "neutral",
+    "sideways": "neutral",
+    "range": "neutral",
+    "ranging": "neutral",
+    "flat": "neutral",
+    "mixed": "neutral",
+    "none": "neutral",
+}
+
+
+class AnalystSubmission(BaseModel):
+    """What the analyst model decides; the code adds timeframes and indicator snapshots."""
+
+    higher_timeframe_bias: Literal["bullish", "bearish", "neutral"]
+    lower_timeframe_timing: Literal["bullish", "bearish", "neutral"]
+    regime: str = "unclear"
+    momentum: str = "unclear"
+    volatility: str = "unclear"
+    key_levels: list[float] = Field(default_factory=list)
+    divergences: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+    @field_validator("higher_timeframe_bias", "lower_timeframe_timing", mode="before")
+    @classmethod
+    def normalize_bias(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return _BIAS_SYNONYMS.get(value.strip().lower(), value)
+
+    @field_validator("regime", "momentum", "volatility", "rationale", mode="before")
+    @classmethod
+    def text_or_unclear(cls, value: Any) -> Any:
+        return "unclear" if value is None else value
+
+
 class MultiTimeframeFindings(BaseModel):
     higher_timeframe_bias: Literal["bullish", "bearish", "neutral"]
     lower_timeframe_timing: Literal["bullish", "bearish", "neutral"]
