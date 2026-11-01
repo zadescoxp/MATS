@@ -2,14 +2,31 @@
 
 import json
 import logging
+import re
+import threading
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 _USER_AGENT = "MATS research context feed"
 logger = logging.getLogger(__name__)
+_SOURCE_TIMEOUT_SECONDS = 4.0
+_COLLECT_TIMEOUT_SECONDS = 6.0
+_MAX_FEED_BYTES = 2_000_000
+_NEWS_MAX_AGE = timedelta(hours=24)
+_SENTIMENT_CACHE_SECONDS = 300
+# Keyless public feeds; the CryptoCompare news API now requires an API key.
+_NEWS_FEEDS = {
+    "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "Cointelegraph": "https://cointelegraph.com/rss",
+    "Decrypt": "https://decrypt.co/feed",
+}
+_GOOGLE_NEWS = "https://news.google.com/rss/search?q={query}+when:1d&hl=en-US&gl=US&ceid=US:en"
 _COIN_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
@@ -52,6 +69,82 @@ _SHORT_HINTS = (
 )
 
 
+_POSITIVE_WORDS = (
+    "surge",
+    "soar",
+    "rally",
+    "record high",
+    "all-time high",
+    "breakout",
+    "approval",
+    "approved",
+    "inflows",
+    "adoption",
+    "upgrade",
+    "bullish",
+    "gains",
+    "jumps",
+    "partnership",
+    "launches",
+)
+_NEGATIVE_WORDS = (
+    "plunge",
+    "crash",
+    "slump",
+    "sell-off",
+    "selloff",
+    "outflows",
+    "lawsuit",
+    "sued",
+    "charges",
+    "probe",
+    "bearish",
+    "drops",
+    "falls",
+    "tumbles",
+    "liquidation",
+    "fraud",
+    "fine",
+    "warning",
+    "exits",
+)
+# Events that can invalidate a technical setup within hours.
+_SHOCK_WORDS = (
+    "hack",
+    "exploit",
+    "drained",
+    "stolen",
+    "heist",
+    "delist",
+    "bankrupt",
+    "insolven",
+    "halts withdrawals",
+    "suspends withdrawals",
+    "depeg",
+    "ban ",
+    "banned",
+    "emergency",
+    "rug pull",
+)
+_sentiment_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_sentiment_lock = threading.Lock()
+
+
+def headline_tone(title: str) -> float:
+    """Score a headline from -1 (bearish) to 1 (bullish) with a transparent word list."""
+    text = title.lower()
+    positive = sum(word in text for word in _POSITIVE_WORDS)
+    negative = sum(word in text for word in _NEGATIVE_WORDS)
+    negative += 2 * sum(word in text for word in _SHOCK_WORDS)
+    total = positive + negative
+    return 0.0 if total == 0 else (positive - negative) / total
+
+
+def is_shock(title: str) -> bool:
+    text = f"{title.lower()} "
+    return any(word in text for word in _SHOCK_WORDS)
+
+
 def reference_pair(symbol: str) -> str | None:
     return PAIR_REFERENCES.get(symbol.upper())
 
@@ -83,7 +176,7 @@ def collect_context(symbol: str) -> dict[str, Any]:
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="mats-context") as pool:
         futures = {pool.submit(task): name for name, task in tasks.items()}
-        done, pending = wait(futures, timeout=2.5)
+        done, pending = wait(futures, timeout=_COLLECT_TIMEOUT_SECONDS)
         for future in pending:
             future.cancel()
             errors.append(futures[future])
@@ -100,6 +193,7 @@ def collect_context(symbol: str) -> dict[str, Any]:
         "items": items,
         "short_horizon": short_horizon[:8],
         "long_horizon": long_horizon[:8],
+        "news_sentiment": summarize_sentiment(symbol, items, errors),
         "unavailable_sources": errors,
     }
     if errors:
@@ -113,37 +207,149 @@ def collect_context(symbol: str) -> dict[str, Any]:
     return result
 
 
-def _sentiment() -> list[dict[str, str]]:
+def news_sentiment(symbol: str, *, max_age_seconds: float = _SENTIMENT_CACHE_SECONDS) -> dict:
+    """Fresh headline and crowd sentiment for live trading, cached briefly per symbol."""
+    key = symbol.upper()
+    now = time.monotonic()
+    with _sentiment_lock:
+        cached = _sentiment_cache.get(key)
+        if cached and now - cached[0] < max_age_seconds:
+            return cached[1]
+    tasks = {"sentiment": _sentiment, "news": lambda: _news(symbol)}
+    items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="mats-news") as pool:
+        futures = {pool.submit(task): name for name, task in tasks.items()}
+        done, pending = wait(futures, timeout=_COLLECT_TIMEOUT_SECONDS)
+        for future in pending:
+            future.cancel()
+            errors.append(futures[future])
+        for future in done:
+            try:
+                items.extend(future.result())
+            except Exception:
+                errors.append(futures[future])
+                logger.warning(
+                    "Live sentiment source failed (source=%s).", futures[future], exc_info=True
+                )
+    snapshot = summarize_sentiment(symbol, items, errors)
+    with _sentiment_lock:
+        _sentiment_cache[key] = (now, snapshot)
+    return snapshot
+
+
+def summarize_sentiment(
+    symbol: str, items: list[dict[str, Any]], unavailable: list[str]
+) -> dict[str, Any]:
+    headlines = [item for item in items if item.get("source") == "news"]
+    tones = [float(item.get("tone", 0.0)) for item in headlines]
+    fear_greed = next(
+        (item.get("value") for item in items if item.get("source") == "sentiment"), None
+    )
+    return {
+        "symbol": symbol,
+        "fetched_at": datetime.now(UTC).isoformat(),
+        "headline_count": len(headlines),
+        "news_score": round(sum(tones) / len(tones), 3) if tones else None,
+        "fear_greed": fear_greed,
+        "shocks": [
+            {key: item.get(key) for key in ("title", "publisher", "published", "coin_specific")}
+            for item in headlines
+            if item.get("shock")
+        ],
+        "headlines": [
+            {
+                key: item.get(key)
+                for key in ("title", "publisher", "published", "tone", "coin_specific")
+            }
+            for item in headlines[:10]
+        ],
+        "unavailable_sources": [name for name in unavailable if name in {"news", "sentiment"}],
+    }
+
+
+def _sentiment() -> list[dict[str, Any]]:
     payload = _get_json("https://api.alternative.me/fng/?limit=1")
     row = payload["data"][0]
     value = row.get("value")
     label = row.get("value_classification", "unknown")
-    return [
-        _item(
-            "sentiment",
-            f"Crypto fear and greed is {value} ({label})",
-            "Public sentiment index. Use it as a short-horizon crowding check, not a thesis.",
-        )
-    ]
+    item: dict[str, Any] = _item(
+        "sentiment",
+        f"Crypto fear and greed is {value} ({label})",
+        "Public sentiment index. Use it as a short-horizon crowding check, not a thesis.",
+    )
+    try:
+        item["value"] = int(value)
+    except (TypeError, ValueError):
+        item["value"] = None
+    return [item]
 
 
-def _news(symbol: str) -> list[dict[str, str]]:
-    base = symbol.split("/")[0]
-    payload = _get_json("https://min-api.cryptocompare.com/data/v2/news/?lang=EN&extraParams=mats")
-    stories = []
-    for article in payload.get("Data", [])[:12]:
-        title = str(article.get("title") or "").strip()
+def _news(symbol: str) -> list[dict[str, Any]]:
+    base = symbol.split("/")[0].upper()
+    name = _COIN_IDS.get(base, "").replace("binancecoin", "bnb").replace("ripple", "xrp")
+    terms = {base.lower(), *([name] if name else [])}
+    query = urllib.request.quote(f"{name or base.lower()} crypto")
+    feeds = {**_NEWS_FEEDS, "Google News": _GOOGLE_NEWS.format(query=query)}
+    cutoff = datetime.now(UTC) - _NEWS_MAX_AGE
+    seen: set[str] = set()
+    stories: list[dict[str, Any]] = []
+    failures = 0
+    for publisher, url in feeds.items():
+        try:
+            entries = _rss_items(url)
+        except Exception:
+            failures += 1
+            logger.warning("News feed failed (publisher=%s).", publisher, exc_info=True)
+            continue
+        for title, published, source in entries:
+            if published is not None and published < cutoff:
+                continue
+            words = set(re.findall(r"[a-z0-9]+", title.lower()))
+            coin_specific = bool(terms & words)
+            if publisher == "Google News":
+                coin_specific = True
+            elif not coin_specific and base not in {"BTC", "ETH"}:
+                # General crypto feeds are market-wide context for majors only.
+                if not is_shock(title):
+                    continue
+            key = title.lower()[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            story = _item("news", title, f"{source or publisher} headline.")
+            story.update(
+                publisher=source or publisher,
+                published=published.isoformat() if published else None,
+                tone=round(headline_tone(title), 3),
+                shock=is_shock(title),
+                coin_specific=coin_specific,
+            )
+            stories.append(story)
+    if failures == len(feeds):
+        raise RuntimeError("All news feeds failed")
+    stories.sort(key=lambda item: item.get("published") or "", reverse=True)
+    return stories[:15]
+
+
+def _rss_items(url: str) -> list[tuple[str, datetime | None, str | None]]:
+    root = ET.fromstring(_get_bytes(url))
+    entries = []
+    for node in root.findall("./channel/item"):
+        title = re.sub(r"\s+", " ", node.findtext("title") or "").strip()
         if not title:
             continue
-        categories = str(article.get("categories") or "")
-        if base not in title.upper() and base not in categories.upper() and "BTC" not in categories:
-            if base not in {"BTC", "ETH"}:
-                continue
-        body = str(article.get("body") or "")[:240]
-        stories.append(_item("news", title, body or "Headline only."))
-        if len(stories) == 5:
-            break
-    return stories
+        source = node.findtext("source")
+        if source and title.endswith(f" - {source}"):
+            title = title[: -len(source) - 3]
+        try:
+            published = parsedate_to_datetime(node.findtext("pubDate") or "")
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=UTC)
+        except (TypeError, ValueError):
+            published = None
+        entries.append((title, published, source))
+    return entries
 
 
 def _macro() -> list[dict[str, str]]:
@@ -221,7 +427,7 @@ def _fundamentals(symbol: str) -> list[dict[str, str]]:
     ]
 
 
-def _item(source: str, title: str, summary: str) -> dict[str, str]:
+def _item(source: str, title: str, summary: str) -> dict[str, Any]:
     return {
         "source": source,
         "title": title,
@@ -231,12 +437,16 @@ def _item(source: str, title: str, summary: str) -> dict[str, str]:
 
 
 def _get_json(url: str) -> Any:
+    return json.loads(_get_bytes(url).decode())
+
+
+def _get_bytes(url: str) -> bytes:
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        headers={"User-Agent": _USER_AGENT, "Accept": "application/json, application/xml"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=1.5) as response:
-            return json.loads(response.read().decode())
+        with urllib.request.urlopen(request, timeout=_SOURCE_TIMEOUT_SECONDS) as response:
+            return response.read(_MAX_FEED_BYTES)
     except urllib.error.URLError as exc:
         raise RuntimeError(str(exc)) from exc
