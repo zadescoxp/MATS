@@ -57,3 +57,21 @@ def test_prompt_context_handles_missing_pair_history() -> None:
     summary = context["pair_summary"]["1h"]
     assert summary["return_20_bars"] is None
     assert "return_correlation" not in summary
+
+
+def test_analyst_submission_accepts_bias_synonyms_and_missing_descriptions() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from framework.schemas.models import AnalystSubmission
+
+    submission = AnalystSubmission.model_validate(
+        {"higher_timeframe_bias": "Uptrend", "lower_timeframe_timing": "sideways"}
+    )
+    assert submission.higher_timeframe_bias == "bullish"
+    assert submission.lower_timeframe_timing == "neutral"
+    assert submission.volatility == "unclear"
+    with pytest.raises(ValidationError):
+        AnalystSubmission.model_validate(
+            {"higher_timeframe_bias": "long-horizon", "lower_timeframe_timing": "neutral"}
+        )
