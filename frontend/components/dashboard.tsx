@@ -51,6 +51,7 @@ import { LiveMarketChart } from "@/components/live-market-chart";
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { COIN_SYMBOLS, marketName } from "@/lib/markets";
 import { parseRunRequest } from "@/lib/run-intent";
 import type {
   AgentStep,
@@ -62,7 +63,6 @@ import type {
   SystemEvent,
 } from "@/lib/types";
 
-const COINS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"];
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"];
 const EMPTY_RUNS: Run[] = [];
 
@@ -90,14 +90,6 @@ const CHART_TOOLTIP = {
 type Notice = { kind: "success" | "error" | "info"; message: string };
 type SettingsSection = "connections" | "usage";
 type RailTab = "running" | "history";
-type RunQuestions = {
-  symbols: string[];
-  timeframes: string[];
-  equity: string;
-  dryRun: boolean;
-  askTimeframes: boolean;
-  askEquity: boolean;
-};
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -558,12 +550,12 @@ export function Dashboard() {
   const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
   const [startSymbols, setStartSymbols] = useState<string[]>([]);
   const [startTimeframes, setStartTimeframes] = useState<string[]>([]);
+  const [startStep, setStartStep] = useState(0);
   const [startDefaultsLoaded, setStartDefaultsLoaded] = useState(false);
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
-  const [questions, setQuestions] = useState<RunQuestions | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [wideViewport, setWideViewport] = useState<boolean | null>(null);
   const notifiedFailures = useRef(new Set<string>());
@@ -696,7 +688,7 @@ export function Dashboard() {
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
   const costForRun = selectedRun?.steps.reduce((sum, step) => sum + step.cost, 0) ?? 0;
   const runSymbols = useMemo(
-    () => [...new Set([...(data?.settings.symbols ?? []), ...COINS, ...runs.map((run) => run.symbol)])],
+    () => [...new Set([...(data?.settings.symbols ?? []), ...COIN_SYMBOLS, ...runs.map((run) => run.symbol)])],
     [data?.settings.symbols, runs],
   );
   const liveRuns = runs
@@ -847,7 +839,6 @@ export function Dashboard() {
         if (validIds[0]) setSelectedRunId(validIds[0]);
       }
       setShowStart(false);
-      setQuestions(null);
       setCommand("");
       setRailTab("running");
       setTab("graph");
@@ -872,23 +863,23 @@ export function Dashboard() {
       return;
     }
     const dryRun = parsed.dryRun ?? data.settings.dry_run;
+    setStartSymbols(parsed.symbols);
+    if (parsed.timeframes.length) setStartTimeframes(parsed.timeframes);
+    setAccountEquity(parsed.equitySpecified && parsed.equity != null ? String(parsed.equity) : "");
+    setStartDryRun(dryRun);
     if (parsed.timeframes.length && parsed.equitySpecified) {
       void launchRun(parsed.symbols, parsed.timeframes, parsed.equity == null ? "" : String(parsed.equity), dryRun);
       return;
     }
-    setQuestions({
-      symbols: parsed.symbols,
-      timeframes: parsed.timeframes,
-      equity: parsed.equity == null ? "" : String(parsed.equity),
-      dryRun,
-      askTimeframes: !parsed.timeframes.length,
-      askEquity: !parsed.equitySpecified,
-    });
+    setStartStep(parsed.timeframes.length ? 2 : 1);
+    setShowStart(true);
+    setRailOpen(false);
     setCommand("");
   }
 
   function openStartDialog() {
     if (data) setStartDryRun(data.settings.dry_run);
+    setStartStep(0);
     setShowStart(true);
     setRailOpen(false);
   }
@@ -1856,30 +1847,22 @@ export function Dashboard() {
                     )}
                   </div>
                   <div className="ml-auto flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={!data}
-                      onClick={() => toggleSetting("dry_run", !dryRunEnabled)}
-                      className={cn(
-                        "hidden rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors hover:bg-card disabled:opacity-50 sm:inline",
-                        dryRunEnabled ? "text-muted" : "bg-negative/10 text-negative",
-                      )}
-                      aria-label={`Toggle dry-run; currently ${dryRunEnabled ? "on" : "off"}`}
-                    >
-                      Dry run {dryRunEnabled ? "on" : "off"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!data}
-                      onClick={() => toggleSetting("kill_switch", !killSwitchEnabled)}
-                      className={cn(
-                        "hidden rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors hover:bg-card disabled:opacity-50 sm:inline",
-                        killSwitchEnabled ? "text-muted" : "bg-negative/10 text-negative",
-                      )}
-                      aria-label={`Toggle kill switch; currently ${killSwitchEnabled ? "on" : "off"}`}
-                    >
-                      Kill switch {killSwitchEnabled ? "on" : "off"}
-                    </button>
+                    <div className="hidden items-center gap-2 sm:flex">
+                      <span className={cn("text-[10px] font-medium", dryRunEnabled ? "text-muted" : "text-negative")}>Dry run</span>
+                      <Switch
+                        checked={dryRunEnabled}
+                        label={`Toggle dry-run; currently ${dryRunEnabled ? "on" : "off"}`}
+                        disabled={!data || busyAction === "toggle"}
+                        onChange={(enabled) => toggleSetting("dry_run", enabled)}
+                      />
+                      <span className={cn("text-[10px] font-medium", killSwitchEnabled ? "text-muted" : "text-negative")}>Kill switch</span>
+                      <Switch
+                        checked={killSwitchEnabled}
+                        label={`Toggle kill switch; currently ${killSwitchEnabled ? "on" : "off"}`}
+                        disabled={!data || busyAction === "toggle"}
+                        onChange={(enabled) => toggleSetting("kill_switch", enabled)}
+                      />
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
@@ -1990,71 +1973,6 @@ export function Dashboard() {
             </div>
 
             <div className="shrink-0 px-4 pb-4 sm:px-6">
-              {questions && (
-                <form
-                  className="rise-in mx-auto mb-3 max-w-3xl rounded-[28px] bg-card px-5 py-4"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void launchRun(questions.symbols, questions.timeframes, questions.equity, questions.dryRun);
-                  }}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">A few details before this starts</p>
-                      <p className="mt-1 text-xs text-muted">{questions.symbols.join("  ·  ")}</p>
-                    </div>
-                    <button type="button" onClick={() => setQuestions(null)} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:bg-white/10" aria-label="Dismiss questions">
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                  {questions.askTimeframes && (
-                    <fieldset className="mt-4">
-                      <legend className="text-[11px] font-medium text-muted">Which timeframes should the agents use?</legend>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {TIMEFRAMES.map((timeframe) => {
-                          const selected = questions.timeframes.includes(timeframe);
-                          return (
-                            <button
-                              key={timeframe}
-                              type="button"
-                              onClick={() => setQuestions((current) => current && ({
-                                ...current,
-                                timeframes: selected
-                                  ? current.timeframes.filter((item) => item !== timeframe)
-                                  : [...current.timeframes, timeframe],
-                              }))}
-                              className={cn(
-                                "rounded-full px-3 py-1 text-xs transition-colors",
-                                selected ? "bg-white/15 text-foreground" : "bg-background/60 text-muted hover:text-foreground",
-                              )}
-                            >
-                              {timeframe}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  )}
-                  {questions.askEquity && (
-                    <label className="mt-4 block">
-                      <span className="text-[11px] font-medium text-muted">How much capital should this use?</span>
-                      <Input
-                        value={questions.equity}
-                        onChange={(event) => setQuestions((current) => current && ({ ...current, equity: event.target.value }))}
-                        inputMode="decimal"
-                        placeholder="Leave blank to use the available balance"
-                        className="mt-2 rounded-2xl border-transparent bg-background/60"
-                      />
-                    </label>
-                  )}
-                  <div className="mt-4 flex justify-end">
-                    <Button type="submit" variant="primary" className="rounded-full" disabled={busyAction === "start" || !questions.symbols.length || !questions.timeframes.length}>
-                      {busyAction === "start" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                      Start {questions.symbols.length > 1 ? `${questions.symbols.length} runs` : "run"}
-                    </Button>
-                  </div>
-                </form>
-              )}
               <form
                 className="relative mx-auto flex max-w-3xl items-center gap-1 rounded-[28px] bg-[#1a1a1e] py-1.5 pl-1.5 pr-1.5"
                 onSubmit={submitCommand}
@@ -2192,6 +2110,10 @@ export function Dashboard() {
           setAccountEquity={setAccountEquity}
           dryRun={startDryRun}
           setDryRun={setStartDryRun}
+          killSwitch={killSwitchEnabled}
+          setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
+          step={startStep}
+          setStep={setStartStep}
           onClose={() => setShowStart(false)}
           onSubmit={submitStart}
           busy={busyAction === "start"}
@@ -2200,6 +2122,8 @@ export function Dashboard() {
     </div>
   );
 }
+
+const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
 
 function StartDialog({
   symbols,
@@ -2212,6 +2136,10 @@ function StartDialog({
   setAccountEquity,
   dryRun,
   setDryRun,
+  killSwitch,
+  setKillSwitch,
+  step,
+  setStep,
   onClose,
   onSubmit,
   busy,
@@ -2226,10 +2154,27 @@ function StartDialog({
   setAccountEquity: (value: string) => void;
   dryRun: boolean;
   setDryRun: (value: boolean) => void;
+  killSwitch: boolean;
+  setKillSwitch: (value: boolean) => void;
+  step: number;
+  setStep: (value: number) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   busy: boolean;
 }) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const visibleSymbols = symbols.filter((symbol) => {
+    if (!needle) return true;
+    return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
+  });
+  const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
+
+  function continueStep() {
+    if (!canContinue) return;
+    if (step < 2) setStep(step + 1);
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-md"
@@ -2241,90 +2186,192 @@ function StartDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="start-run-title"
-        onSubmit={onSubmit}
-        className="rise-in max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (step < 2) {
+            continueStep();
+            return;
+          }
+          onSubmit(event);
+        }}
+        className="rise-in flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 id="start-run-title" className="text-lg font-semibold tracking-tight">Start a run</h2>
             <p className="mt-1 text-xs leading-5 text-muted">
-              Each market gets its own agents. New runs still pass the framework risk gates.
+              {step === 0 && "Choose the markets to test. Each one gets its own agents."}
+              {step === 1 && "Choose the candles those agents should study."}
+              {step === 2 && "Set the capital, then decide whether orders can leave the machine."}
             </p>
           </div>
           <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:bg-white/10 hover:text-foreground" aria-label="Close dialog">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <fieldset className="mt-6">
-          <legend className="text-xs font-medium text-muted">Symbols</legend>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {symbols.map((symbol) => {
-              const selected = selectedSymbols.includes(symbol);
-              return (
-                <label
-                  key={symbol}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2.5 rounded-2xl px-3 py-2.5 text-xs transition-colors",
-                    selected ? "bg-white/10" : "bg-background/40 hover:bg-white/5",
-                  )}
-                >
-                  <input type="checkbox" checked={selected} onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)} />
-                  <CoinMark symbol={symbol} small />
-                  {symbol}
-                </label>
-              );
-            })}
+        <ol className="mt-5 flex gap-2">
+          {START_STEPS.map((label, index) => {
+            const reachable = index === 0
+              || (index === 1 && selectedSymbols.length > 0)
+              || (index === 2 && selectedSymbols.length > 0 && selectedTimeframes.length > 0);
+            return (
+            <li key={label} className="min-w-0 flex-1">
+              <button
+                type="button"
+                disabled={!reachable}
+                onClick={() => setStep(index)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-[11px] font-medium transition-colors",
+                  index === step ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5",
+                  !reachable && "cursor-default hover:bg-transparent",
+                )}
+              >
+                <span className={cn("grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px]", index === step ? "bg-accent text-white" : "bg-white/10")}>
+                  {index + 1}
+                </span>
+                {label}
+              </button>
+            </li>
+            );
+          })}
+        </ol>
+
+        {step === 0 && (
+          <div className="mt-5 min-h-0">
+            <label className="relative block" htmlFor="coin-search">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              <Input
+                id="coin-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search Bitcoin, SOL, PEPE…"
+                autoFocus
+                className="rounded-2xl border-transparent bg-background/60 pl-9"
+              />
+            </label>
+            {selectedSymbols.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {selectedSymbols.map((symbol) => (
+                  <button
+                    key={symbol}
+                    type="button"
+                    onClick={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white/10 py-1 pl-1 pr-2 text-[11px]"
+                  >
+                    <CoinMark symbol={symbol} small />
+                    <span>{symbol.split("/")[0]}</span>
+                    <X className="h-3 w-3 text-muted" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 max-h-72 overflow-y-auto pr-1">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {visibleSymbols.map((symbol) => {
+                  const selected = selectedSymbols.includes(symbol);
+                  return (
+                    <label
+                      key={symbol}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2.5 rounded-2xl px-3 py-2.5 text-xs transition-colors",
+                        selected ? "bg-white/10" : "bg-background/40 hover:bg-white/5",
+                      )}
+                    >
+                      <input type="checkbox" checked={selected} onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)} />
+                      <CoinMark symbol={symbol} small />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{marketName(symbol)}</span>
+                        <span className="block text-[10px] text-muted-foreground">{symbol}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {!visibleSymbols.length && (
+                <p className="px-1 py-8 text-center text-xs text-muted">No coins match “{query.trim()}”.</p>
+              )}
+            </div>
           </div>
-        </fieldset>
-        <fieldset className="mt-5">
-          <legend className="text-xs font-medium text-muted">Timeframes</legend>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {timeframes.map((timeframe) => {
-              const selected = selectedTimeframes.includes(timeframe);
-              return (
-                <label
-                  key={timeframe}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 rounded-full px-3 py-1.5 text-xs transition-colors",
-                    selected ? "bg-accent/15 text-foreground" : "bg-background/50 text-muted",
-                  )}
-                >
-                  <input type="checkbox" className="sr-only" checked={selected} onChange={() => toggleSelection(timeframe, selectedTimeframes, setSelectedTimeframes)} />
-                  {timeframe}
-                </label>
-              );
-            })}
+        )}
+
+        {step === 1 && (
+          <fieldset className="mt-5">
+            <legend className="text-xs font-medium text-muted">Timeframes</legend>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {timeframes.map((timeframe) => {
+                const selected = selectedTimeframes.includes(timeframe);
+                return (
+                  <button
+                    key={timeframe}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => toggleSelection(timeframe, selectedTimeframes, setSelectedTimeframes)}
+                    className={cn(
+                      "rounded-full px-3 py-1.5 text-xs transition-colors",
+                      selected ? "bg-accent/15 text-foreground" : "bg-background/50 text-muted hover:text-foreground",
+                    )}
+                  >
+                    {timeframe}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-[11px] leading-5 text-muted">
+              {selectedSymbols.length} {selectedSymbols.length === 1 ? "market" : "markets"} selected. Pick every horizon the agents should compare.
+            </p>
+          </fieldset>
+        )}
+
+        {step === 2 && (
+          <div className="mt-5">
+            <label className="block text-xs font-medium text-muted" htmlFor="account-equity">Total account equity</label>
+            <Input
+              id="account-equity"
+              type="number"
+              min="0.01"
+              step="any"
+              value={accountEquity}
+              onChange={(event) => setAccountEquity(event.target.value)}
+              placeholder="Optional"
+              className="mt-2 rounded-2xl border-transparent bg-background/60"
+            />
+            <p className="mt-2 text-[11px] leading-5 text-muted">
+              Split evenly across the selected markets. Live runs use the available testnet quote balance when this is empty.
+            </p>
+            <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
+              <span>
+                <span className="block text-xs font-medium">Dry run</span>
+                <span className={cn("mt-1 block text-[11px]", dryRun ? "text-muted" : "text-negative")}>
+                  {dryRun ? "No exchange order placement." : "Guarded Bybit testnet orders can be placed."}
+                </span>
+              </span>
+              <Switch checked={dryRun} label={`Toggle dry-run; currently ${dryRun ? "on" : "off"}`} onChange={setDryRun} />
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
+              <span>
+                <span className="block text-xs font-medium">Kill switch</span>
+                <span className="mt-1 block text-[11px] text-muted">Forces order placement back to dry-run.</span>
+              </span>
+              <Switch checked={killSwitch} label={`Toggle kill switch; currently ${killSwitch ? "on" : "off"}`} onChange={setKillSwitch} />
+            </div>
           </div>
-        </fieldset>
-        <label className="mt-5 block text-xs font-medium text-muted" htmlFor="account-equity">Total account equity</label>
-        <Input
-          id="account-equity"
-          type="number"
-          min="0.01"
-          step="any"
-          value={accountEquity}
-          onChange={(event) => setAccountEquity(event.target.value)}
-          placeholder="Optional"
-          className="mt-2 rounded-2xl border-transparent bg-background/60"
-        />
-        <p className="mt-2 text-[11px] leading-5 text-muted">
-          Split evenly across the selected markets. Live runs use the available testnet quote balance when this is empty.
-        </p>
-        <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
-          <span>
-            <span className="block text-xs font-medium">Dry-run mode</span>
-            <span className={cn("mt-1 block text-[11px]", dryRun ? "text-muted" : "text-negative")}>
-              {dryRun ? "No exchange order placement." : "Guarded Bybit testnet orders can be placed."}
-            </span>
-          </span>
-          <Switch checked={dryRun} label="Start in dry-run mode" onChange={setDryRun} />
-        </div>
-        <div className="mt-6 flex justify-end gap-2">
-          <Button type="button" variant="ghost" className="rounded-full" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" className="rounded-full" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
-            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Start {selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}
+        )}
+
+        <div className="mt-6 flex justify-between gap-2">
+          <Button type="button" variant="ghost" className="rounded-full" onClick={step === 0 ? onClose : () => setStep(step - 1)}>
+            {step === 0 ? "Cancel" : "Back"}
           </Button>
+          {step < 2 ? (
+            <Button type="button" variant="primary" className="rounded-full" disabled={!canContinue} onClick={continueStep}>
+              Next
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button type="submit" variant="primary" className="rounded-full" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
+              {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Start {selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}
+            </Button>
+          )}
         </div>
       </form>
     </div>
