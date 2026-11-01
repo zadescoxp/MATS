@@ -97,7 +97,11 @@ records:
   When the tool builds its own Bybit client, bars come through `CandleCache`
   (`framework.tools.candle_store`): closed candles and the time ranges verified with the
   exchange are kept in `MATS_CANDLE_CACHE_PATH`, so only unverified ranges and the last
-  `MATS_CANDLE_REFRESH_BARS` closed candles are downloaded. The ticker, order book,
+  `MATS_CANDLE_REFRESH_BARS` closed candles are downloaded. Requests longer than Bybit's
+  1000-candle page are paged even with the cache disabled (an in-memory store is used).
+  `DataWorkerNode` sizes research history per timeframe with `history_bars`: at least
+  `MATS_MIN_HISTORY_DAYS` of candles, never fewer than 500, capped at
+  `MATS_MAX_HISTORY_BARS`; the reference pair uses the same depth. The ticker, order book,
   funding-history, and recent-trade methods expose the corresponding Bybit/CCXT snapshots.
 - `collect_context(symbol)` and `news_sentiment(symbol)` (`framework.tools.context_feed`)
   gather keyless RSS headlines, the Fear & Greed index, macro series, filings, and
@@ -129,8 +133,11 @@ records:
   opposite signal. These are starting templates; the persisted strategy JSON is the
   runtime source of truth.
 - `BacktestTool.run(strategy, candles, data=...)` evaluates candidates using the same
-  signal function as live execution. A crossover is acted on at the next candle open to
-  avoid look-ahead. Current spot backtests open long positions only; bearish signals
+  signal function as live execution, on the same trailing window: each bar's signal sees
+  the last `LIVE_SIGNAL_BARS` (500) candles of every series, as live trading fetches, and
+  never a candle from after that bar. This keeps backtests linear in history length and
+  makes a backtested signal the one live trading would have produced. A crossover is
+  acted on at the next candle open to avoid look-ahead. Current spot backtests open long positions only; bearish signals
   close an open long, and do not simulate borrowed/derivative shorts. Fees and slippage
   are charged on entry and exit.
 - Template exits include the opposite signal, configured percentage stop, optional
