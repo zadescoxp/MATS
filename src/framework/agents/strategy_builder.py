@@ -65,16 +65,14 @@ class StrategyBuilderNode:
             ],
         }
         if not candidates:
-            reason = (
-                f"No untried library/timeframe candidate has at least "
-                f"{self.context.settings.min_strategy_bars} historical bars and "
-                f"at least {self.context.settings.min_backtest_trades} closed trades "
-                "after fees and slippage."
+            detail = _no_candidate_detail(
+                coverage,
+                self.context.settings.min_strategy_bars,
+                self.context.settings.min_backtest_trades,
             )
+            reason = f"No untried library/timeframe candidate could be tested. {detail}"
             if previous_key:
                 reason += " All currently viable candidates were already attempted."
-            else:
-                reason += " Review timeframe_coverage for missing or insufficient history."
             if any(info.get("stopped_candidates") for info in coverage.values()):
                 reason += (
                     " Previously stopped strategy fingerprints were excluded; reset them "
@@ -239,15 +237,21 @@ class StrategyBuilderNode:
                 continue
 
             stopped_candidates: list[dict[str, str]] = []
+            # Why each template was not offered on this timeframe, for the run diagnosis.
+            skipped: dict[str, list[str]] = {}
+            too_few_trades: list[dict[str, object]] = []
             regime = _regime(state)
             for template_name, template in STRATEGY_LIBRARY.items():
                 if timeframe not in template["supported_timeframes"]:
+                    skipped.setdefault("timeframe_not_supported", []).append(template_name)
                     continue
                 if not _family_fits(template, regime):
+                    skipped.setdefault("does_not_fit_regime", []).append(template_name)
                     continue
                 parameters = dict(template["default_parameters"])
                 series = _extra_series(state, timeframe, template_name, parameters)
                 if series is None:
+                    skipped.setdefault("missing_pair_or_funding_data", []).append(template_name)
                     continue
                 higher_timeframe = parameters.get("higher_timeframe")
                 if higher_timeframe:
@@ -258,6 +262,7 @@ class StrategyBuilderNode:
                         and _timeframe_rank(item) > _timeframe_rank(timeframe)
                     ]
                     if not available_higher:
+                        skipped.setdefault("needs_higher_timeframe", []).append(template_name)
                         continue
                     parameters["higher_timeframe"] = min(available_higher, key=_timeframe_rank)
                 risk = template["default_risk"]
@@ -305,9 +310,51 @@ class StrategyBuilderNode:
                             "max_drawdown": report.max_drawdown_pct,
                         }
                     )
+                else:
+                    too_few_trades.append(
+                        {"template_name": template_name, "closed_trades": report.total_trades}
+                    )
             if stopped_candidates:
                 info["stopped_candidates"] = stopped_candidates
+            if skipped:
+                info["skipped_templates"] = skipped
+            if too_few_trades:
+                info["too_few_trades"] = too_few_trades
         return candidates, coverage
+
+
+_SKIP_LABELS = {
+    "timeframe_not_supported": "templates do not trade {timeframe}",
+    "needs_higher_timeframe": "need a timeframe above {timeframe} in the run",
+    "does_not_fit_regime": "do not fit the current regime",
+    "missing_pair_or_funding_data": "lack pair or funding data",
+}
+
+
+def _no_candidate_detail(
+    coverage: dict[str, dict[str, object]], min_bars: int, min_trades: int
+) -> str:
+    """One sentence per timeframe naming why nothing could be offered there."""
+    parts: list[str] = []
+    for timeframe, info in sorted(coverage.items(), key=lambda item: _timeframe_rank(item[0])):
+        if info.get("reason") == "insufficient_history":
+            parts.append(f"{timeframe}: only {info.get('bars')} bars (need {min_bars}).")
+            continue
+        skipped = info.get("skipped_templates") or {}
+        few = info.get("too_few_trades") or []
+        if not few and list(skipped) == ["timeframe_not_supported"]:
+            parts.append(f"{timeframe}: no strategy template trades this timeframe.")
+            continue
+        notes = [
+            f"{len(names)} {_SKIP_LABELS.get(key, key).format(timeframe=timeframe)}"
+            for key, names in skipped.items()
+            if names
+        ]
+        if few:
+            tested = ", ".join(f"{item['template_name']} {item['closed_trades']}" for item in few)
+            notes.append(f"too few closed trades ({tested}; need {min_trades})")
+        parts.append(f"{timeframe}: {'; '.join(notes) or 'no candidates'}.")
+    return " ".join(parts)
 
 
 def _resolve_choice(
