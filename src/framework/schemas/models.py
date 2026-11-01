@@ -107,6 +107,25 @@ class AnalystSubmission(BaseModel):
         return "unclear" if value is None else value
 
 
+class StrategyChoice(BaseModel):
+    """The strategy model picks a measured candidate; the code supplies its exact settings."""
+
+    candidate_id: str | None = Field(
+        default=None, description="The candidate_id of the chosen eligible_candidates row."
+    )
+    template_name: str | None = None
+    chosen_timeframe: str | None = None
+    description: str = Field(
+        default="", description="The edge this strategy exploits in the current regime."
+    )
+
+    @model_validator(mode="after")
+    def names_a_candidate(self) -> "StrategyChoice":
+        if not self.candidate_id and not self.template_name:
+            raise ValueError("Provide candidate_id, or template_name with chosen_timeframe")
+        return self
+
+
 class MultiTimeframeFindings(BaseModel):
     higher_timeframe_bias: Literal["bullish", "bearish", "neutral"]
     lower_timeframe_timing: Literal["bullish", "bearish", "neutral"]
@@ -227,10 +246,23 @@ class Critique(BaseModel):
     decision: Literal["APPROVE", "REJECT"]
     issues: list[str] = Field(default_factory=list)
     revision_instructions: str = ""
-    rationale: str
+    rationale: str = ""
     diversity_score: float = Field(default=0.5, ge=0, le=1)
     regime_fit_score: float = Field(default=0.5, ge=0, le=1)
     edge_hypothesis: str = ""
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def normalize_decision(cls, value: Any) -> Any:
+        # Small models often answer "approve" or "Rejected"; the threshold gate still applies.
+        if not isinstance(value, str):
+            return value
+        word = value.strip().upper()
+        if word.startswith("APPROV"):
+            return "APPROVE"
+        if word.startswith("REJECT"):
+            return "REJECT"
+        return value
 
     @field_validator("issues", mode="before")
     @classmethod
