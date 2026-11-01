@@ -25,9 +25,10 @@ from framework.core.logging_config import configure_logging
 from framework.core.state import GraphState
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
-from framework.strategies.library import strategy_fingerprint
+from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.news_risk import NewsRisk, assess_news_risk
+from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import news_sentiment
 from framework.tools.execution import ExecutionTools
 
@@ -48,6 +49,15 @@ _ALLOWED_TIMEFRAMES = {
 }
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
 _ENTRY_WATCH_INTERVAL_SECONDS = 60
+# Timeframes at least one strategy template can trade; the console warns about the rest.
+_STRATEGY_TIMEFRAMES = sorted(
+    {
+        timeframe
+        for template in STRATEGY_LIBRARY.values()
+        for timeframe in template["supported_timeframes"]
+    },
+    key=lambda value: timeframe_ms(value) or 0,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +94,7 @@ class DashboardService:
                 "kill_switch": self.settings.kill_switch,
                 "symbols": self.settings.symbols,
                 "timeframes": self.settings.timeframes,
+                "strategy_timeframes": _STRATEGY_TIMEFRAMES,
             }
             data["connections"] = self.connections.public(self._environment)
             data["operations"] = list(self._operations.values())
