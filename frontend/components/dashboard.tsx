@@ -2355,7 +2355,7 @@ function StartDialog({
                 />
               </label>
               {selectedSymbols.length > 0 && (
-                <div className="mt-3 max-h-[4.5rem] overflow-y-auto rounded-xl border border-white/[0.06] bg-background/40 p-2">
+                <div className="mt-3 rounded-xl border border-white/[0.06] bg-background/40 p-2">
                   <div className="flex flex-wrap gap-1.5">
                     {selectedSymbols.map((symbol) => (
                       <button
