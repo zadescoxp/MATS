@@ -21,6 +21,8 @@ from framework.config.settings import Settings, get_settings
 from framework.core.graph import TradingFramework
 from framework.core.state import GraphState
 from framework.persistence.database import Database
+from framework.strategies.algorithm import bar_already_evaluated
+from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.tools.execution import ExecutionTools
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
@@ -220,8 +222,7 @@ class DashboardService:
                 (
                     item
                     for item in database.entry_watchers()
-                    if item["run_id"] == run_id
-                    and item["status"] in {"stopped", "failed"}
+                    if item["run_id"] == run_id and item["status"] in {"stopped", "failed"}
                 ),
                 None,
             )
@@ -289,8 +290,7 @@ class DashboardService:
         watcher_ids = [
             str(watcher["run_id"])
             for watcher in snapshot["entry_watchers"]
-            if watcher["status"] in {"stopped", "failed"}
-            and watcher["run_id"] not in active
+            if watcher["status"] in {"stopped", "failed"} and watcher["run_id"] not in active
         ]
         if not candidates and not watcher_ids:
             raise ValueError("No inactive incomplete runs or stopped entry watchers found.")
@@ -533,11 +533,27 @@ class DashboardService:
                     stop_event.wait(interval_seconds)
                     continue
                 try:
+                    bar_key = _closed_bar_key(worker, state)
+                    previous_bar = _watcher_bar(database, run_id)
+                    if bar_already_evaluated(previous_bar, bar_key):
+                        database.update_entry_watcher(
+                            run_id, status="watching", last_bar=bar_key, error=None
+                        )
+                        stop_event.wait(interval_seconds)
+                        continue
                     risk_update = RiskAssessmentNode(worker.context)(state)
                     state = state.model_copy(update=risk_update)
                     signal = state.live_signal
                     if signal is None:
                         raise RuntimeError("Risk assessment returned no live signal.")
+                    database.log_event(
+                        run_id,
+                        "algorithm_check",
+                        (
+                            f"Bar {bar_key or 'latest'} evaluated once: "
+                            f"{signal.action}. {getattr(signal, 'reason', '')}"
+                        ),
+                    )
                     if (
                         signal.action in {"long", "short"}
                         and state.risk_assessment is not None
@@ -545,6 +561,9 @@ class DashboardService:
                         and not stop_event.is_set()
                         and not self.settings.dry_run
                         and not self.settings.kill_switch
+                        and not any(
+                            position["run_id"] == run_id for position in database.open_positions()
+                        )
                     ):
                         execution_update = ExecutionNode(worker.context)(state)
                         state = state.model_copy(update=execution_update)
@@ -552,6 +571,7 @@ class DashboardService:
                         run_id,
                         status="watching",
                         signal=signal.model_dump(mode="json"),
+                        last_bar=bar_key,
                         error=None,
                     )
                     if any(position["run_id"] == run_id for position in database.open_positions()):
@@ -638,7 +658,7 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
     }
     if not database_path.exists():
         return empty
-    connection = sqlite3.connect(database_path, timeout=5)
+    connection = sqlite3.connect(database_path, timeout=30)
     connection.row_factory = sqlite3.Row
     try:
         runs = [
@@ -655,9 +675,9 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
                    FROM agent_steps ORDER BY started_at"""
         ):
             step = dict(row)
-            step["input"] = json.loads(step.pop("input_json"))
+            step["input"] = _compact_payload(json.loads(step.pop("input_json")))
             output = step.pop("output_json")
-            step["output"] = json.loads(output) if output else None
+            step["output"] = _compact_payload(json.loads(output)) if output else None
             step["tool_calls"] = json.loads(step.pop("tool_calls_json"))
             steps.append(step)
         strategies = [
@@ -727,6 +747,82 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
         }
     finally:
         connection.close()
+
+
+def _closed_bar_key(worker: Any, state: Any) -> str | None:
+    strategy = getattr(state, "strategy", None)
+    symbol = getattr(state, "symbol", None)
+    market = getattr(getattr(worker, "context", None), "market_data", None)
+    timeframe = getattr(strategy, "chosen_timeframe", None)
+    if strategy is None or not symbol or market is None or not timeframe:
+        return None
+    try:
+        data = fetch_strategy_ohlcv(market, symbol, strategy)
+        return data[timeframe][-1].timestamp.isoformat()
+    except Exception:
+        return None
+
+
+def _watcher_bar(database: Any, run_id: str) -> str | None:
+    reader = getattr(database, "entry_watchers", None)
+    if reader is None:
+        return None
+    try:
+        watchers = reader()
+    except Exception:
+        return None
+    for watcher in watchers:
+        if watcher.get("run_id") == run_id:
+            return watcher.get("last_bar_timestamp")
+    return None
+
+
+_BULK_KEYS = {"raw_data", "messages", "pair_candles", "funding_history"}
+
+
+def _compact_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _BULK_KEYS:
+                compacted[key] = _bulk_summary(item)
+            elif key == "equity_curve" and isinstance(item, list) and len(item) > 80:
+                compacted[key] = [_compact_payload(point) for point in item[-80:]]
+            else:
+                compacted[key] = _compact_payload(item)
+        return compacted
+    if isinstance(value, list):
+        if len(value) > 40 and _looks_like_candle(value[0]):
+            return {"bars": len(value), "last_timestamp": _candle_time(value[-1])}
+        return [_compact_payload(item) for item in value]
+    return value
+
+
+def _bulk_summary(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _bulk_summary(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return {"count": len(value)}
+    return value
+
+
+def _looks_like_candle(value: Any) -> bool:
+    if isinstance(value, dict):
+        return "close" in value and "timestamp" in value
+    return hasattr(value, "close") and hasattr(value, "timestamp")
+
+
+def _candle_time(value: Any) -> str | None:
+    if isinstance(value, dict):
+        timestamp = value.get("timestamp")
+    else:
+        timestamp = getattr(value, "timestamp", None)
+    if timestamp is None:
+        return None
+    if isinstance(timestamp, str):
+        return timestamp
+    isoformat = getattr(timestamp, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(timestamp)
 
 
 def _symbols(value: Any, defaults: list[str]) -> list[str]:
@@ -858,20 +954,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache, no-transform")
         self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         previous = ""
         try:
             while True:
-                data = self.service.state()
-                serialized = json.dumps(data, separators=(",", ":"), sort_keys=True)
-                digest = hashlib.sha256(serialized.encode()).hexdigest()
-                if digest != previous:
-                    self.wfile.write(f"data: {serialized}\n\n".encode())
-                    self.wfile.flush()
-                    previous = digest
-                else:
-                    self.wfile.write(b": keep-alive\n\n")
-                    self.wfile.flush()
+                try:
+                    data = self.service.state()
+                    serialized = json.dumps(data, separators=(",", ":"), sort_keys=True)
+                    digest = hashlib.sha256(serialized.encode()).hexdigest()
+                    if digest != previous:
+                        self.wfile.write(f"data: {serialized}\n\n".encode())
+                        self.wfile.flush()
+                        previous = digest
+                    else:
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                except Exception:
+                    logger.exception("Dashboard event snapshot failed")
+                    try:
+                        self.wfile.write(b": snapshot-error\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
                 time.sleep(2)
         except (BrokenPipeError, ConnectionResetError):
             return
