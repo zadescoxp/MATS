@@ -27,11 +27,13 @@ class GraphState(BaseModel):
     backtest_report: BacktestReport | None = None
     critique: Critique | None = None
     revision_count: int = Field(default=0, ge=0)
+    max_revision_loops: int | None = Field(default=None, ge=0, le=20)
     risk_assessment: RiskAssessment | None = None
     live_signal: LiveSignal | None = None
     generated_code: str | None = None
     execution_result: ExecutionReport | None = None
     errors: list[str] = Field(default_factory=list)
     messages: list[dict[str, Any]] = Field(default_factory=list)
-    status: Literal["running", "completed", "failed", "stopped"] = "running"
+    # "rejected": the critique refused every attempt within the run's revision limit.
+    status: Literal["running", "completed", "failed", "stopped", "rejected"] = "running"
     account_equity: float | None = Field(default=None, gt=0)
