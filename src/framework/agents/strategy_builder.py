@@ -6,10 +6,12 @@ from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
 from framework.schemas.models import StrategyDefinition
 from framework.strategies.library import (
+    REFERENCE_EXAMPLES,
     STRATEGY_LIBRARY,
     strategy_fingerprint,
     strategy_library_summary,
 )
+from framework.strategies.regime import diagnose_regime
 
 _MAX_CANDIDATES_PER_TIMEFRAME = 5
 
@@ -28,11 +30,14 @@ class StrategyBuilderNode:
             item for item in candidates if _strategy_key(item["strategy"]) != previous_key
         ]
         candidates = _shortlist(candidates)
+        for index, item in enumerate(candidates, start=1):
+            item["candidate_id"] = f"c{index}"
         diagnostics = {
             "minimum_bars_required": self.context.settings.min_strategy_bars,
             "timeframe_coverage": coverage,
             "eligible_candidates": [
                 {
+                    "candidate_id": item["candidate_id"],
                     "timeframe": item["strategy"].chosen_timeframe,
                     "template_name": item["strategy"].template_name,
                     "parameters": item["strategy"].parameters,
@@ -82,23 +87,28 @@ class StrategyBuilderNode:
             if state.critique and state.critique.decision == "REJECT"
             else "Choose the best evidence-supported candidate."
         )
+        regime = _regime(state)
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You may only choose a parameterized variant of a template in the supplied "
-                    "reference library, and exactly one candidate from the supplied measured "
-                    "candidate list. Never generate arbitrary strategy code. "
-                    "The list was tested on historical candles with the configured fees and "
-                    "slippage and contains candidates that produced enough closed trades. "
-                    "Copy its template name, timeframe, parameters, filters, stop loss, take "
-                    "profit, exit rule, and position fraction exactly; do not invent or adjust "
-                    "these measured parameters. Prefer candidates with positive net-of-cost PnL "
-                    "and "
-                    "controlled drawdown, while respecting the multi-timeframe findings. "
-                    "Do not choose an untested timeframe. Call "
-                    "submit_strategy exactly once. On revision, choose a different candidate "
-                    "and apply the concrete critique instructions."
+                    "Work in two steps, then submit one measured candidate. "
+                    "Step 1: state the supplied market regime and why it fits. "
+                    "Step 2: choose one strategy family from the library that has a reason to "
+                    "work in that regime, and copy exactly one measured candidate. "
+                    "Never invent a free-form EMA rule and never generate strategy code. "
+                    "If the regime is choppy, reject a pure EMA crossover. "
+                    "Explain the economic or statistical edge, not just the indicator rule. "
+                    "Use long-horizon context for the directional bias and short-horizon "
+                    "context only for timing. "
+                    "eligible_candidates is the only set you may choose from. "
+                    "Copy one row's template_name and chosen_timeframe. "
+                    "Do not invent a template or timeframe outside that list. "
+                    "Measured parameters, stops, and the exit rule are kept when your copy "
+                    "differs. Prefer positive net-of-cost PnL, controlled drawdown, regime fit, "
+                    "and a family that has not recently lost in this regime. "
+                    "Call submit_strategy exactly once. On revision, choose a different "
+                    "eligible row and apply the critique instructions."
                 ),
             },
             {
@@ -106,6 +116,12 @@ class StrategyBuilderNode:
                 "content": json.dumps(
                     {
                         "symbol": state.symbol,
+                        "regime": regime,
+                        "reference_examples": REFERENCE_EXAMPLES,
+                        "family_memory": self.context.database.recent_family_results(
+                            state.symbol, str(regime.get("regime") or ""), limit=8
+                        ),
+                        "external_context": _external_brief(state),
                         "strategy_library": strategy_library_summary(),
                         "analyst_findings": [
                             item.model_dump(mode="json") for item in state.analyst_findings
@@ -129,27 +145,28 @@ class StrategyBuilderNode:
                     "submit_strategy",
                     StrategyDefinition,
                     (
-                        "Submit a supported template and parameters using one measured "
-                        "candidate exactly."
+                        "Name one measured candidate by its template and timeframe. "
+                        "Parameters are replaced with the tested row."
                     ),
                 )
             ],
             self.context.settings.model_for("strategy"),
         )
-        strategy = parse_tool_response(response, "submit_strategy", StrategyDefinition)
-        selected = next(
-            (
-                item
-                for item in candidates
-                if _strategy_key(item["strategy"]) == _strategy_key(strategy)
-            ),
-            None,
-        )
-        if selected is None:
-            raise ValueError(
-                "Strategy builder selected an untested template, timeframe, or parameter set; "
-                "choose one of the supplied measured candidates."
+        submitted = parse_tool_response(response, "submit_strategy", StrategyDefinition)
+        strategy, match = _resolve_measured(submitted, candidates)
+        if match != "exact":
+            self.context.database.log_event(
+                state.run_id,
+                "strategy_selection_snapped",
+                (
+                    f"Submitted {submitted.template_name} on {submitted.chosen_timeframe} "
+                    f"did not match a measured candidate exactly. "
+                    f"Using {strategy.template_name} on {strategy.chosen_timeframe} ({match})."
+                ),
             )
+        if submitted.description.strip():
+            strategy = strategy.model_copy(update={"description": submitted.description.strip()})
+        diagnostics["selection_match"] = match
         diagnostics["selected_candidate"] = next(
             item
             for item in diagnostics["eligible_candidates"]
@@ -164,6 +181,15 @@ class StrategyBuilderNode:
             and item["position_fraction"] == strategy.position_fraction
         )
         strategy_id = f"{state.run_id}-v{state.revision_count}"
+        family = STRATEGY_LIBRARY[strategy.template_name]["family"]
+        self.context.database.log_event(
+            state.run_id,
+            "strategy_selected",
+            (
+                f"family={family} template={strategy.template_name} "
+                f"regime={regime.get('regime')} timeframe={strategy.chosen_timeframe}"
+            ),
+        )
         self.context.database.save_strategy(
             strategy_id,
             state.run_id,
@@ -199,10 +225,16 @@ class StrategyBuilderNode:
                 continue
 
             stopped_candidates: list[dict[str, str]] = []
+            regime = _regime(state)
             for template_name, template in STRATEGY_LIBRARY.items():
                 if timeframe not in template["supported_timeframes"]:
                     continue
+                if not _family_fits(template, regime):
+                    continue
                 parameters = dict(template["default_parameters"])
+                series = _extra_series(state, timeframe, template_name, parameters)
+                if series is None:
+                    continue
                 higher_timeframe = parameters.get("higher_timeframe")
                 if higher_timeframe:
                     available_higher = [
@@ -248,7 +280,7 @@ class StrategyBuilderNode:
                     else self.context.settings.initial_capital
                 )
                 report = self.context.backtester.run(
-                    strategy, candles, data=state.raw_data, initial_capital=capital
+                    strategy, candles, data=series, initial_capital=capital
                 )
                 if report.total_trades >= self.context.settings.min_backtest_trades:
                     candidates.append(
@@ -262,6 +294,49 @@ class StrategyBuilderNode:
             if stopped_candidates:
                 info["stopped_candidates"] = stopped_candidates
         return candidates, coverage
+
+
+def _resolve_measured(
+    submitted: StrategyDefinition, candidates: list[dict[str, object]]
+) -> tuple[StrategyDefinition, str]:
+    """Return the tested strategy the submission refers to.
+
+    Each template is measured once per timeframe. Models often change a parameter,
+    filter, or stop while naming that template, so the measured row is the strategy
+    that actually gets traded.
+    """
+    exact = [
+        item for item in candidates if _strategy_key(item["strategy"]) == _strategy_key(submitted)
+    ]
+    if exact:
+        return exact[0]["strategy"], "exact"
+    same_slot = [
+        item
+        for item in candidates
+        if item["strategy"].template_name == submitted.template_name
+        and item["strategy"].chosen_timeframe == submitted.chosen_timeframe
+    ]
+    if same_slot:
+        return _best(same_slot), "template_timeframe"
+    same_template = [
+        item for item in candidates if item["strategy"].template_name == submitted.template_name
+    ]
+    if same_template:
+        return _best(same_template), "template"
+    family = STRATEGY_LIBRARY.get(submitted.template_name, {}).get("family")
+    if family:
+        same_family = [
+            item
+            for item in candidates
+            if STRATEGY_LIBRARY[item["strategy"].template_name]["family"] == family
+        ]
+        if same_family:
+            return _best(same_family), "family"
+    return _best(candidates), "best_measured"
+
+
+def _best(candidates: list[dict[str, object]]) -> StrategyDefinition:
+    return max(candidates, key=lambda item: item["net_pnl"])["strategy"]
 
 
 def _strategy_key(
@@ -316,6 +391,62 @@ def _shortlist(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
         selected.append(item)
         counts[timeframe] = counts.get(timeframe, 0) + 1
     return selected
+
+
+def _regime(state: GraphState) -> dict[str, object]:
+    if state.regime:
+        return state.regime
+    if not state.raw_data:
+        return {}
+    return diagnose_regime(state.raw_data, state.market_context)
+
+
+def _family_fits(template: dict[str, object], regime: dict[str, object]) -> bool:
+    label = str(regime.get("regime") or "")
+    try:
+        trend_strength = float(regime.get("trend_strength") or 0)
+    except (TypeError, ValueError):
+        trend_strength = 0.0
+    choppy = label.startswith("choppy") or (bool(label) and trend_strength < 0.35)
+    if template.get("pure_momentum") and choppy:
+        return False
+    suitable = template.get("suitable_regimes")
+    if label and isinstance(suitable, list) and label not in suitable:
+        return False
+    return True
+
+
+def _extra_series(
+    state: GraphState,
+    timeframe: str,
+    template_name: str,
+    parameters: dict[str, object],
+) -> dict[str, object] | None:
+    series: dict[str, object] = dict(state.raw_data)
+    if template_name == "stat_arb_spread":
+        pair = (state.market_context.get("pair_candles") or {}).get(timeframe)
+        if not pair:
+            return None
+        pair_symbol = state.market_context.get("pair_symbol") or parameters.get("pair_symbol")
+        if isinstance(pair_symbol, str):
+            parameters["pair_symbol"] = pair_symbol
+        series["pair"] = pair
+    if template_name == "carry_funding":
+        funding = state.market_context.get("funding_history")
+        if not funding:
+            return None
+        series["funding"] = funding
+    return series
+
+
+def _external_brief(state: GraphState) -> dict[str, object]:
+    external = state.market_context.get("external") or {}
+    if not isinstance(external, dict):
+        return {}
+    return {
+        "long_horizon": external.get("long_horizon") or [],
+        "short_horizon": external.get("short_horizon") or [],
+    }
 
 
 def _timeframe_rank(timeframe: str) -> int:

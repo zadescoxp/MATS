@@ -79,18 +79,32 @@ class StrategyDefinition(BaseModel):
     template_name: Literal[
         "ema_crossover",
         "rsi_mean_reversion",
+        "mean_reversion",
+        "stat_arb_spread",
         "supertrend_atr",
         "macd_htf_bias",
         "bollinger_squeeze",
+        "breakout_confirmed",
+        "volatility_fade",
+        "carry_funding",
+        "regime_gated_trend",
         "htf_trend_ltf_timing",
+        "multi_timeframe_hybrid",
     ] = "ema_crossover"
     entry_rule: Literal[
         "ema_crossover",
         "rsi_mean_reversion",
+        "mean_reversion",
+        "stat_arb_spread",
         "supertrend_atr",
         "macd_htf_bias",
         "bollinger_squeeze",
+        "breakout_confirmed",
+        "volatility_fade",
+        "carry_funding",
+        "regime_gated_trend",
         "htf_trend_ltf_timing",
+        "multi_timeframe_hybrid",
     ] = "ema_crossover"
     exit_rule: Literal[
         "ema_crossover", "opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"
@@ -165,6 +179,9 @@ class Critique(BaseModel):
     issues: list[str] = Field(default_factory=list)
     revision_instructions: str = ""
     rationale: str
+    diversity_score: float = Field(default=0.5, ge=0, le=1)
+    regime_fit_score: float = Field(default=0.5, ge=0, le=1)
+    edge_hypothesis: str = ""
 
 
 class RiskAssessment(BaseModel):

@@ -27,6 +27,8 @@ class MultiTimeframeAnalystNode:
                 "content": (
                     "Analyze all supplied timeframes together. Assess alignment, divergence, "
                     "regime, momentum, volatility, and key levels. Do not propose a strategy. "
+                    "When external context is present, let long-horizon items set the bias and "
+                    "use short-horizon items only as timing risk. "
                     "Include a concise evidence-based rationale when possible. Call "
                     "submit_findings exactly once with the complete structured finding."
                 ),

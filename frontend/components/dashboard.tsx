@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
-  Filter,
   Gauge,
   History,
   LoaderCircle,
@@ -17,7 +16,6 @@ import {
   Paperclip,
   Play,
   Plus,
-  RefreshCw,
   Search,
   ShieldCheck,
   Square,
@@ -48,12 +46,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { COIN_SYMBOLS, marketName } from "@/lib/markets";
 import { parseRunRequest } from "@/lib/run-intent";
 import type {
   AgentStep,
@@ -65,13 +63,13 @@ import type {
   SystemEvent,
 } from "@/lib/types";
 
-const COINS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"];
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"];
 const EMPTY_RUNS: Run[] = [];
 
 const AGENTS = [
   { id: "data_worker", name: "Data Worker", role: "Market data", persona: "/personas/data.png" },
   { id: "multi_timeframe_analyst", name: "Analyst Agent", role: "Multi-timeframe analysis", persona: "/personas/Analyst.png" },
+  { id: "regime", name: "Regime", role: "Market state", persona: "/personas/Analyst.png" },
   { id: "strategy_builder", name: "Strategy Builder", role: "Strategy design", persona: "/personas/Strategy%20Builder.png" },
   { id: "backtest", name: "Backtest Agent", role: "Backtesting", persona: "/personas/Backtester.png" },
   { id: "critique", name: "Critique Agent", role: "Quality review", persona: "/personas/Critique.png" },
@@ -92,14 +90,6 @@ const CHART_TOOLTIP = {
 type Notice = { kind: "success" | "error" | "info"; message: string };
 type SettingsSection = "connections" | "usage";
 type RailTab = "running" | "history";
-type RunQuestions = {
-  symbols: string[];
-  timeframes: string[];
-  equity: string;
-  dryRun: boolean;
-  askTimeframes: boolean;
-  askEquity: boolean;
-};
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -138,13 +128,6 @@ function clockLabel(value: string): string {
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function orderTime(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return dateLabel(new Date(value).toISOString());
-  }
-  return dateLabel(typeof value === "string" ? value : null);
 }
 
 function formatDuration(start: string, finish?: string | null, now = Date.now()): string {
@@ -198,7 +181,8 @@ function agentWorkingLabel(agentId: string, symbol: string): string {
     initialize: "Preparing the research run",
     data_worker: "Collecting market data",
     multi_timeframe_analyst: "Reviewing market structure",
-    strategy_builder: "Building a strategy candidate",
+    regime: "Reading the market regime",
+    strategy_builder: "Choosing a strategy family",
     backtest: "Backtesting strategy performance",
     critique: "Reviewing risk-adjusted results",
     risk_assessment: "Sizing risk for the proposed trade",
@@ -219,13 +203,14 @@ function stepSummary(step: AgentStep, symbol: string): string {
       return value.trim();
     }
     if (!isObject(value) || depth > 1) return null;
-    for (const key of ["summary", "finding", "decision", "reason", "message", "action", "template_name", "name"]) {
+    for (const key of ["summary", "recommendation", "finding", "decision", "reason", "message", "action", "template_name", "name"]) {
       const summary = describe(value[key], depth + 1);
       if (summary) return summary;
     }
     return null;
   };
   const candidates = [
+    "regime",
     "analyst_findings",
     "strategy",
     "backtest_report",
@@ -535,20 +520,11 @@ function ChainOfThought({ step, symbol }: { step: AgentStep; symbol: string }) {
 function EventCard({ event }: { event: SystemEvent }) {
   const failed = /fail|error/i.test(`${event.type} ${event.message}`);
   return (
-    <article className={cn("rise-in rounded-2xl bg-card px-4 py-3", failed && "step-failed")}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className={cn("text-sm font-medium", failed && "text-negative")}>{event.type.replaceAll("_", " ")}</p>
-            {event.run_id && <span className="max-w-48 truncate font-mono text-[10px] text-muted-foreground">{event.run_id}</span>}
-          </div>
-          <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-muted">{event.message}</p>
-        </div>
-        <span className="shrink-0 text-[10px] text-muted-foreground">{dateLabel(event.timestamp)}</span>
-      </div>
-      {event.traceback && <div className="mt-3"><RawSection title="Traceback" value={event.traceback} /></div>}
-      <div className="mt-2"><RawSection title="Event JSON" value={event} /></div>
-    </article>
+    <li className="grid grid-cols-[4.5rem_minmax(0,9rem)_minmax(0,1fr)] items-baseline gap-3 py-2 text-xs">
+      <span className="text-[11px] text-muted-foreground">{clockLabel(event.timestamp)}</span>
+      <span className={cn("truncate text-foreground/80", failed && "text-negative")}>{event.type.replaceAll("_", " ")}</span>
+      <span className="truncate text-muted" title={event.message}>{event.message}</span>
+    </li>
   );
 }
 
@@ -574,12 +550,12 @@ export function Dashboard() {
   const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
   const [startSymbols, setStartSymbols] = useState<string[]>([]);
   const [startTimeframes, setStartTimeframes] = useState<string[]>([]);
+  const [startStep, setStartStep] = useState(0);
   const [startDefaultsLoaded, setStartDefaultsLoaded] = useState(false);
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
-  const [questions, setQuestions] = useState<RunQuestions | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [wideViewport, setWideViewport] = useState<boolean | null>(null);
   const notifiedFailures = useRef(new Set<string>());
@@ -712,7 +688,7 @@ export function Dashboard() {
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
   const costForRun = selectedRun?.steps.reduce((sum, step) => sum + step.cost, 0) ?? 0;
   const runSymbols = useMemo(
-    () => [...new Set([...(data?.settings.symbols ?? []), ...COINS, ...runs.map((run) => run.symbol)])],
+    () => [...new Set([...(data?.settings.symbols ?? []), ...COIN_SYMBOLS, ...runs.map((run) => run.symbol)])],
     [data?.settings.symbols, runs],
   );
   const liveRuns = runs
@@ -863,7 +839,6 @@ export function Dashboard() {
         if (validIds[0]) setSelectedRunId(validIds[0]);
       }
       setShowStart(false);
-      setQuestions(null);
       setCommand("");
       setRailTab("running");
       setTab("graph");
@@ -888,23 +863,23 @@ export function Dashboard() {
       return;
     }
     const dryRun = parsed.dryRun ?? data.settings.dry_run;
+    setStartSymbols(parsed.symbols);
+    if (parsed.timeframes.length) setStartTimeframes(parsed.timeframes);
+    setAccountEquity(parsed.equitySpecified && parsed.equity != null ? String(parsed.equity) : "");
+    setStartDryRun(dryRun);
     if (parsed.timeframes.length && parsed.equitySpecified) {
       void launchRun(parsed.symbols, parsed.timeframes, parsed.equity == null ? "" : String(parsed.equity), dryRun);
       return;
     }
-    setQuestions({
-      symbols: parsed.symbols,
-      timeframes: parsed.timeframes,
-      equity: parsed.equity == null ? "" : String(parsed.equity),
-      dryRun,
-      askTimeframes: !parsed.timeframes.length,
-      askEquity: !parsed.equitySpecified,
-    });
+    setStartStep(parsed.timeframes.length ? 2 : 1);
+    setShowStart(true);
+    setRailOpen(false);
     setCommand("");
   }
 
   function openStartDialog() {
     if (data) setStartDryRun(data.settings.dry_run);
+    setStartStep(0);
     setShowStart(true);
     setRailOpen(false);
   }
@@ -1552,148 +1527,94 @@ export function Dashboard() {
       ...executions.map((execution) => execution.symbol),
     ])];
     const allSelected = rows.length > 0 && rows.every((position) => selectedPositions.includes(position.run_id));
-    const executionsWithIds = executions.flatMap((execution) =>
-      execution.orders.filter((order) => Boolean(order.id ?? order.exchange_order_id)).map((order) => ({ execution, order })),
-    );
     return (
-      <div className="mx-auto max-w-5xl space-y-4">
-        <Card className="p-5">
-          <CardHeader>
-            <div>
-              <CardTitle>Open positions <span className="ml-1 text-muted">({openPositions.length})</span></CardTitle>
-              <CardDescription>Persisted positions from the framework monitor.</CardDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                className="min-h-9 rounded-full bg-background px-3 text-xs text-foreground"
-                value={symbolFilter}
-                onChange={(event) => setSymbolFilter(event.target.value)}
-                aria-label="Filter positions by symbol"
-              >
-                <option value="">All symbols</option>
-                {availableSymbols.map((symbol) => <option key={symbol}>{symbol}</option>)}
-              </select>
-              <Button variant="outline" size="sm" className="rounded-full" onClick={() => act("monitor", {}, "Monitor cycle started.")} disabled={busyAction === "monitor"}>
-                {busyAction === "monitor" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                Force monitor cycle
-              </Button>
-              <Button variant="danger" size="sm" className="rounded-full" onClick={submitFlatten} disabled={!selectedPositions.length || busyAction === "flatten" || data?.settings.dry_run}>
-                <Square className="h-3.5 w-3.5" />
-                Flatten selected
-              </Button>
-            </div>
-          </CardHeader>
-          {data?.settings.dry_run && (
-            <p className="mt-4 rounded-xl bg-accent/10 px-3 py-2 text-xs text-muted">
-              Dry-run is on. Turn it off before requesting a live position flatten.
-            </p>
-          )}
-          {rows.length ? (
-            <div className="mt-5 overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <tr>
-                    <th className="pb-3 pr-3">
-                      <input type="checkbox" checked={allSelected} onChange={(event) => setSelectedPositions(event.target.checked ? rows.map((row) => row.run_id) : [])} aria-label="Select all positions" />
-                    </th>
-                    <th className="pb-3 pr-4 font-medium">Symbol</th>
-                    <th className="pb-3 pr-4 font-medium">Side / size</th>
-                    <th className="pb-3 pr-4 font-medium">Entry / stop</th>
-                    <th className="pb-3 pr-4 font-medium">Strategy</th>
-                    <th className="pb-3 pr-4 font-medium">Edge fade</th>
-                    <th className="pb-3 pr-4 font-medium">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((position) => {
-                    const edgeFade = position.events.some((event) => event.type === "edge_fade_exit");
-                    return (
-                      <tr key={position.run_id} className="border-t border-white/[0.05] text-muted">
-                        <td className="py-3 pr-3">
-                          <input type="checkbox" checked={selectedPositions.includes(position.run_id)} onChange={() => toggleSelection(position.run_id, selectedPositions, setSelectedPositions)} aria-label={`Select ${position.symbol} position`} />
-                        </td>
-                        <td className="py-3 pr-4"><span className="flex items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol}</span></td>
-                        <td className="py-3 pr-4"><span className="capitalize text-foreground">{position.side}</span><span className="ml-2 tabular-nums">{position.amount}</span></td>
-                        <td className="py-3 pr-4 tabular-nums">{money(position.entry_price)} <span className="text-muted">/ {money(position.stop_price)}</span></td>
-                        <td className="py-3 pr-4">{textValue(position.strategy.name ?? position.strategy_key)}</td>
-                        <td className="py-3 pr-4">{edgeFade ? <Badge className="border-negative/20 bg-negative/10 text-negative">Detected</Badge> : "—"}</td>
-                        <td className="py-3 pr-4"><StatusBadge status={position.status} /></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="mt-5"><EmptyState title="No open positions" body="Open positions saved by the framework will appear here. This panel never calls an exchange from the browser." /></div>
-          )}
-          {rows.length > 0 && <div className="mt-4"><RawSection title="Open position JSON" value={rows} /></div>}
-        </Card>
-        <Card className="p-5">
-          <CardHeader>
-            <div>
-              <CardTitle>Historical executions</CardTitle>
-              <CardDescription>Saved order payloads, outcomes, and related runs.</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <select
-                className="min-h-9 rounded-full bg-background px-3 text-xs text-foreground"
-                value={executionStatusFilter}
-                onChange={(event) => setExecutionStatusFilter(event.target.value)}
-                aria-label="Filter executions by status"
-              >
-                <option value="">All statuses</option>
-                {[...new Set(executions.map((execution) => execution.status))].map((status) => <option key={status}>{status}</option>)}
-              </select>
-              <Filter className="h-4 w-4 text-muted" />
-            </div>
-          </CardHeader>
-          {!executionsWithIds.length && (
-            <p className="mt-4 rounded-xl bg-background/60 px-3 py-2 text-xs text-muted">
-              No real order IDs exist yet. Saved dry-run records remain visible below.
-            </p>
-          )}
-          {filteredExecutions.length ? (
-            <div className="mt-5 overflow-x-auto">
-              <table className="w-full min-w-[750px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <tr>{["Order ID", "Symbol", "Status", "Details", "Run", "Time"].map((heading) => <th key={heading} className="pb-3 pr-4 font-medium">{heading}</th>)}</tr>
-                </thead>
-                <tbody>
-                  {filteredExecutions.map((execution) =>
-                    (execution.orders.length ? execution.orders : [{}]).map((order, index) => (
-                      <tr key={`${execution.execution_id}-${index}`} className="border-t border-white/[0.05] text-muted">
-                        <td className="py-3 pr-4 font-mono text-foreground">{textValue(order.id ?? order.exchange_order_id, execution.status === "dry_run" ? "dry_run" : "—")}</td>
-                        <td className="py-3 pr-4">{execution.symbol}</td>
-                        <td className="py-3 pr-4"><StatusBadge status={String(order.status ?? execution.status)} /></td>
-                        <td className="py-3 pr-4">{textValue(order.side)} {order.filled ? `· ${String(order.filled)} filled` : ""}</td>
-                        <td className="max-w-40 truncate py-3 pr-4 font-mono">{execution.run_id}</td>
-                        <td className="py-3">{orderTime(order.timestamp)}</td>
-                      </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : executions.length ? (
-            <div className="mt-5"><EmptyState title="No executions match these filters" body="Change the symbol or status filter to see saved executions." /></div>
-          ) : (
-            <div className="mt-5"><EmptyState title="No executions saved" body="Framework order attempts will appear here when an execution step is recorded." /></div>
-          )}
-          {executions.length > 0 && <div className="mt-4"><RawSection title="Execution JSON" value={executions} /></div>}
-        </Card>
+      <div className="mx-auto max-w-3xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-muted">{openPositions.length} open</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="h-7 rounded-full bg-transparent px-2 text-[11px] text-muted"
+              value={symbolFilter}
+              onChange={(event) => setSymbolFilter(event.target.value)}
+              aria-label="Filter positions by symbol"
+            >
+              <option value="">All symbols</option>
+              {availableSymbols.map((symbol) => <option key={symbol}>{symbol}</option>)}
+            </select>
+            <button type="button" className="text-[11px] text-muted hover:text-foreground" onClick={() => act("monitor", {}, "Monitor cycle started.")} disabled={busyAction === "monitor"}>
+              {busyAction === "monitor" ? "Checking" : "Check"}
+            </button>
+            <button type="button" className="text-[11px] text-negative disabled:opacity-40" onClick={submitFlatten} disabled={!selectedPositions.length || busyAction === "flatten" || data?.settings.dry_run}>
+              Flatten
+            </button>
+          </div>
+        </div>
+        {data?.settings.dry_run && (
+          <p className="mt-2 text-[11px] text-muted-foreground">Dry-run is on. Turn it off before a live flatten.</p>
+        )}
+        {rows.length ? (
+          <ul className="mt-2 divide-y divide-white/[0.04]">
+            <li className="flex items-center gap-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              <input type="checkbox" checked={allSelected} onChange={(event) => setSelectedPositions(event.target.checked ? rows.map((row) => row.run_id) : [])} aria-label="Select all positions" />
+              <span className="w-28">Symbol</span>
+              <span className="w-24">Side</span>
+              <span className="w-28">Entry</span>
+              <span className="min-w-0 flex-1">Strategy</span>
+            </li>
+            {rows.map((position) => (
+              <li key={position.run_id} className="flex items-center gap-3 py-2 text-xs">
+                <input type="checkbox" checked={selectedPositions.includes(position.run_id)} onChange={() => toggleSelection(position.run_id, selectedPositions, setSelectedPositions)} aria-label={`Select ${position.symbol} position`} />
+                <span className="flex w-28 items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol.split("/")[0]}</span>
+                <span className="w-24 capitalize text-muted">{position.side} · {position.amount}</span>
+                <span className="w-28 tabular-nums text-muted">{money(position.entry_price)}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">{textValue(position.strategy.name ?? position.strategy_key)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-8 text-center text-xs text-muted-foreground">No open positions.</p>
+        )}
+        <div className="mt-10 flex items-center justify-between gap-3">
+          <p className="text-xs text-muted">Executions</p>
+          <select
+            className="h-7 rounded-full bg-transparent px-2 text-[11px] text-muted"
+            value={executionStatusFilter}
+            onChange={(event) => setExecutionStatusFilter(event.target.value)}
+            aria-label="Filter executions by status"
+          >
+            <option value="">All statuses</option>
+            {[...new Set(executions.map((execution) => execution.status))].map((status) => <option key={status}>{status}</option>)}
+          </select>
+        </div>
+        {filteredExecutions.length ? (
+          <ul className="mt-1 divide-y divide-white/[0.04]">
+            {filteredExecutions.flatMap((execution) =>
+              (execution.orders.length ? execution.orders : [{}]).map((order, index) => (
+                <li key={`${execution.execution_id}-${index}`} className="flex items-baseline gap-3 py-2 text-xs">
+                  <span className="w-16 shrink-0 text-foreground/90">{execution.symbol.split("/")[0]}</span>
+                  <span className="w-20 shrink-0 text-muted">{textValue(order.status ?? execution.status)}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {typeof order.side === "string" ? order.side : textValue(order.id ?? order.exchange_order_id, "")}
+                  </span>
+                </li>
+              )),
+            )}
+          </ul>
+        ) : (
+          <p className="mt-6 text-center text-xs text-muted-foreground">No executions saved.</p>
+        )}
       </div>
     );
   }
 
   function renderEvents() {
     if (!allEvents.length) {
-      return <EmptyState title="No system events" body="Errors, retries, monitor actions, and run-level system events will appear here." />;
+      return <p className="py-16 text-center text-xs text-muted-foreground">No system events yet.</p>;
     }
     return (
-      <div className="mx-auto max-w-3xl space-y-2">
+      <ul className="mx-auto max-w-3xl divide-y divide-white/[0.04]">
         {allEvents.map((event) => <EventCard key={event.event_id} event={event} />)}
-      </div>
+      </ul>
     );
   }
 
@@ -1926,30 +1847,22 @@ export function Dashboard() {
                     )}
                   </div>
                   <div className="ml-auto flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={!data}
-                      onClick={() => toggleSetting("dry_run", !dryRunEnabled)}
-                      className={cn(
-                        "hidden rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors hover:bg-card disabled:opacity-50 sm:inline",
-                        dryRunEnabled ? "text-muted" : "bg-negative/10 text-negative",
-                      )}
-                      aria-label={`Toggle dry-run; currently ${dryRunEnabled ? "on" : "off"}`}
-                    >
-                      Dry run {dryRunEnabled ? "on" : "off"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!data}
-                      onClick={() => toggleSetting("kill_switch", !killSwitchEnabled)}
-                      className={cn(
-                        "hidden rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors hover:bg-card disabled:opacity-50 sm:inline",
-                        killSwitchEnabled ? "text-muted" : "bg-negative/10 text-negative",
-                      )}
-                      aria-label={`Toggle kill switch; currently ${killSwitchEnabled ? "on" : "off"}`}
-                    >
-                      Kill switch {killSwitchEnabled ? "on" : "off"}
-                    </button>
+                    <div className="hidden items-center gap-2 sm:flex">
+                      <span className={cn("text-[10px] font-medium", dryRunEnabled ? "text-muted" : "text-negative")}>Dry run</span>
+                      <Switch
+                        checked={dryRunEnabled}
+                        label={`Toggle dry-run; currently ${dryRunEnabled ? "on" : "off"}`}
+                        disabled={!data || busyAction === "toggle"}
+                        onChange={(enabled) => toggleSetting("dry_run", enabled)}
+                      />
+                      <span className={cn("text-[10px] font-medium", killSwitchEnabled ? "text-muted" : "text-negative")}>Kill switch</span>
+                      <Switch
+                        checked={killSwitchEnabled}
+                        label={`Toggle kill switch; currently ${killSwitchEnabled ? "on" : "off"}`}
+                        disabled={!data || busyAction === "toggle"}
+                        onChange={(enabled) => toggleSetting("kill_switch", enabled)}
+                      />
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
@@ -2060,71 +1973,6 @@ export function Dashboard() {
             </div>
 
             <div className="shrink-0 px-4 pb-4 sm:px-6">
-              {questions && (
-                <form
-                  className="rise-in mx-auto mb-3 max-w-3xl rounded-[28px] bg-card px-5 py-4"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void launchRun(questions.symbols, questions.timeframes, questions.equity, questions.dryRun);
-                  }}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">A few details before this starts</p>
-                      <p className="mt-1 text-xs text-muted">{questions.symbols.join("  ·  ")}</p>
-                    </div>
-                    <button type="button" onClick={() => setQuestions(null)} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:bg-white/10" aria-label="Dismiss questions">
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                  {questions.askTimeframes && (
-                    <fieldset className="mt-4">
-                      <legend className="text-[11px] font-medium text-muted">Which timeframes should the agents use?</legend>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {TIMEFRAMES.map((timeframe) => {
-                          const selected = questions.timeframes.includes(timeframe);
-                          return (
-                            <button
-                              key={timeframe}
-                              type="button"
-                              onClick={() => setQuestions((current) => current && ({
-                                ...current,
-                                timeframes: selected
-                                  ? current.timeframes.filter((item) => item !== timeframe)
-                                  : [...current.timeframes, timeframe],
-                              }))}
-                              className={cn(
-                                "rounded-full px-3 py-1 text-xs transition-colors",
-                                selected ? "bg-white/15 text-foreground" : "bg-background/60 text-muted hover:text-foreground",
-                              )}
-                            >
-                              {timeframe}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  )}
-                  {questions.askEquity && (
-                    <label className="mt-4 block">
-                      <span className="text-[11px] font-medium text-muted">How much capital should this use?</span>
-                      <Input
-                        value={questions.equity}
-                        onChange={(event) => setQuestions((current) => current && ({ ...current, equity: event.target.value }))}
-                        inputMode="decimal"
-                        placeholder="Leave blank to use the available balance"
-                        className="mt-2 rounded-2xl border-transparent bg-background/60"
-                      />
-                    </label>
-                  )}
-                  <div className="mt-4 flex justify-end">
-                    <Button type="submit" variant="primary" className="rounded-full" disabled={busyAction === "start" || !questions.symbols.length || !questions.timeframes.length}>
-                      {busyAction === "start" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                      Start {questions.symbols.length > 1 ? `${questions.symbols.length} runs` : "run"}
-                    </Button>
-                  </div>
-                </form>
-              )}
               <form
                 className="relative mx-auto flex max-w-3xl items-center gap-1 rounded-[28px] bg-[#1a1a1e] py-1.5 pl-1.5 pr-1.5"
                 onSubmit={submitCommand}
@@ -2262,6 +2110,10 @@ export function Dashboard() {
           setAccountEquity={setAccountEquity}
           dryRun={startDryRun}
           setDryRun={setStartDryRun}
+          killSwitch={killSwitchEnabled}
+          setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
+          step={startStep}
+          setStep={setStartStep}
           onClose={() => setShowStart(false)}
           onSubmit={submitStart}
           busy={busyAction === "start"}
@@ -2270,6 +2122,8 @@ export function Dashboard() {
     </div>
   );
 }
+
+const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
 
 function StartDialog({
   symbols,
@@ -2282,6 +2136,10 @@ function StartDialog({
   setAccountEquity,
   dryRun,
   setDryRun,
+  killSwitch,
+  setKillSwitch,
+  step,
+  setStep,
   onClose,
   onSubmit,
   busy,
@@ -2296,10 +2154,27 @@ function StartDialog({
   setAccountEquity: (value: string) => void;
   dryRun: boolean;
   setDryRun: (value: boolean) => void;
+  killSwitch: boolean;
+  setKillSwitch: (value: boolean) => void;
+  step: number;
+  setStep: (value: number) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   busy: boolean;
 }) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const visibleSymbols = symbols.filter((symbol) => {
+    if (!needle) return true;
+    return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
+  });
+  const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
+
+  function continueStep() {
+    if (!canContinue) return;
+    if (step < 2) setStep(step + 1);
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-md"
@@ -2311,90 +2186,192 @@ function StartDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="start-run-title"
-        onSubmit={onSubmit}
-        className="rise-in max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (step < 2) {
+            continueStep();
+            return;
+          }
+          onSubmit(event);
+        }}
+        className="rise-in flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
       >
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 id="start-run-title" className="text-lg font-semibold tracking-tight">Start a run</h2>
             <p className="mt-1 text-xs leading-5 text-muted">
-              Each market gets its own agents. New runs still pass the framework risk gates.
+              {step === 0 && "Choose the markets to test. Each one gets its own agents."}
+              {step === 1 && "Choose the candles those agents should study."}
+              {step === 2 && "Set the capital, then decide whether orders can leave the machine."}
             </p>
           </div>
           <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:bg-white/10 hover:text-foreground" aria-label="Close dialog">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <fieldset className="mt-6">
-          <legend className="text-xs font-medium text-muted">Symbols</legend>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {symbols.map((symbol) => {
-              const selected = selectedSymbols.includes(symbol);
-              return (
-                <label
-                  key={symbol}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2.5 rounded-2xl px-3 py-2.5 text-xs transition-colors",
-                    selected ? "bg-white/10" : "bg-background/40 hover:bg-white/5",
-                  )}
-                >
-                  <input type="checkbox" checked={selected} onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)} />
-                  <CoinMark symbol={symbol} small />
-                  {symbol}
-                </label>
-              );
-            })}
+        <ol className="mt-5 flex gap-2">
+          {START_STEPS.map((label, index) => {
+            const reachable = index === 0
+              || (index === 1 && selectedSymbols.length > 0)
+              || (index === 2 && selectedSymbols.length > 0 && selectedTimeframes.length > 0);
+            return (
+            <li key={label} className="min-w-0 flex-1">
+              <button
+                type="button"
+                disabled={!reachable}
+                onClick={() => setStep(index)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-[11px] font-medium transition-colors",
+                  index === step ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5",
+                  !reachable && "cursor-default hover:bg-transparent",
+                )}
+              >
+                <span className={cn("grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px]", index === step ? "bg-accent text-white" : "bg-white/10")}>
+                  {index + 1}
+                </span>
+                {label}
+              </button>
+            </li>
+            );
+          })}
+        </ol>
+
+        {step === 0 && (
+          <div className="mt-5 min-h-0">
+            <label className="relative block" htmlFor="coin-search">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              <Input
+                id="coin-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search Bitcoin, SOL, PEPE…"
+                autoFocus
+                className="rounded-2xl border-transparent bg-background/60 pl-9"
+              />
+            </label>
+            {selectedSymbols.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {selectedSymbols.map((symbol) => (
+                  <button
+                    key={symbol}
+                    type="button"
+                    onClick={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white/10 py-1 pl-1 pr-2 text-[11px]"
+                  >
+                    <CoinMark symbol={symbol} small />
+                    <span>{symbol.split("/")[0]}</span>
+                    <X className="h-3 w-3 text-muted" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 max-h-72 overflow-y-auto pr-1">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {visibleSymbols.map((symbol) => {
+                  const selected = selectedSymbols.includes(symbol);
+                  return (
+                    <label
+                      key={symbol}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2.5 rounded-2xl px-3 py-2.5 text-xs transition-colors",
+                        selected ? "bg-white/10" : "bg-background/40 hover:bg-white/5",
+                      )}
+                    >
+                      <input type="checkbox" checked={selected} onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)} />
+                      <CoinMark symbol={symbol} small />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{marketName(symbol)}</span>
+                        <span className="block text-[10px] text-muted-foreground">{symbol}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {!visibleSymbols.length && (
+                <p className="px-1 py-8 text-center text-xs text-muted">No coins match “{query.trim()}”.</p>
+              )}
+            </div>
           </div>
-        </fieldset>
-        <fieldset className="mt-5">
-          <legend className="text-xs font-medium text-muted">Timeframes</legend>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {timeframes.map((timeframe) => {
-              const selected = selectedTimeframes.includes(timeframe);
-              return (
-                <label
-                  key={timeframe}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 rounded-full px-3 py-1.5 text-xs transition-colors",
-                    selected ? "bg-accent/15 text-foreground" : "bg-background/50 text-muted",
-                  )}
-                >
-                  <input type="checkbox" className="sr-only" checked={selected} onChange={() => toggleSelection(timeframe, selectedTimeframes, setSelectedTimeframes)} />
-                  {timeframe}
-                </label>
-              );
-            })}
+        )}
+
+        {step === 1 && (
+          <fieldset className="mt-5">
+            <legend className="text-xs font-medium text-muted">Timeframes</legend>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {timeframes.map((timeframe) => {
+                const selected = selectedTimeframes.includes(timeframe);
+                return (
+                  <button
+                    key={timeframe}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => toggleSelection(timeframe, selectedTimeframes, setSelectedTimeframes)}
+                    className={cn(
+                      "rounded-full px-3 py-1.5 text-xs transition-colors",
+                      selected ? "bg-accent/15 text-foreground" : "bg-background/50 text-muted hover:text-foreground",
+                    )}
+                  >
+                    {timeframe}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-[11px] leading-5 text-muted">
+              {selectedSymbols.length} {selectedSymbols.length === 1 ? "market" : "markets"} selected. Pick every horizon the agents should compare.
+            </p>
+          </fieldset>
+        )}
+
+        {step === 2 && (
+          <div className="mt-5">
+            <label className="block text-xs font-medium text-muted" htmlFor="account-equity">Total account equity</label>
+            <Input
+              id="account-equity"
+              type="number"
+              min="0.01"
+              step="any"
+              value={accountEquity}
+              onChange={(event) => setAccountEquity(event.target.value)}
+              placeholder="Optional"
+              className="mt-2 rounded-2xl border-transparent bg-background/60"
+            />
+            <p className="mt-2 text-[11px] leading-5 text-muted">
+              Split evenly across the selected markets. Live runs use the available testnet quote balance when this is empty.
+            </p>
+            <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
+              <span>
+                <span className="block text-xs font-medium">Dry run</span>
+                <span className={cn("mt-1 block text-[11px]", dryRun ? "text-muted" : "text-negative")}>
+                  {dryRun ? "No exchange order placement." : "Guarded Bybit testnet orders can be placed."}
+                </span>
+              </span>
+              <Switch checked={dryRun} label={`Toggle dry-run; currently ${dryRun ? "on" : "off"}`} onChange={setDryRun} />
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
+              <span>
+                <span className="block text-xs font-medium">Kill switch</span>
+                <span className="mt-1 block text-[11px] text-muted">Forces order placement back to dry-run.</span>
+              </span>
+              <Switch checked={killSwitch} label={`Toggle kill switch; currently ${killSwitch ? "on" : "off"}`} onChange={setKillSwitch} />
+            </div>
           </div>
-        </fieldset>
-        <label className="mt-5 block text-xs font-medium text-muted" htmlFor="account-equity">Total account equity</label>
-        <Input
-          id="account-equity"
-          type="number"
-          min="0.01"
-          step="any"
-          value={accountEquity}
-          onChange={(event) => setAccountEquity(event.target.value)}
-          placeholder="Optional"
-          className="mt-2 rounded-2xl border-transparent bg-background/60"
-        />
-        <p className="mt-2 text-[11px] leading-5 text-muted">
-          Split evenly across the selected markets. Live runs use the available testnet quote balance when this is empty.
-        </p>
-        <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
-          <span>
-            <span className="block text-xs font-medium">Dry-run mode</span>
-            <span className={cn("mt-1 block text-[11px]", dryRun ? "text-muted" : "text-negative")}>
-              {dryRun ? "No exchange order placement." : "Guarded Bybit testnet orders can be placed."}
-            </span>
-          </span>
-          <Switch checked={dryRun} label="Start in dry-run mode" onChange={setDryRun} />
-        </div>
-        <div className="mt-6 flex justify-end gap-2">
-          <Button type="button" variant="ghost" className="rounded-full" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" className="rounded-full" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
-            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Start {selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}
+        )}
+
+        <div className="mt-6 flex justify-between gap-2">
+          <Button type="button" variant="ghost" className="rounded-full" onClick={step === 0 ? onClose : () => setStep(step - 1)}>
+            {step === 0 ? "Cancel" : "Back"}
           </Button>
+          {step < 2 ? (
+            <Button type="button" variant="primary" className="rounded-full" disabled={!canContinue} onClick={continueStep}>
+              Next
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button type="submit" variant="primary" className="rounded-full" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
+              {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Start {selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}
+            </Button>
+          )}
         </div>
       </form>
     </div>

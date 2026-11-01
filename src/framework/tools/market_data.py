@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 import ccxt
@@ -81,6 +82,37 @@ class MarketDataTools:
             asks=book.get("asks", []),
             timestamp=book.get("timestamp"),
         )
+
+    def fetch_funding_history(self, symbol: str, limit: int = 200) -> list[OHLCVBar]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if not hasattr(self.exchange, "fetch_funding_rate_history"):
+            return []
+        try:
+            rows = self.exchange.fetch_funding_rate_history(symbol, limit=limit)
+        except Exception:
+            return []
+        candles: list[OHLCVBar] = []
+        for row in rows:
+            rate = row.get("fundingRate")
+            timestamp = row.get("timestamp")
+            if not isinstance(rate, int | float) or not isinstance(timestamp, int | float):
+                continue
+            if rate <= -1:
+                continue
+            level = 1 + float(rate)
+            moment = datetime.fromtimestamp(float(timestamp) / 1000, tz=UTC)
+            candles.append(
+                OHLCVBar(
+                    timestamp=moment,
+                    open=level,
+                    high=level,
+                    low=level,
+                    close=level,
+                    volume=0,
+                )
+            )
+        return candles
 
     def fetch_recent_trades(self, symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         if limit <= 0:

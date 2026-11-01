@@ -27,14 +27,37 @@ export async function sendAction(
 }
 
 export function createStateStream(onState: (state: DashboardState) => void, onError: () => void) {
-  const stream = new EventSource(`${API_URL}/api/events`);
-  stream.onmessage = (event) => {
-    try {
-      onState(JSON.parse(event.data) as DashboardState);
-    } catch {
+  let stream: EventSource | null = null;
+  let closed = false;
+  let delay = 1000;
+  let retry: number | undefined;
+
+  const connect = () => {
+    if (closed) return;
+    stream = new EventSource(`${API_URL}/api/events`);
+    stream.onmessage = (event) => {
+      delay = 1000;
+      try {
+        onState(JSON.parse(event.data) as DashboardState);
+      } catch {
+        onError();
+      }
+    };
+    stream.onerror = () => {
       onError();
-    }
+      stream?.close();
+      if (closed) return;
+      retry = window.setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 10000);
+    };
   };
-  stream.onerror = onError;
-  return stream;
+
+  connect();
+  return {
+    close() {
+      closed = true;
+      if (retry !== undefined) window.clearTimeout(retry);
+      stream?.close();
+    },
+  };
 }

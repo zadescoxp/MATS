@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS entry_watchers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS strategy_family_memory (
+    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    family TEXT NOT NULL,
+    template_name TEXT NOT NULL,
+    regime TEXT NOT NULL,
+    net_pnl REAL NOT NULL,
+    decision TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_family_memory_lookup
+    ON strategy_family_memory(symbol, regime, created_at);
 """
 
 
@@ -187,6 +199,14 @@ class Database:
                     self.connection.execute(
                         """ALTER TABLE live_positions
                            ADD COLUMN last_bar_timestamp TEXT NOT NULL DEFAULT ''"""
+                    )
+                watcher_columns = {
+                    row["name"]
+                    for row in self.connection.execute("PRAGMA table_info(entry_watchers)")
+                }
+                if watcher_columns and "last_bar_timestamp" not in watcher_columns:
+                    self.connection.execute(
+                        "ALTER TABLE entry_watchers ADD COLUMN last_bar_timestamp TEXT"
                     )
         except BaseException:
             self.connection.close()
@@ -324,6 +344,7 @@ class Database:
         status: str | None = None,
         signal: dict[str, Any] | None = None,
         error: str | None = None,
+        last_bar: str | None = None,
     ) -> None:
         now = _now()
         with self._lock, self.connection:
@@ -331,6 +352,7 @@ class Database:
                 """UPDATE entry_watchers SET
                        status = COALESCE(?, status),
                        signal_json = COALESCE(?, signal_json),
+                       last_bar_timestamp = COALESCE(?, last_bar_timestamp),
                        last_checked_at = ?,
                        error = ?,
                        updated_at = ?
@@ -338,6 +360,7 @@ class Database:
                 (
                     status,
                     json_dumps(signal) if signal is not None else None,
+                    last_bar,
                     now,
                     error,
                     now,
@@ -359,6 +382,46 @@ class Database:
             }
             for row in rows
         ]
+
+    def record_family_result(
+        self,
+        *,
+        symbol: str,
+        family: str,
+        template_name: str,
+        regime: str,
+        net_pnl: float,
+        decision: str,
+    ) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO strategy_family_memory
+                   (symbol, family, template_name, regime, net_pnl, decision, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (symbol, family, template_name, regime, net_pnl, decision, _now()),
+            )
+
+    def recent_family_results(
+        self, symbol: str, regime: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            if regime:
+                rows = self.connection.execute(
+                    """SELECT family, template_name, regime, net_pnl, decision, created_at
+                       FROM strategy_family_memory
+                       WHERE symbol = ? AND regime = ?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (symbol, regime, limit),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    """SELECT family, template_name, regime, net_pnl, decision, created_at
+                       FROM strategy_family_memory
+                       WHERE symbol = ?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (symbol, limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def log_event(
         self,

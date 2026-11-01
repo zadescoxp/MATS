@@ -17,6 +17,7 @@ from framework.agents.data_worker import DataWorkerNode
 from framework.agents.execution import ExecutionNode
 from framework.agents.multi_timeframe_analyst import MultiTimeframeAnalystNode
 from framework.agents.position_monitor import PositionMonitor
+from framework.agents.regime import RegimeNode
 from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.agents.strategy_builder import StrategyBuilderNode
 from framework.config.settings import Settings, get_settings
@@ -83,6 +84,7 @@ class TradingFramework:
             "multi_timeframe_analyst",
             runner.wrap("multi_timeframe_analyst", MultiTimeframeAnalystNode(self.context)),
         )
+        graph.add_node("regime", runner.wrap("regime", RegimeNode(self.context)))
         graph.add_node(
             "strategy_builder", runner.wrap("strategy_builder", StrategyBuilderNode(self.context))
         )
@@ -100,9 +102,8 @@ class TradingFramework:
         graph.add_conditional_edges(
             "data_worker", lambda state: _next(state, "multi_timeframe_analyst")
         )
-        graph.add_conditional_edges(
-            "multi_timeframe_analyst", lambda state: _next(state, "strategy_builder")
-        )
+        graph.add_conditional_edges("multi_timeframe_analyst", lambda state: _next(state, "regime"))
+        graph.add_conditional_edges("regime", lambda state: _next(state, "strategy_builder"))
         graph.add_conditional_edges("strategy_builder", lambda state: _next(state, "backtest"))
         graph.add_conditional_edges("backtest", lambda state: _next(state, "critique"))
         graph.add_conditional_edges(

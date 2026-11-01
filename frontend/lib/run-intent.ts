@@ -1,13 +1,7 @@
-const BASES = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT"];
+import { COIN_SYMBOLS, marketAliases } from "@/lib/markets";
 
-const ALIASES: Record<string, string> = {
-  bitcoin: "BTC",
-  ethereum: "ETH",
-  solana: "SOL",
-  ripple: "XRP",
-  cardano: "ADA",
-  dogecoin: "DOGE",
-};
+const BASES = COIN_SYMBOLS.map((symbol) => symbol.split("/")[0]);
+const ALIASES = Object.entries(marketAliases()).sort((left, right) => right[0].length - left[0].length);
 
 const TIMEFRAME_PATTERNS: Array<[RegExp, string]> = [
   [/\b15\s*(?:m|min|mins|minute|minutes)\b/gi, "15m"],
@@ -44,8 +38,12 @@ function readSymbols(text: string): string[] {
     addSymbol(found, match[1], match[2]);
     masked = masked.replace(match[0], " ");
   }
-  for (const [alias, base] of Object.entries(ALIASES)) {
-    if (new RegExp(`\\b${alias}\\b`, "i").test(masked)) addSymbol(found, base);
+  for (const [alias, base] of ALIASES) {
+    const pattern = new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+    if (pattern.test(masked)) {
+      addSymbol(found, base);
+      masked = masked.replace(pattern, " ");
+    }
   }
   for (const base of BASES) {
     if (new RegExp(`\\b${base}\\b`, "i").test(masked)) addSymbol(found, base);

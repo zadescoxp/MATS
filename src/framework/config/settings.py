@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     retry_attempts: int = Field(default=3, ge=1, le=10)
     include_orderbook: bool = False
     include_recent_trades: bool = False
+    include_external_context: bool = True
+    include_pair_context: bool = True
     execution_timeout_seconds: float = Field(default=10, gt=0)
     execution_poll_interval_seconds: float = Field(default=1, gt=0)
 
