@@ -49,6 +49,7 @@ import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
+import { RunDiagnosisBanner } from "@/components/run-diagnosis";
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -162,6 +163,7 @@ function statusStyle(status: string): string {
     case "hold":
     case "paused":
     case "triggered":
+    case "in_position":
       return "border-accent/20 bg-accent/10 text-accent";
     default:
       return "border-border bg-foreground/[0.03] text-muted";
@@ -256,7 +258,7 @@ function equityPoints(attempt: StrategyAttempt | null) {
 function isLiveRun(run: Run, activeIds: string[], watchers: EntryWatcher[]): boolean {
   if (run.status === "running" || activeIds.includes(run.run_id)) return true;
   const watcher = watchers.find((item) => item.run_id === run.run_id);
-  return watcher?.status === "watching" || watcher?.status === "paused";
+  return ["watching", "paused", "in_position"].includes(watcher?.status ?? "");
 }
 
 function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
@@ -265,9 +267,10 @@ function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
     const step = [...run.steps].reverse().find((item) => item.status === "running") ?? run.steps.at(-1);
     return step ? `${agentName(step.agent_name)} working` : "Starting";
   }
-  if (watcher?.status === "watching") return "Watching for an entry";
-  if (watcher?.status === "paused") return "Watcher paused";
-  if (run.status === "failed") return "Needs attention";
+  if (watcher?.status === "in_position") return "Trading · position open";
+  if (watcher?.status === "watching") return "Trading · waiting for entry";
+  if (watcher?.status === "paused") return "Paused by a safety switch";
+  if (run.status === "failed") return run.diagnosis?.title ?? "Needs attention";
   if (run.status === "stopped") return "Stopped";
   if (run.status === "completed") return "Completed";
   return run.status.replaceAll("_", " ");
@@ -947,8 +950,8 @@ export function Dashboard() {
 
   async function submitStop() {
     if (!selectedRun) return;
-    if (!window.confirm("Stop this run or entry watcher and enable the kill switch?")) return;
-    await act("stop", { run_id: selectedRun.run_id }, "Stop requested; live entry watching will halt.");
+    if (!window.confirm("Stop this run and its strategy algorithm? Other runs keep trading.")) return;
+    await act("stop", { run_id: selectedRun.run_id }, "Stop requested; this strategy will stop trading.");
   }
 
   async function submitResume() {
@@ -1244,13 +1247,23 @@ export function Dashboard() {
             </div>
           </div>
         )}
+        {selectedRun.status !== "failed" && selectedRun.diagnosis && (
+          <div className="mt-4">
+            <RunDiagnosisBanner diagnosis={selectedRun.diagnosis} />
+          </div>
+        )}
         {selectedRun.status === "failed" && (
           <div className="step-failed mt-4 flex items-center justify-between gap-4 rounded-2xl bg-negative/10 px-4 py-3">
             <div className="flex items-center gap-3">
               <AlertCircle className="h-4 w-4 shrink-0 text-negative" />
-              <div>
-                <p className="text-xs font-medium">This run stopped with an error</p>
-                <p className="mt-0.5 text-[11px] text-muted">Check events, or resume when you are ready.</p>
+              <div className="min-w-0">
+                <p className="text-xs font-medium">{selectedRun.diagnosis?.title ?? "This run stopped with an error"}</p>
+                {selectedRun.diagnosis?.detail.split(" | ").map((line) => (
+                  <p key={line} className="mt-1 break-words text-[11px] leading-4 text-foreground/80">{line}</p>
+                ))}
+                <p className="mt-1 text-[11px] leading-4 text-muted">
+                  {selectedRun.diagnosis?.hint ?? "Check events, or resume when you are ready."}
+                </p>
               </div>
             </div>
             <Button size="sm" variant="ghost" className="rounded-full" disabled={resumeDisabled} onClick={submitResume}>
@@ -1365,15 +1378,17 @@ export function Dashboard() {
         {selectedEntryWatcher && (
           <section>
             <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] font-medium text-muted-foreground">Entry watcher</p>
+              <p className="text-[11px] font-medium text-muted-foreground">Strategy algorithm</p>
               <StatusBadge status={selectedEntryWatcher.status} />
             </div>
             <p className="mt-2 text-xs leading-5 text-muted">
               {selectedEntryWatcher.status === "watching"
-                ? `Checking for an entry every ${selectedEntryWatcher.interval_seconds} seconds.`
-                : selectedEntryWatcher.status === "paused"
-                  ? "Paused while dry-run or the kill switch is enabled."
-                  : selectedEntryWatcher.error ?? "No entry checks are active."}
+                ? `Checking signal, risk, and news every ${selectedEntryWatcher.interval_seconds} seconds.`
+                : selectedEntryWatcher.status === "in_position"
+                  ? `Managing the open position every ${selectedEntryWatcher.interval_seconds} seconds.`
+                  : selectedEntryWatcher.status === "paused"
+                    ? selectedEntryWatcher.error ?? "Paused while dry-run or the kill switch is enabled."
+                    : selectedEntryWatcher.error ?? "No live checks are active."}
             </p>
             {selectedEntryWatcher.signal && (
               <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
