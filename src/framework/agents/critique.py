@@ -1,7 +1,7 @@
 import json
 import logging
 
-from framework.agents.common import parse_tool_response, result_with_response, submit_tool
+from framework.agents.common import invoke_structured, result_with_response, submit_tool
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
@@ -73,12 +73,13 @@ class CritiqueNode:
                 ),
             },
         ]
-        response = self.context.llm.invoke_with_tools(
+        proposed, response = invoke_structured(
+            self.context.llm,
             messages,
-            [submit_tool("submit_critique", Critique, "Submit the backtest critique.")],
+            submit_tool("submit_critique", Critique, "Submit the backtest critique."),
+            Critique,
             self.context.settings.model_for("critic"),
         )
-        proposed = parse_tool_response(response, "submit_critique", Critique)
         if gate_issues:
             proposed = proposed.model_copy(
                 update={
