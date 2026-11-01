@@ -2684,13 +2684,14 @@ function StartDialog({
           <Button type="button" variant="ghost" className="rounded-full" onClick={step === 0 ? onClose : () => setStep(step - 1)}>
             {step === 0 ? "Cancel" : "Back"}
           </Button>
+          {/* Distinct keys stop React reusing the button, which made the Continue click submit the form. */}
           {step < 2 ? (
-            <Button type="button" variant="primary" className="rounded-full px-5" disabled={!canContinue} onClick={continueStep}>
+            <Button key="continue" type="button" variant="primary" className="rounded-full px-5" disabled={!canContinue} onClick={continueStep}>
               Continue
               <ArrowRight className="h-4 w-4" />
             </Button>
           ) : (
-            <Button type="submit" variant="primary" className="rounded-full px-5" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
+            <Button key="start" type="submit" variant="primary" className="rounded-full px-5" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
               {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               {busy ? "Starting…" : `Start ${selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}`}
             </Button>
