@@ -61,8 +61,14 @@ class MarketDataTools:
         self.settings = settings
         owns_exchange = exchange is None
         self.exchange = exchange or self._make_exchange(settings)
-        if candle_store is None and owns_exchange and settings.candle_cache_enabled:
-            candle_store = shared_candle_store(settings.candle_cache_path)
+        if candle_store is None and owns_exchange:
+            # With the cache off, an in-memory store still pages long requests past
+            # Bybit's 1000-candle limit; it just keeps nothing between runs.
+            candle_store = (
+                shared_candle_store(settings.candle_cache_path)
+                if settings.candle_cache_enabled
+                else CandleStore(":memory:")
+            )
         source = "bybit-testnet" if settings.market_data_testnet else "bybit-mainnet"
         self.candle_cache = (
             CandleCache(
