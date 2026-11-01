@@ -1877,7 +1877,12 @@ export function Dashboard() {
         <div className="flex min-h-0 flex-1">
           <section className="flex min-w-0 flex-1 flex-col">
             <div ref={feedRef} onScroll={onFeedScroll} className="min-h-0 flex-1 overflow-y-auto">
-              <header className="sticky top-0 z-20 bg-background/80 px-4 py-4 backdrop-blur-xl sm:px-6">
+              <header className="sticky top-0 z-20 overflow-hidden bg-background/80 px-4 py-4 backdrop-blur-xl sm:px-6">
+                {(busyAction === "start" || busyAction === "command") && (
+                  <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden">
+                    <div className="h-full w-1/3 bg-accent" style={{ animation: "progress-slide 1.2s ease-in-out infinite" }} />
+                  </div>
+                )}
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
@@ -2244,8 +2249,13 @@ function StartDialog({
           }
           onSubmit(event);
         }}
-        className="rise-in flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+        className="rise-in relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
       >
+        {busy && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden rounded-t-[28px]">
+            <div className="h-full w-1/3 bg-accent" style={{ animation: "progress-slide 1.2s ease-in-out infinite" }} />
+          </div>
+        )}
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 id="start-run-title" className="text-lg font-semibold tracking-tight">Start a run</h2>
