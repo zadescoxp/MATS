@@ -47,6 +47,14 @@ safety outcomes. Prompts, credentials, and raw exchange payloads are not logged.
 Set `MATS_LOG_LEVEL=DEBUG` in `.env` to include additional diagnostic details.
 CLI JSON results remain on stdout.
 
+## Critique response validation
+
+The Critique agent expects `issues` to be a list of strings. If a model returns that
+field as a stringified list (for example, `['Net PnL after fees and slippage must
+exceed 0.00.']`), the framework safely parses the list before validation. Malformed
+strings and values that do not represent a list remain validation errors rather than
+being silently accepted.
+
 ## Run and resume
 
 ```bash
