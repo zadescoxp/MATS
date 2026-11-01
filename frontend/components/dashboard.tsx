@@ -2392,13 +2392,13 @@ function StartDialog({
                           checked={selected}
                           onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)}
                           aria-label={`Select ${marketName(symbol)} (${symbol})`}
+                          style={{ borderRadius: "50%" }}
                         />
                         <CoinMark symbol={symbol} small />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-xs font-medium">{marketName(symbol)}</span>
                           <span className="mt-0.5 block text-[10px] text-muted-foreground">{symbol}</span>
                         </span>
-                        {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />}
                       </label>
                     );
                   })}
