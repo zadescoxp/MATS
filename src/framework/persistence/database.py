@@ -766,7 +766,7 @@ class Database:
             if run_id:
                 return self.connection.execute(
                     """SELECT * FROM runs WHERE run_id = ?
-                       AND status IN ('running', 'failed', 'stopped')""",
+                       AND status IN ('running', 'failed', 'stopped', 'rejected')""",
                     (run_id,),
                 ).fetchone()
             return self.connection.execute(
