@@ -126,6 +126,8 @@ export interface DashboardState {
     kill_switch: boolean;
     symbols: string[];
     timeframes: string[];
+    /** Timeframes at least one strategy template can trade. */
+    strategy_timeframes?: string[];
   };
   operations: Operation[];
   active_run_ids: string[];
