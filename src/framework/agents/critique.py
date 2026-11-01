@@ -1,4 +1,5 @@
 import json
+import logging
 
 from framework.agents.common import parse_tool_response, result_with_response, submit_tool
 from framework.core.context import AgentContext
@@ -6,6 +7,8 @@ from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
 from framework.schemas.models import Critique
 from framework.strategies.library import STRATEGY_LIBRARY
+
+logger = logging.getLogger(__name__)
 
 
 class CritiqueNode:
@@ -122,7 +125,14 @@ class CritiqueNode:
             critique.issues,
             critique.revision_instructions,
         )
-
+        logger.info(
+            "Strategy critique completed (decision=%s, issues=%d, diversity=%.2f, "
+            "regime_fit=%.2f).",
+            critique.decision,
+            len(critique.issues),
+            critique.diversity_score,
+            critique.regime_fit_score,
+        )
         updates: dict[str, object] = {"critique": critique}
         if critique.decision == "REJECT":
             if state.revision_count >= self.context.settings.max_revision_loops:
