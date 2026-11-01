@@ -95,8 +95,9 @@ npm run dev
 Open `http://localhost:3000`. The console uses `MATS_DATABASE_PATH` and the same `.env`
 settings as the CLI. API credentials remain in the Python process and are never sent to the
 browser. Dry-run and the kill switch remain enabled by default; disabling either from the
-console requires confirmation. Run stops take effect at the next agent boundary, stop any
-associated entry watcher, and enable the kill switch. Position flattening is routed through
+console requires confirmation. Stopping a run takes effect at the next agent boundary and
+stops that run's strategy algorithm; other runs keep trading. **Stop all** also enables the
+kill switch. Position flattening is routed through
 the framework, requires dry-run to be off, and remains subject to the Bybit testnet-only
 execution guard.
 
@@ -106,11 +107,23 @@ For multi-symbol live testnet batches, a supplied total account-equity value is
 split evenly across the selected symbols; if omitted, available quote-currency balances are
 fetched once and split among the selected pairs using each quote currency. Only one live
 batch can be active at a time. The CLI retains its separate sequential live-run behavior.
-After a live strategy is approved, the dashboard persists an entry watcher that rechecks
-market data and risk every 60 seconds. It places no order until the existing execution
-guards approve an actionable signal. Watchers pause while dry-run or the kill switch is on,
-are restored after an API restart (and remain paused if those safety settings are enabled),
-and can be stopped or resumed from the run controls. The live candlestick chart loads public
+After a strategy is approved in a run started with dry-run off, the dashboard runs it as a
+continuous strategy algorithm. Every 60 seconds it either manages the open position
+(stop, target, opposite signal, time stop, news-shock exit) or, when flat, re-checks the
+signal, the risk plan, and live news risk, and enters only on a new closed candle once the
+execution guards approve. Ordinary exits re-arm the strategy for its next entry; it retires
+only when its live edge fades (`MATS_EDGE_FADE_*`), it is flattened manually, or it is
+stopped. With the kill switch on, the algorithm starts paused, logs why, and resumes on its
+own when the switch is turned off. Algorithms are restored after an API restart and can be
+stopped or resumed from the run controls. Every run shows a plain-language diagnosis of why
+it failed, is paused, is waiting, or completed without a trade.
+
+Live news comes from public RSS feeds (CoinDesk, Cointelegraph, Decrypt, and a per-coin
+Google News search) plus the crypto Fear & Greed index; no API keys are needed. Headlines
+are scored for tone and shock events. A coin-specific shock from the last six hours closes
+an open long and blocks entries; market-wide shocks, bearish headline tone, and extreme
+greed only block new entries. Missing news never blocks trading.
+The live candlestick chart loads public
 history and subscribes to Bybit's public market WebSocket directly; it does not use the
 trading framework API.
 
