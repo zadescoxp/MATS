@@ -121,3 +121,36 @@ def test_exchange_keeps_ccxt_throttle_unless_configured(monkeypatch) -> None:
 
     assert "rateLimit" not in configs[0]
     assert configs[1]["rateLimit"] == 250
+
+
+def test_long_requests_page_even_with_the_cache_disabled(monkeypatch) -> None:
+    import framework.tools.market_data as module
+
+    minute = 60_000
+    start = 1_790_000_000_000 // minute * minute
+    calls: list[tuple[int, int]] = []
+
+    class Exchange:
+        def __init__(self, config) -> None:
+            pass
+
+        def set_sandbox_mode(self, enabled: bool) -> None:
+            pass
+
+        def milliseconds(self) -> int:
+            return start + 3000 * minute + 1
+
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None, params=None):
+            until = (params or {})["until"]
+            calls.append((since, until))
+            live = self.milliseconds() // minute * minute
+            opens = range(since, min(until, live) + 1, minute)
+            return [[open_ms, 1, 2, 0.5, 1.5, 3] for open_ms in list(opens)[:limit]]
+
+    monkeypatch.setattr(module.ccxt, "bybit", Exchange)
+    tools = MarketDataTools(Settings(candle_cache_enabled=False))
+
+    candles = tools.fetch_ohlcv("BTC/USDT", "1m", limit=2500).candles
+
+    assert len(candles) == 2500
+    assert len(calls) == 3  # Bybit returns at most 1000 candles per request
