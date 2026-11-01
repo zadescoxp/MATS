@@ -386,7 +386,7 @@ class Database:
     def entry_watchers(self, *, active_only: bool = False) -> list[dict[str, Any]]:
         query = "SELECT * FROM entry_watchers"
         if active_only:
-            query += " WHERE status IN ('watching', 'paused')"
+            query += " WHERE status IN ('watching', 'paused', 'in_position')"
         query += " ORDER BY created_at"
         with self._lock:
             rows = self.connection.execute(query).fetchall()
