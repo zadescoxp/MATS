@@ -60,19 +60,26 @@ orders remain constrained to Bybit testnet. Testnet OHLCV history may be very sp
 | `account_equity` | `float \| None` | Optional per-run equity override |
 
 Nodes return partial state updates; the runner validates each update against
-`GraphState`. Data is serialized as typed OHLCV lists so both SQLite checkpoints and
-LangGraph's SQLite saver can restore it without serializing DataFrame internals.
+`GraphState`. Data is serialized as typed OHLCV lists so SQLite checkpoints can restore
+it without serializing DataFrame internals.
 
 ## Persistence and resume
 
 The SQLite database has `runs`, `agent_steps`, `strategies`, `backtests`, `critiques`,
 `executions`, `live_positions`, `strategy_trades` (closed live trades, used for edge fade),
 `strategy_stops`, `strategy_family_memory`, `entry_watchers` (live algorithms),
-`system_events`, and `node_checkpoints`
-tables. LangGraph `SqliteSaver`
-stores graph-level checkpoints in the same database. The node runner stores a complete
-state checkpoint immediately before and after each node and records step inputs,
-outputs, status, token usage, cost, and traceback details.
+`system_events`, `node_checkpoints`, and `candle_series` tables. The node runner stores a
+complete state checkpoint immediately before and after each node and records step inputs,
+outputs, status, token usage, cost, and traceback details. LangGraph's own checkpointer is
+not attached: recovery only ever used these records.
+
+Candle lists are stored once. When a checkpoint or step record is written, every list of
+OHLCV bars (20 or more) is saved to `candle_series`, compressed and keyed by a hash of its
+exact JSON, and the record keeps a small `{"$candles": id, "count", "first", "last"}`
+reference (`framework.persistence.candle_series`). Reads restore the exact list, so resume
+sees byte-identical candles, including the still-forming candle the run used. Rows written
+before this change hold plain lists and read back unchanged; `mats --compact-database`
+rewrites them, drops LangGraph's old tables, and runs `VACUUM`.
 
 Step IDs are deterministic per run, node, and revision. On resume, completed steps
 return their stored outputs without calling the node or model again. Failed steps are
