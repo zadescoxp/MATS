@@ -1,8 +1,12 @@
+import logging
+from time import perf_counter
 from typing import Any
 
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
 from framework.tools.context_feed import collect_context, reference_pair
+
+logger = logging.getLogger(__name__)
 
 
 class DataWorkerNode:
@@ -13,10 +17,17 @@ class DataWorkerNode:
     def __call__(self, state: GraphState) -> dict[str, Any]:
         data: dict[str, Any] = {}
         for timeframe in state.timeframes_to_consider:
+            started_at = perf_counter()
             result = self.context.market_data.fetch_ohlcv(
                 state.symbol, timeframe, limit=self.candle_limit
             )
             data[timeframe] = result.candles
+            logger.info(
+                "Primary market data ready (timeframe=%s, candles=%d, duration=%.2fs).",
+                timeframe,
+                len(result.candles),
+                perf_counter() - started_at,
+            )
 
         ticker = self.context.market_data.fetch_realtime_ticker(state.symbol)
         market_context: dict[str, Any] = {"ticker": ticker.model_dump(mode="json")}
@@ -24,6 +35,10 @@ class DataWorkerNode:
             try:
                 market_context["external"] = collect_context(state.symbol)
             except Exception:
+                logger.warning(
+                    "External context collection failed; continuing without it.",
+                    exc_info=True,
+                )
                 market_context["external"] = {
                     "items": [],
                     "short_horizon": [],
@@ -43,6 +58,12 @@ class DataWorkerNode:
                             candle.model_dump(mode="json") for candle in candles
                         ]
                     except Exception:
+                        logger.warning(
+                            "Reference-pair candles unavailable (pair=%s, timeframe=%s).",
+                            pair,
+                            timeframe,
+                            exc_info=True,
+                        )
                         continue
                 if pair_candles:
                     market_context["pair_symbol"] = pair
@@ -52,6 +73,7 @@ class DataWorkerNode:
             try:
                 funding = fetch_funding(state.symbol)
             except Exception:
+                logger.warning("Funding history unavailable; continuing without it.", exc_info=True)
                 funding = []
             if funding:
                 market_context["funding_history"] = funding
