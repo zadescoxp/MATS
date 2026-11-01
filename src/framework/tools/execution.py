@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -7,6 +8,8 @@ import ccxt
 
 from framework.config.settings import Settings
 from framework.schemas.models import AccountBalance, OrderExecutionResult, OrderSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionTools:
@@ -57,8 +60,16 @@ class ExecutionTools:
             raise ValueError("order_type must be 'market' or 'limit'")
         if order_type == "limit" and (price is None or price <= 0):
             raise ValueError("limit orders require a positive price")
+        logger.info(
+            "Order requested (symbol=%s, side=%s, type=%s, amount=%.8g, mode=%s).",
+            symbol,
+            side,
+            order_type,
+            amount,
+            "dry-run" if dry_run else "testnet",
+        )
         if dry_run:
-            return OrderExecutionResult(
+            result = OrderExecutionResult(
                 status="dry_run",
                 orders=[
                     OrderSnapshot(
@@ -75,12 +86,15 @@ class ExecutionTools:
                 ],
                 errors=[],
             )
+            logger.info("Order simulated (status=dry_run).")
+            return result
         if not self.settings.bybit_testnet:
             raise ValueError("Live mainnet execution is disabled; Bybit testnet is required")
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
             raise ValueError("Bybit testnet API credentials are required for live execution")
 
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
+        started_at = self._monotonic()
         try:
             order = self.exchange.create_order(
                 symbol,
@@ -91,6 +105,7 @@ class ExecutionTools:
                 {"orderLinkId": link_id},
             )
         except ccxt.DuplicateOrderId:
+            logger.warning("Order idempotency key already exists; retrieving existing order.")
             order = self.exchange.fetch_order(None, symbol, {"orderLinkId": link_id})
 
         orders = [order]
@@ -121,7 +136,7 @@ class ExecutionTools:
             if status in {"partially_filled", "failed"} and self._monotonic() >= deadline
             else []
         )
-        return OrderExecutionResult(
+        result = OrderExecutionResult(
             status=status,
             orders=[_normalize_order(item, symbol) for item in orders],
             fills=current.get("trades") or [],
@@ -129,6 +144,14 @@ class ExecutionTools:
             remaining=float(current.get("remaining") or max(requested - filled, 0)),
             errors=errors,
         )
+        logger.info(
+            "Order finished (status=%s, filled=%.8g, remaining=%.8g, duration=%.2fs).",
+            result.status,
+            result.filled,
+            result.remaining,
+            self._monotonic() - started_at,
+        )
+        return result
 
     def cancel_order(self, order_id: str, symbol: str) -> OrderSnapshot:
         return _normalize_order(self.exchange.cancel_order(order_id, symbol), symbol)
@@ -151,6 +174,12 @@ class ExecutionTools:
         if side not in {"buy", "sell"}:
             raise ValueError("Protective stop side must be 'buy' or 'sell'")
         if dry_run:
+            logger.info(
+                "Protective stop simulated (symbol=%s, side=%s, trigger=%.8g).",
+                symbol,
+                side,
+                trigger_price,
+            )
             return OrderExecutionResult(
                 status="dry_run",
                 orders=[
@@ -169,6 +198,12 @@ class ExecutionTools:
             raise ValueError("Live mainnet execution is disabled; Bybit testnet is required")
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
             raise ValueError("Bybit testnet API credentials are required for live execution")
+        logger.info(
+            "Placing protective stop (symbol=%s, side=%s, trigger=%.8g).",
+            symbol,
+            side,
+            trigger_price,
+        )
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
         params = {
             "orderLinkId": link_id,
@@ -180,10 +215,12 @@ class ExecutionTools:
             order = self.exchange.create_order(symbol, "market", side, amount, None, params)
         except ccxt.DuplicateOrderId:
             order = self.exchange.fetch_order(None, symbol, {"orderLinkId": link_id})
-        return OrderExecutionResult(
+        result = OrderExecutionResult(
             status=order.get("status", "open"),
             orders=[_normalize_order(order, symbol)],
         )
+        logger.info("Protective stop response received (status=%s).", result.status)
+        return result
 
     def get_open_orders(self, symbol: str | None = None) -> list[OrderSnapshot]:
         orders = self.exchange.fetch_open_orders(symbol)
@@ -192,8 +229,9 @@ class ExecutionTools:
     def get_balance(self) -> AccountBalance:
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
             raise ValueError("Bybit API credentials are required to fetch account balance")
+        logger.info("Fetching account balance.")
         balance = self.exchange.fetch_balance()
-        return AccountBalance(
+        result = AccountBalance(
             free=balance.get("free") or {},
             used=balance.get("used") or {},
             total=balance.get("total") or {},
@@ -203,6 +241,8 @@ class ExecutionTools:
                 if key not in {"free", "used", "total", "info"} and isinstance(value, dict)
             },
         )
+        logger.info("Account balance received (currencies=%d).", len(result.total))
+        return result
 
 
 def _normalize_order(order: dict[str, Any], symbol: str) -> OrderSnapshot:

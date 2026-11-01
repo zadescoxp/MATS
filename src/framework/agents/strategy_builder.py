@@ -1,4 +1,5 @@
 import json
+import logging
 
 from framework.agents.common import parse_tool_response, result_with_response, submit_tool
 from framework.core.context import AgentContext
@@ -14,6 +15,7 @@ from framework.strategies.library import (
 from framework.strategies.regime import diagnose_regime
 
 _MAX_CANDIDATES_PER_TIMEFRAME = 5
+logger = logging.getLogger(__name__)
 
 
 class StrategyBuilderNode:
@@ -30,6 +32,11 @@ class StrategyBuilderNode:
             item for item in candidates if _strategy_key(item["strategy"]) != previous_key
         ]
         candidates = _shortlist(candidates)
+        logger.info(
+            "Measured strategy candidates (eligible=%d, timeframes=%d).",
+            len(candidates),
+            len(coverage),
+        )
         for index, item in enumerate(candidates, start=1):
             item["candidate_id"] = f"c{index}"
         diagnostics = {
@@ -179,6 +186,13 @@ class StrategyBuilderNode:
             and item["stop_loss_pct"] == strategy.stop_loss_pct
             and item["take_profit_pct"] == strategy.take_profit_pct
             and item["position_fraction"] == strategy.position_fraction
+        )
+        logger.info(
+            "Strategy selected (template=%s, timeframe=%s, match=%s, candidate=%s).",
+            strategy.template_name,
+            strategy.chosen_timeframe,
+            match,
+            diagnostics["selected_candidate"]["candidate_id"],
         )
         strategy_id = f"{state.run_id}-v{state.revision_count}"
         family = STRATEGY_LIBRARY[strategy.template_name]["family"]

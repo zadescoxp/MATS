@@ -1,7 +1,8 @@
+import ast
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OHLCVBar(BaseModel):
@@ -182,6 +183,19 @@ class Critique(BaseModel):
     diversity_score: float = Field(default=0.5, ge=0, le=1)
     regime_fit_score: float = Field(default=0.5, ge=0, le=1)
     edge_hypothesis: str = ""
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def parse_stringified_issues(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError("issues must be a list or a stringified list") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("issues must be a list or a stringified list")
+        return parsed
 
 
 class RiskAssessment(BaseModel):

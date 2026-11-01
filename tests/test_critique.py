@@ -1,12 +1,44 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from framework.agents.common import parse_tool_response
 from framework.agents.critique import CritiqueNode
 from framework.config.settings import Settings
 from framework.core.state import GraphState
 from framework.llm.client import LLMResponse, ToolCall
 from framework.persistence.database import Database
 from framework.schemas.models import BacktestReport, Critique, StrategyDefinition
+
+
+def test_critique_parses_stringified_issues_list() -> None:
+    response = LLMResponse(
+        tool_calls=[
+            ToolCall(
+                id="critique",
+                name="submit_critique",
+                arguments={
+                    "decision": "REJECT",
+                    "issues": "['Net PnL after fees and slippage must exceed 0.00.']",
+                    "rationale": "The strategy does not overcome friction.",
+                },
+            )
+        ]
+    )
+
+    parsed = parse_tool_response(response, "submit_critique", Critique)
+
+    assert parsed.issues == ["Net PnL after fees and slippage must exceed 0.00."]
+
+
+def test_critique_rejects_non_list_string_for_issues() -> None:
+    with pytest.raises(ValueError):
+        Critique(
+            decision="REJECT",
+            issues="The strategy does not overcome friction.",
+            rationale="The backtest lost money.",
+        )
 
 
 class ApprovingLLM:

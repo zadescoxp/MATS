@@ -38,6 +38,23 @@ Baseten Muse; configure an API key before starting a run. Every routed model mus
 support tool calling. Baseten calls use the OpenAI-compatible Model API at
 `https://inference.baseten.co/v1`; the Muse model ID is passed unchanged.
 
+## Backend logs
+
+The CLI and dashboard API write readable, timestamped backend logs to stderr. Logs
+include run, symbol, and agent context; stage durations and retries; market-data
+fetch summaries; LLM provider/model, usage, and tool-call summaries; and execution
+safety outcomes. Prompts, credentials, and raw exchange payloads are not logged.
+Set `MATS_LOG_LEVEL=DEBUG` in `.env` to include additional diagnostic details.
+CLI JSON results remain on stdout.
+
+## Critique response validation
+
+The Critique agent expects `issues` to be a list of strings. If a model returns that
+field as a stringified list (for example, `['Net PnL after fees and slippage must
+exceed 0.00.']`), the framework safely parses the list before validation. Malformed
+strings and values that do not represent a list remain validation errors rather than
+being silently accepted.
+
 ## Run and resume
 
 ```bash

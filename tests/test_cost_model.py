@@ -83,3 +83,26 @@ def test_run_uses_requested_capital_instead_of_the_tool_default(candles: list[OH
     assert default_report.initial_capital == 10_000
     assert sized_report.initial_capital == 25_000
     assert sized_report.final_equity == pytest.approx(default_report.final_equity * 2.5)
+
+
+def test_backtest_accepts_json_serialized_reference_pair_candles(
+    candles: list[OHLCVBar],
+) -> None:
+    strategy = StrategyDefinition(
+        name="rising trend",
+        description="Short EMA crossover test",
+        chosen_timeframe="1h",
+        entry_rule="ema_crossover",
+        exit_rule="ema_crossover",
+        fast_period=2,
+        slow_period=5,
+    )
+    serialized_pair = [candle.model_dump(mode="json") for candle in candles]
+
+    report = BacktestTool(CostAssumptions()).run(
+        strategy,
+        candles,
+        data={"1h": candles, "pair": serialized_pair},
+    )
+
+    assert report.metrics["bars"] == len(candles)

@@ -1,10 +1,14 @@
 import json
+import logging
+from time import perf_counter
 from typing import Any
 
 from litellm import completion
 from pydantic import BaseModel, Field
 
 from framework.config.settings import ModelRoute, Settings
+
+logger = logging.getLogger(__name__)
 
 
 class ToolDefinition(BaseModel):
@@ -79,7 +83,24 @@ class LLMClient:
         if route.base_url:
             kwargs["api_base"] = route.base_url
 
-        response = completion(**kwargs)
+        started_at = perf_counter()
+        logger.info(
+            "LLM request started (provider=%s, model=%s, messages=%d, tools=%s).",
+            route.provider,
+            route.model,
+            len(messages),
+            ",".join(tool.name for tool in tools),
+        )
+        try:
+            response = completion(**kwargs)
+        except Exception:
+            logger.exception(
+                "LLM request failed (provider=%s, model=%s, duration=%.2fs).",
+                route.provider,
+                route.model,
+                perf_counter() - started_at,
+            )
+            raise
         choice = response.choices[0].message
         calls: list[ToolCall] = []
         for call in choice.tool_calls or []:
@@ -92,10 +113,18 @@ class LLMClient:
             calls.append(ToolCall(id=call.id, name=call.function.name, arguments=arguments))
         usage = response.usage
         hidden = getattr(response, "_hidden_params", {}) or {}
-        return LLMResponse(
+        result = LLMResponse(
             content=choice.content,
             tool_calls=calls,
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             cost=float(hidden.get("response_cost", 0.0) or 0.0),
         )
+        logger.info(
+            "LLM response received in %.2fs (tokens=%d, cost=$%.4f, tool_calls=%s).",
+            perf_counter() - started_at,
+            result.tokens_used,
+            result.cost,
+            ",".join(call.name for call in result.tool_calls) or "none",
+        )
+        return result
