@@ -2323,6 +2323,7 @@ export function Dashboard() {
       {settingsOpen && renderSettings()}
       {showStart && (
         <StartDialog
+          strategyTimeframes={data?.settings.strategy_timeframes ?? []}
           symbols={runSymbols}
           selectedSymbols={startSymbols}
           setSelectedSymbols={setStartSymbols}
@@ -2350,7 +2351,35 @@ export function Dashboard() {
 
 const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
 
+/** Warn before a run whose timeframes cannot produce a testable strategy. */
+function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
+  if (!selected.length || !strategyTimeframes.length) return null;
+  const tradable = selected.filter((item) => strategyTimeframes.includes(item));
+  const contextOnly = selected.filter((item) => !strategyTimeframes.includes(item));
+  if (!tradable.length) {
+    return {
+      warn: true,
+      text: `No strategy template trades ${selected.join(", ")}, so the run will stop at the strategy step. Add ${strategyTimeframes.join(", ")}.`,
+    };
+  }
+  const highest = Math.max(...tradable.map((item) => TIMEFRAMES.indexOf(item)));
+  if (highest < TIMEFRAMES.indexOf("15m")) {
+    return {
+      warn: true,
+      text: "Only 5m is tradable here: few templates fit it and the multi-timeframe ones need a higher timeframe. Add 15m or 1h for a much better chance of an approved strategy.",
+    };
+  }
+  if (contextOnly.length) {
+    return {
+      warn: false,
+      text: `${contextOnly.join(", ")} will inform the analysis, but no strategy trades ${contextOnly.length === 1 ? "it" : "them"}.`,
+    };
+  }
+  return null;
+}
+
 function StartDialog({
+  strategyTimeframes,
   symbols,
   selectedSymbols,
   setSelectedSymbols,
@@ -2371,6 +2400,7 @@ function StartDialog({
   onSubmit,
   busy,
 }: {
+  strategyTimeframes: string[];
   symbols: string[];
   selectedSymbols: string[];
   setSelectedSymbols: (value: string[]) => void;
@@ -2403,6 +2433,7 @@ function StartDialog({
     return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
   });
   const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
+  const advice = timeframeAdvice(selectedTimeframes, strategyTimeframes);
 
   function continueStep() {
     if (!canContinue) return;
@@ -2651,6 +2682,18 @@ function StartDialog({
                 <Gauge className="h-4 w-4 shrink-0 text-accent" />
                 <span>{selectedSymbols.length} {selectedSymbols.length === 1 ? "market" : "markets"} will be analyzed across {selectedTimeframes.length} {selectedTimeframes.length === 1 ? "timeframe" : "timeframes"}.</span>
               </div>
+              {advice && (
+                <p
+                  role={advice.warn ? "alert" : "status"}
+                  className={cn(
+                    "mt-2 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-[11px] leading-5",
+                    advice.warn ? "border-negative/25 text-foreground/85" : "border-white/[0.06] text-muted",
+                  )}
+                >
+                  <AlertCircle className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", advice.warn ? "text-negative" : "text-muted-foreground")} />
+                  <span>{advice.text}</span>
+                </p>
+              )}
             </section>
           )}
 
