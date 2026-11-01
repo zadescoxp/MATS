@@ -69,6 +69,10 @@ class LLMClient:
             # Use Baseten's OpenAI-compatible Model API, not LiteLLM's
             # deployment-specific Baseten adapter, which routes slash IDs to /predict.
             model_name = f"openai/{route.model}"
+        elif route.provider in {"ollama", "ollama_chat"}:
+            # /api/chat supports native tool calls; LiteLLM's ollama/ route emulates them
+            # through /api/generate, which can run until the context window is full.
+            model_name = f"ollama_chat/{model_name.split('/', 1)[-1]}"
         elif route.provider != "openai" and not model_name.startswith(f"{route.provider}/"):
             model_name = f"{route.provider}/{model_name}"
         kwargs: dict[str, Any] = {
@@ -80,6 +84,9 @@ class LLMClient:
             # Local providers such as Ollama reject parallel_tool_calls; drop what they lack.
             "drop_params": True,
         }
+        if model_name.startswith("ollama_chat/"):
+            kwargs["num_ctx"] = self.settings.ollama_num_ctx
+            kwargs["max_tokens"] = self.settings.ollama_max_output_tokens
         if route.api_key:
             kwargs["api_key"] = route.api_key.get_secret_value()
         if route.base_url:
