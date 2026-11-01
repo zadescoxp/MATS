@@ -109,6 +109,13 @@ class DashboardService:
         model_id = payload.get("model_id")
         if model_id is not None and not isinstance(model_id, str):
             raise ValueError("model_id must be a string.")
+        max_attempts = payload.get("max_attempts")
+        if max_attempts is not None and (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or not 1 <= max_attempts <= 10
+        ):
+            raise ValueError("max_attempts must be an integer from 1 to 10.")
 
         with self._lock:
             if model_id:
@@ -141,6 +148,8 @@ class DashboardService:
                     "timeframes": timeframes,
                     "dashboard_batch_id": batch_id,
                 }
+                if max_attempts is not None:
+                    config["max_revision_loops"] = max_attempts - 1
                 if symbol in equity_by_symbol:
                     config["account_equity"] = equity_by_symbol[symbol]
                 elif account_equity is not None:
@@ -241,6 +250,7 @@ class DashboardService:
         *,
         account_equity: float | None = None,
         allow_parallel_live: bool = False,
+        extra_attempts: int | None = None,
     ) -> dict[str, str]:
         database = Database(self.settings.database_path)
         try:
@@ -269,6 +279,8 @@ class DashboardService:
             row = database.resumable_run(run_id)
             if row is None:
                 raise ValueError(f"No incomplete run found for run_id={run_id!r}.")
+            if row["status"] == "rejected" and extra_attempts is None:
+                raise ValueError("Choose how many more strategy attempts this run should get.")
             selected_id = str(row["run_id"])
             saved_config = json.loads(row["config_snapshot"])
             equity = account_equity
@@ -295,12 +307,17 @@ class DashboardService:
                 self._stop_events[selected_id] = stop_event
                 thread = threading.Thread(
                     target=self._resume,
-                    args=(selected_id, stop_event, equity),
+                    args=(selected_id, stop_event, equity, extra_attempts),
                     name=f"mats-resume-{selected_id[:8]}",
                     daemon=True,
                 )
                 self._threads[selected_id] = thread
                 thread.start()
+            if extra_attempts is not None:
+                return {
+                    "run_id": selected_id,
+                    "message": f"Trying {extra_attempts} more strategy attempt(s).",
+                }
             return {"run_id": selected_id, "message": "Run resume requested."}
         finally:
             database.close()
@@ -463,12 +480,18 @@ class DashboardService:
             logger.exception("Could not persist startup failure for dashboard run %s", run_id)
 
     def _resume(
-        self, run_id: str, stop_event: threading.Event, account_equity: float | None = None
+        self,
+        run_id: str,
+        stop_event: threading.Event,
+        account_equity: float | None = None,
+        extra_attempts: int | None = None,
     ) -> None:
         worker = None
         try:
             worker = TradingFramework(settings=self.settings, stop_event=stop_event)
-            result = worker.resume(run_id, account_equity=account_equity)
+            result = worker.resume(
+                run_id, account_equity=account_equity, extra_attempts=extra_attempts
+            )
             self._maybe_start_entry_watcher(run_id, result, stop_event)
         except Exception as exc:
             logger.exception("Dashboard run resume failed.", extra={"mats_run_id": run_id})
@@ -1074,7 +1097,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             run_id = payload.get("run_id")
             if run_id is not None and not isinstance(run_id, str):
                 raise ValueError("run_id must be a string.")
-            return self.service.resume(run_id)
+            extra_attempts = payload.get("extra_attempts")
+            if extra_attempts is not None and (
+                isinstance(extra_attempts, bool)
+                or not isinstance(extra_attempts, int)
+                or not 1 <= extra_attempts <= 10
+            ):
+                raise ValueError("extra_attempts must be an integer from 1 to 10.")
+            return self.service.resume(run_id, extra_attempts=extra_attempts)
         if action == "resume_all":
             return self.service.resume_all()
         if action == "monitor":
