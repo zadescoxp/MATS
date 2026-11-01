@@ -59,6 +59,7 @@ def test_llm_client_uses_openai_compatible_baseten_transport(monkeypatch) -> Non
     assert captured["api_base"] == "https://inference.baseten.co/v1"
     assert captured["tool_choice"] == "required"
     assert captured["parallel_tool_calls"] is False
+    assert captured["drop_params"] is True
 
 
 def test_shared_baseten_route_is_used_for_each_agent_role() -> None:
