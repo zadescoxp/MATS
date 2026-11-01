@@ -1,6 +1,10 @@
+import logging
+
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
 from framework.tools.cost_model import CostAssumptions
+
+logger = logging.getLogger(__name__)
 
 
 class BacktestNode:
@@ -33,5 +37,12 @@ class BacktestNode:
             report.model_dump(mode="json", exclude={"equity_curve"}),
             report.model_dump(mode="json")["equity_curve"],
             {**costs.model_dump(mode="json"), "funding_cost": 0.0},
+        )
+        logger.info(
+            "Backtest complete (trades=%d, net_pnl=%.4f, return=%.2f%%, max_drawdown=%.2f%%).",
+            report.total_trades,
+            report.net_pnl,
+            report.net_return_pct,
+            report.max_drawdown_pct,
         )
         return {"backtest_report": report}
