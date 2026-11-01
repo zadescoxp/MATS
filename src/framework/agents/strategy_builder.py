@@ -30,11 +30,14 @@ class StrategyBuilderNode:
             item for item in candidates if _strategy_key(item["strategy"]) != previous_key
         ]
         candidates = _shortlist(candidates)
+        for index, item in enumerate(candidates, start=1):
+            item["candidate_id"] = f"c{index}"
         diagnostics = {
             "minimum_bars_required": self.context.settings.min_strategy_bars,
             "timeframe_coverage": coverage,
             "eligible_candidates": [
                 {
+                    "candidate_id": item["candidate_id"],
                     "timeframe": item["strategy"].chosen_timeframe,
                     "template_name": item["strategy"].template_name,
                     "parameters": item["strategy"].parameters,
@@ -98,13 +101,14 @@ class StrategyBuilderNode:
                     "Explain the economic or statistical edge, not just the indicator rule. "
                     "Use long-horizon context for the directional bias and short-horizon "
                     "context only for timing. "
-                    "The candidate list was tested on historical candles with fees and "
-                    "slippage. Copy its template name, timeframe, parameters, filters, stop "
-                    "loss, take profit, exit rule, and position fraction exactly. "
-                    "Prefer positive net-of-cost PnL, controlled drawdown, regime fit, and a "
-                    "family that has not recently lost in this regime. "
+                    "eligible_candidates is the only set you may choose from. "
+                    "Copy one row's template_name and chosen_timeframe. "
+                    "Do not invent a template or timeframe outside that list. "
+                    "Measured parameters, stops, and the exit rule are kept when your copy "
+                    "differs. Prefer positive net-of-cost PnL, controlled drawdown, regime fit, "
+                    "and a family that has not recently lost in this regime. "
                     "Call submit_strategy exactly once. On revision, choose a different "
-                    "candidate and apply the critique instructions."
+                    "eligible row and apply the critique instructions."
                 ),
             },
             {
@@ -141,27 +145,28 @@ class StrategyBuilderNode:
                     "submit_strategy",
                     StrategyDefinition,
                     (
-                        "Submit a supported template and parameters using one measured "
-                        "candidate exactly."
+                        "Name one measured candidate by its template and timeframe. "
+                        "Parameters are replaced with the tested row."
                     ),
                 )
             ],
             self.context.settings.model_for("strategy"),
         )
-        strategy = parse_tool_response(response, "submit_strategy", StrategyDefinition)
-        selected = next(
-            (
-                item
-                for item in candidates
-                if _strategy_key(item["strategy"]) == _strategy_key(strategy)
-            ),
-            None,
-        )
-        if selected is None:
-            raise ValueError(
-                "Strategy builder selected an untested template, timeframe, or parameter set; "
-                "choose one of the supplied measured candidates."
+        submitted = parse_tool_response(response, "submit_strategy", StrategyDefinition)
+        strategy, match = _resolve_measured(submitted, candidates)
+        if match != "exact":
+            self.context.database.log_event(
+                state.run_id,
+                "strategy_selection_snapped",
+                (
+                    f"Submitted {submitted.template_name} on {submitted.chosen_timeframe} "
+                    f"did not match a measured candidate exactly. "
+                    f"Using {strategy.template_name} on {strategy.chosen_timeframe} ({match})."
+                ),
             )
+        if submitted.description.strip():
+            strategy = strategy.model_copy(update={"description": submitted.description.strip()})
+        diagnostics["selection_match"] = match
         diagnostics["selected_candidate"] = next(
             item
             for item in diagnostics["eligible_candidates"]
@@ -289,6 +294,49 @@ class StrategyBuilderNode:
             if stopped_candidates:
                 info["stopped_candidates"] = stopped_candidates
         return candidates, coverage
+
+
+def _resolve_measured(
+    submitted: StrategyDefinition, candidates: list[dict[str, object]]
+) -> tuple[StrategyDefinition, str]:
+    """Return the tested strategy the submission refers to.
+
+    Each template is measured once per timeframe. Models often change a parameter,
+    filter, or stop while naming that template, so the measured row is the strategy
+    that actually gets traded.
+    """
+    exact = [
+        item for item in candidates if _strategy_key(item["strategy"]) == _strategy_key(submitted)
+    ]
+    if exact:
+        return exact[0]["strategy"], "exact"
+    same_slot = [
+        item
+        for item in candidates
+        if item["strategy"].template_name == submitted.template_name
+        and item["strategy"].chosen_timeframe == submitted.chosen_timeframe
+    ]
+    if same_slot:
+        return _best(same_slot), "template_timeframe"
+    same_template = [
+        item for item in candidates if item["strategy"].template_name == submitted.template_name
+    ]
+    if same_template:
+        return _best(same_template), "template"
+    family = STRATEGY_LIBRARY.get(submitted.template_name, {}).get("family")
+    if family:
+        same_family = [
+            item
+            for item in candidates
+            if STRATEGY_LIBRARY[item["strategy"].template_name]["family"] == family
+        ]
+        if same_family:
+            return _best(same_family), "family"
+    return _best(candidates), "best_measured"
+
+
+def _best(candidates: list[dict[str, object]]) -> StrategyDefinition:
+    return max(candidates, key=lambda item: item["net_pnl"])["strategy"]
 
 
 def _strategy_key(
