@@ -1,8 +1,12 @@
+import logging
+
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
 from framework.schemas.models import LiveSignal, RiskAssessment
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
+
+logger = logging.getLogger(__name__)
 
 
 class RiskAssessmentNode:
@@ -78,5 +82,15 @@ class RiskAssessmentNode:
             max_concurrent_exposure=notional / equity,
             stop_price=stop_price,
             account_constraints=constraints,
+        )
+        logger.info(
+            "Risk plan assessed (signal=%s, approved=%s, size=%.8g, notional=%.4f, "
+            "risk=%.4f, equity_source=%s).",
+            signal.action,
+            assessment.approved,
+            assessment.position_size,
+            assessment.position_notional,
+            assessment.risk_amount,
+            equity_source,
         )
         return {"risk_assessment": assessment, "live_signal": signal}
