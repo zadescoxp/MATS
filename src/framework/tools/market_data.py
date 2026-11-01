@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 from framework.config.settings import Settings
 from framework.schemas.models import OHLCVBar
+from framework.tools.candle_store import CandleCache, CandleStore, timeframe_ms
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +93,23 @@ class MarketDataTools:
             raise ValueError("limit must be positive")
         started_at = perf_counter()
         logger.info("Fetching candles (timeframe=%s, limit=%d).", timeframe, limit)
+        cached = self.candle_cache is not None and timeframe_ms(timeframe) is not None
         try:
-            rows = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if cached:
+                rows, report = self.candle_cache.latest(symbol, timeframe, limit)
+            else:
+                rows = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         except Exception:
             logger.exception("Candle request failed (timeframe=%s).", timeframe)
             raise
+        if cached:
+            logger.info(
+                "Candle cache sync (timeframe=%s, requests=%d, downloaded=%d, gaps=%d).",
+                timeframe,
+                report.requests,
+                report.stored,
+                report.gaps,
+            )
         candles = [OHLCVBar.from_ccxt(row) for row in rows]
         if any(
             left.timestamp >= right.timestamp
@@ -109,6 +123,16 @@ class MarketDataTools:
             timeframe,
         )
         return OHLCVResult(symbol=symbol, timeframe=timeframe, candles=candles)
+
+    def _fetch_page(
+        self, symbol: str, timeframe: str, since: int, until: int, limit: int
+    ) -> list[list[float]]:
+        return self.exchange.fetch_ohlcv(
+            symbol, timeframe=timeframe, since=since, limit=limit, params={"until": until}
+        )
+
+    def _now_ms(self) -> int:
+        return int(self.exchange.milliseconds())
 
     def fetch_realtime_ticker(self, symbol: str) -> TickerSnapshot:
         started_at = perf_counter()
