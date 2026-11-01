@@ -77,6 +77,8 @@ class LLMClient:
             "tools": [tool.openai_schema() for tool in tools],
             "tool_choice": "required",
             "parallel_tool_calls": False,
+            # Local providers such as Ollama reject parallel_tool_calls; drop what they lack.
+            "drop_params": True,
         }
         if route.api_key:
             kwargs["api_key"] = route.api_key.get_secret_value()
