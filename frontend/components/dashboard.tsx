@@ -389,8 +389,8 @@ function CoinMark({ symbol, small = false }: { symbol: string; small?: boolean }
     XLM: "https://cryptologos.cc/logos/stellar-xlm-logo.png",
     KAS: "https://cryptologos.cc/logos/kaspa-kas-logo.png",
     ORDI: "https://cryptologos.cc/logos/ordi-ordi-logo.png",
-    WLD: "https://cryptologos.cc/logos/worldcoin-wld-logo.png",
-    FET: "https://cryptologos.cc/logos/fetch-ai-fet-logo.png",
+    WLD: "https://coin-images.coingecko.com/coins/images/31069/small/worldcoin.jpeg?1696529903",
+    FET: "https://coin-images.coingecko.com/coins/images/5681/small/ASI.png?1719827289",
   };
   const logo = logos[base];
   const [failedLogo, setFailedLogo] = useState<string | null>(null);
