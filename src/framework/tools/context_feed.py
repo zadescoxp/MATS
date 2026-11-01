@@ -1,12 +1,15 @@
 """External context grouped by how long it should influence a trade."""
 
 import json
+import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
 _USER_AGENT = "MATS research context feed"
+logger = logging.getLogger(__name__)
 _COIN_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
@@ -68,6 +71,7 @@ def classify_horizon(title: str, source: str) -> str:
 
 
 def collect_context(symbol: str) -> dict[str, Any]:
+    started_at = time.perf_counter()
     tasks = {
         "sentiment": lambda: _sentiment(),
         "news": lambda: _news(symbol),
@@ -89,14 +93,24 @@ def collect_context(symbol: str) -> dict[str, Any]:
                 items.extend(future.result())
             except Exception:
                 errors.append(name)
+                logger.warning("External context source failed (source=%s).", name, exc_info=True)
     short_horizon = [item for item in items if item["horizon"] == "short"]
     long_horizon = [item for item in items if item["horizon"] == "long"]
-    return {
+    result = {
         "items": items,
         "short_horizon": short_horizon[:8],
         "long_horizon": long_horizon[:8],
         "unavailable_sources": errors,
     }
+    if errors:
+        logger.warning("External context unavailable (sources=%s).", ", ".join(errors))
+    logger.info(
+        "External context collected in %.2fs (items=%d, unavailable=%d).",
+        time.perf_counter() - started_at,
+        len(items),
+        len(errors),
+    )
+    return result
 
 
 def _sentiment() -> list[dict[str, str]]:
