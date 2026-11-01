@@ -1,4 +1,5 @@
 import math
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -13,7 +14,7 @@ from framework.schemas.models import (
     StrategyDefinition,
     TradeRecord,
 )
-from framework.strategies.signals import evaluate_live_signal
+from framework.strategies.signals import LIVE_SIGNAL_BARS, evaluate_live_signal
 from framework.tools.cost_model import CostAssumptions, reprice_trade_list
 
 
@@ -60,8 +61,16 @@ class BacktestTool:
             raise ValueError("Candles must be time-ordered")
 
         all_candles = {
-            timeframe: [_normalize_candle(candle) for candle in series]
+            timeframe: sorted(
+                (_normalize_candle(candle) for candle in series),
+                key=lambda candle: candle.timestamp,
+            )
             for timeframe, series in (data or {strategy.chosen_timeframe: candles}).items()
+            if timeframe != strategy.chosen_timeframe
+        }
+        timestamps = {
+            timeframe: [candle.timestamp for candle in series]
+            for timeframe, series in all_candles.items()
         }
         signals = [
             LiveSignal(
@@ -71,17 +80,17 @@ class BacktestTool:
                 price=candles[0].close,
             )
         ]
+        window = LIVE_SIGNAL_BARS
         for index in range(1, len(candles)):
             as_of = candles[index].timestamp
-            available_data = {
-                timeframe: [
-                    item
-                    for item in series
-                    if timeframe == strategy.chosen_timeframe or item.timestamp <= as_of
-                ]
-                for timeframe, series in all_candles.items()
-            }
-            available_data[strategy.chosen_timeframe] = candles[: index + 1]
+            # Each bar sees what live trading would: the trailing window of every series,
+            # with no candle from after this bar.
+            available_data = {}
+            for timeframe, series in all_candles.items():
+                end = bisect_right(timestamps[timeframe], as_of)
+                available_data[timeframe] = series[max(0, end - window) : end]
+            start = max(0, index + 1 - window)
+            available_data[strategy.chosen_timeframe] = candles[start : index + 1]
             signals.append(evaluate_live_signal(strategy, available_data))
         cash = capital
         position: dict[str, Any] | None = None
