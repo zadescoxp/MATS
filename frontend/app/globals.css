@@ -4,17 +4,17 @@
 
 :root {
   color-scheme: dark;
-  --background: #0c0c0e;
-  --surface: #141416;
-  --card: #1a1a1e;
-  --card-hover: #222226;
-  --border: #2a2a2e;
-  --foreground: #f5f5f6;
-  --muted: #a1a1aa;
-  --muted-foreground: #71717a;
-  --accent: #3b82f6;
-  --positive: #34d399;
-  --negative: #f87171;
+  --background: #0a0a0b;
+  --surface: #111113;
+  --card: #161618;
+  --card-hover: #1c1c1f;
+  --border: #242427;
+  --foreground: #ededef;
+  --muted: #a1a1a9;
+  --muted-foreground: #6e6e77;
+  --accent: #6b78e5;
+  --positive: #4cc38a;
+  --negative: #e5686b;
 }
 
 * {
@@ -33,8 +33,17 @@ body {
   font-family: var(--font-interface), sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  letter-spacing: -0.006em;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.018em;
 }
 
 button,
@@ -63,7 +72,7 @@ input[type="checkbox"]:checked {
 input,
 select,
 textarea {
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 button,
@@ -95,8 +104,18 @@ a:focus-visible,
   box-shadow: none !important;
 }
 
+/* Keyboard users get a quiet ring; mouse focus stays clean. */
+:where(button, a, summary, [role="separator"], [role="switch"], [tabindex]):focus-visible {
+  outline: 1px solid rgba(237, 237, 239, 0.45) !important;
+  outline-offset: 2px !important;
+}
+
+:where(input, select, textarea):focus-visible {
+  border-color: rgba(237, 237, 239, 0.28) !important;
+}
+
 ::selection {
-  background: var(--accent);
+  background: rgba(107, 120, 229, 0.35);
   color: var(--foreground);
 }
 
@@ -108,7 +127,11 @@ a:focus-visible,
 ::-webkit-scrollbar-thumb {
   border: 2px solid var(--background);
   border-radius: 999px;
-  background: var(--border);
+  background: #2a2a2e;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a3f;
 }
 
 ::-webkit-scrollbar-track {
@@ -144,13 +167,13 @@ code,
 }
 
 .rise-in {
-  animation: rise-in 0.45s ease both;
+  animation: rise-in 0.28s cubic-bezier(0.2, 0, 0, 1) both;
 }
 
 @keyframes rise-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(3px);
   }
   to {
     opacity: 1;
@@ -169,7 +192,7 @@ code,
   height: 4px;
   border-radius: 999px;
   background: currentColor;
-  animation: think-bounce 1.15s infinite ease-in-out;
+  animation: think-fade 1.2s infinite ease-in-out;
 }
 
 .think-dots span:nth-child(2) {
@@ -180,71 +203,36 @@ code,
   animation-delay: 0.3s;
 }
 
+/* In-progress text breathes gently instead of shimmering. */
 .text-shimmer {
-  background-image: linear-gradient(100deg, #6b6b73 0%, #f5f5f6 45%, #6b6b73 80%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: text-shimmer 1.7s linear infinite;
+  color: var(--muted);
+  animation: breathe 1.8s ease-in-out infinite;
 }
 
-@keyframes text-shimmer {
-  0% {
-    background-position: 120% 0;
-  }
-  100% {
-    background-position: -120% 0;
+@keyframes breathe {
+  50% {
+    opacity: 0.55;
   }
 }
 
-@keyframes think-bounce {
+@keyframes think-fade {
   0%,
   80%,
   100% {
-    transform: translateY(0);
-    opacity: 0.3;
+    opacity: 0.25;
   }
   40% {
-    transform: translateY(-3px);
-    opacity: 1;
+    opacity: 0.9;
   }
 }
 
+/* A running step is marked by a hairline, not a moving sheen. */
 .step-running {
-  background-image: linear-gradient(
-    100deg,
-    transparent 20%,
-    rgba(255, 255, 255, 0.035) 50%,
-    transparent 80%
-  );
-  background-size: 220% 100%;
-  animation: sheen 2.8s ease-in-out infinite;
-}
-
-@keyframes sheen {
-  0% {
-    background-position: 120% 0;
-  }
-  100% {
-    background-position: -120% 0;
-  }
+  box-shadow: inset 0 0 0 1px rgba(107, 120, 229, 0.22);
 }
 
 .step-failed {
-  animation: fail-in 0.55s ease both;
-}
-
-@keyframes fail-in {
-  0% {
-    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0);
-  }
-  40% {
-    box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.12);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0);
-  }
+  box-shadow: inset 0 0 0 1px rgba(229, 104, 107, 0.2);
 }
 
 .progress-rail {
@@ -261,7 +249,8 @@ code,
   bottom: 0;
   left: 0;
   width: 35%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background: var(--accent);
+  opacity: 0.7;
   animation: progress-slide 1.6s ease-in-out infinite;
 }
 
