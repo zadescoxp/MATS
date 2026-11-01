@@ -193,6 +193,7 @@ uv run mats --resume RUN_ID --extra-attempts 2     # more attempts for a rejecte
 uv run mats --loop --interval 60                   # repeated polling cycles
 uv run mats --monitor-open-positions               # one exit check for open positions
 uv run mats --symbol BTC/USDT --reset-stopped-strategies
+uv run mats --compact-database                     # one-off shrink of an older state.db
 ```
 
 Research and dry-run symbols run concurrently (two at a time by default). Live testnet
@@ -246,6 +247,19 @@ For static inspection without the API, open [`frontend/dashboard.html`](./fronte
 in a browser and choose a SQLite database file; it reads the file locally (its SQLite reader
 loads from a CDN).
 
+## Storage
+
+Runs, agent steps, checkpoints, positions, and events live in `data/state.db`. Each run's
+candles are stored once, compressed, and every checkpoint and step record refers to them,
+so a run adds about 1.3 MB instead of about 18 MB. Databases created before this change
+can be shrunk once (stop `mats-web` first; consider copying the file as a backup):
+
+```bash
+uv run mats --compact-database
+```
+
+A 590 MB database compacted to 44 MB this way, with every run's restored state unchanged.
+
 ## Troubleshooting
 
 | Console message | Meaning and fix |
@@ -263,9 +277,6 @@ and raw exchange payloads are never logged.
 
 ## Known limitations
 
-- **Database size:** every node checkpoint stores the run's full candle history, so
-  `data/state.db` grows by several megabytes per run. Moving candles to the candle cache by
-  reference is planned.
 - **History depth:** runs use 500 candles per timeframe, which is short for 5m strategies.
 - **Spot only:** no margin, borrowing, or derivatives; shorts are simulation-only.
 - **Testnet only:** mainnet execution is deliberately disabled.
