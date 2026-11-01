@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     max_account_exposure: float = Field(default=0.25, gt=0, le=1)
     edge_fade_lookback: int = Field(default=10, ge=1)
     edge_fade_min_expectancy: float = 0.0
+    edge_fade_min_trades: int = Field(default=3, ge=1)
     allow_short: bool = False
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
     exchange_rate_limit_ms: int = Field(default=1000, ge=0)
