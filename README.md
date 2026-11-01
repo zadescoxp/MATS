@@ -134,8 +134,12 @@ Public market history is fetched from Bybit mainnet by default, while the execut
 adapter remains on Bybit testnet. Set `MATS_MARKET_DATA_TESTNET=true` only when
 intentionally using the sparse testnet candle history.
 
-Each symbol gets at most three strategy attempts total: one initial candidate and up to
-two critique-guided revisions (`MATS_MAX_REVISION_LOOPS=2`). Before spending a strategy
+Each symbol gets three strategy attempts by default: one initial candidate and up to
+two critique-guided revisions (`MATS_MAX_REVISION_LOOPS=2`). A run can set its own limit with
+the console's **Strategy attempts** option or `mats --max-attempts N`. When the critique
+refuses every attempt, the run ends as `rejected`, which is a notice, not an error. The
+console then offers to try two more attempts on the same run, change its settings, or
+dismiss it; from the CLI use `mats --resume RUN_ID --extra-attempts N`. Before spending a strategy
 call, the builder measures supported EMA candidates across configured timeframes using
 the available bars and actual fee/slippage settings. It only offers candidates with
 enough history and trades, with the selected stop/take-profit settings held to the
