@@ -85,7 +85,7 @@ def test_execution_places_and_persists_testnet_order_and_protective_stop() -> No
         database.close()
 
 
-def test_monitor_flattens_stopped_strategy_and_prevents_reentry() -> None:
+def test_monitor_closes_position_records_trade_and_rearms_strategy() -> None:
     settings, database, market, execution = _setup()
     try:
         database.create_run("run-monitor", "BTC/USDT", {})
@@ -100,56 +100,74 @@ def test_monitor_flattens_stopped_strategy_and_prevents_reentry() -> None:
         ]
 
         decisions = PositionMonitor(context)()
-        assert decisions[0]["action"] == "strategy_stopped"
+        assert decisions[0]["action"] == "position_closed"
         assert decisions[0]["exchange_order_ids"] == ["exchange-3"]
-        position = database.open_positions("BTC/USDT")
-        assert position == []
-        assert database.strategy_stop_reason(
-            "BTC/USDT",
-            database.connection.execute(
-                "SELECT strategy_key FROM live_positions WHERE run_id = ?",
-                ("run-monitor",),
-            ).fetchone()["strategy_key"],
-        )
+        assert database.open_positions("BTC/USDT") == []
+        trades = database.strategy_trades("run-monitor")
+        assert len(trades) == 1
+        assert trades[0]["reason"].startswith("exit condition met")
+        strategy_key = trades[0]["strategy_key"]
+        assert database.strategy_stop_reason("BTC/USDT", strategy_key) is None
         run = database.connection.execute(
             "SELECT status FROM runs WHERE run_id = ?", ("run-monitor",)
         ).fetchone()
-        assert run["status"] == "stopped"
+        assert run["status"] != "stopped"
+    finally:
+        database.close()
 
-        database.create_run("run-resume", "BTC/USDT", {})
-        resumed_state = _approved_state("run-resume", market.candles)
-        resumed = ExecutionNode(context)(resumed_state)
-        assert resumed["execution_result"].status == "hold"
-        assert "previously stopped" in resumed["execution_result"].execution_result
+
+def test_edge_fade_expectancy_forces_flatten_and_stops_strategy() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-edge-fade", "BTC/USDT", {})
+        ExecutionNode(context)(_approved_state("run-edge-fade", market.candles))
+        position = database.open_positions("BTC/USDT")[0]
+        assert PositionMonitor(context).edge_fade_reason(position["strategy_key"]) is None
+        for _ in range(settings.edge_fade_min_trades):
+            database.record_closed_trade(
+                run_id="run-edge-fade",
+                symbol="BTC/USDT",
+                strategy_key=position["strategy_key"],
+                side="long",
+                amount=0.1,
+                entry_price=120,
+                exit_price=115,
+                net_pnl=-0.5,
+                reason="negative prior result",
+            )
+
+        decision = PositionMonitor(context)()[0]
+        assert decision["action"] == "edge_fade_exit"
+        assert "edge faded" in decision["reason"]
+        assert database.open_positions("BTC/USDT") == []
+        assert database.strategy_stop_reason("BTC/USDT", position["strategy_key"])
         assert execution.exchange.order_count == 3
     finally:
         database.close()
 
 
-def test_edge_fade_expectancy_forces_flatten() -> None:
-    settings, database, market, execution = _setup()
+def test_single_losing_trade_does_not_count_as_edge_fade() -> None:
+    settings, database, _market, _execution = _setup()
     try:
-        context = _context(settings, database, market, execution)
-        database.create_run("run-prior", "BTC/USDT", {})
-        ExecutionNode(context)(_approved_state("run-prior", market.candles))
-        prior = database.open_positions("BTC/USDT")[0]
-        database.update_live_position(
-            "run-prior",
-            status="closed",
-            event_type="test_close",
-            reason="negative prior result",
-            bars_held=1,
+        database.create_run("run-one-loss", "BTC/USDT", {})
+        database.record_closed_trade(
+            run_id="run-one-loss",
+            symbol="BTC/USDT",
+            strategy_key="key-1",
+            side="long",
+            amount=0.1,
+            entry_price=120,
+            exit_price=115,
             net_pnl=-0.5,
+            reason="stop loss",
         )
-
-        database.create_run("run-edge-fade", "BTC/USDT", {})
-        ExecutionNode(context)(_approved_state("run-edge-fade", market.candles))
-        decision = PositionMonitor(context)()[0]
-        assert decision["action"] == "edge_fade_exit"
-        assert "edge faded" in decision["reason"]
-        assert database.open_positions("BTC/USDT") == []
-        assert database.strategy_stop_reason("BTC/USDT", prior["strategy_key"])
-        assert execution.exchange.order_count == 5
+        assert (
+            database.recent_strategy_expectancy(
+                "key-1", 10, min_trades=settings.edge_fade_min_trades
+            )
+            is None
+        )
     finally:
         database.close()
 
