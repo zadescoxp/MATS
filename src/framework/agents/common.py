@@ -1,3 +1,5 @@
+import ast
+import json
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -23,7 +25,42 @@ def parse_tool_response(response: LLMResponse, tool_name: str, model: type[Model
         raise ValueError(
             f"Model returned conflicting {tool_name!r} tool calls; refusing ambiguous output"
         )
-    return model.model_validate(arguments)
+    return model.model_validate(_decode_stringified_containers(arguments, model))
+
+
+def _decode_stringified_containers(
+    arguments: dict[str, Any], model: type[BaseModel]
+) -> dict[str, Any]:
+    """Undo a common small-model habit of sending lists or objects as JSON strings.
+
+    Only fields whose schema is a list or object are decoded, and only when the string
+    parses to that container; everything is still validated by the Pydantic model.
+    """
+    properties = model.model_json_schema().get("properties", {})
+    decoded = dict(arguments)
+    for name, value in arguments.items():
+        if not isinstance(value, str) or not _expects_container(properties.get(name, {})):
+            continue
+        parsed = _parse_container(value)
+        if parsed is not None:
+            decoded[name] = parsed
+    return decoded
+
+
+def _expects_container(schema: dict[str, Any]) -> bool:
+    options = [schema, *schema.get("anyOf", [])]
+    return any(option.get("type") in {"array", "object"} for option in options)
+
+
+def _parse_container(text: str) -> list[Any] | dict[str, Any] | None:
+    for parse in (json.loads, ast.literal_eval):
+        try:
+            parsed = parse(text.strip())
+        except (ValueError, SyntaxError, TypeError):
+            continue
+        if isinstance(parsed, list | dict):
+            return parsed
+    return None
 
 
 def result_with_response(
