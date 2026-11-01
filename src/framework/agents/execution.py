@@ -128,6 +128,14 @@ class ExecutionNode:
             }
 
         side = "buy" if signal.action == "long" else "sell"
+        self.context.database.log_event(
+            state.run_id,
+            "algorithm_order",
+            (
+                f"Bar {data[state.strategy.chosen_timeframe][-1].timestamp.isoformat()} "
+                f"action={signal.action} amount={amount:.8g}. Placing one order."
+            ),
+        )
         outcome = self.context.execution.place_order(
             state.symbol,
             side,
