@@ -35,20 +35,54 @@ class OrderBookSnapshot(BaseModel):
     timestamp: int | None = None
 
 
+_SHARED_STORES: dict[str, CandleStore] = {}
+_SHARED_STORES_LOCK = threading.Lock()
+
+
+def shared_candle_store(path: Any) -> CandleStore:
+    """One connection per cache file, shared by every run and watcher in this process."""
+    key = str(path)
+    with _SHARED_STORES_LOCK:
+        if key not in _SHARED_STORES:
+            _SHARED_STORES[key] = CandleStore(path)
+        return _SHARED_STORES[key]
+
+
 class MarketDataTools:
-    def __init__(self, settings: Settings, exchange: Any | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        exchange: Any | None = None,
+        *,
+        candle_store: CandleStore | None = None,
+    ):
         self.settings = settings
+        owns_exchange = exchange is None
         self.exchange = exchange or self._make_exchange(settings)
+        if candle_store is None and owns_exchange and settings.candle_cache_enabled:
+            candle_store = shared_candle_store(settings.candle_cache_path)
+        source = "bybit-testnet" if settings.market_data_testnet else "bybit-mainnet"
+        self.candle_cache = (
+            CandleCache(
+                candle_store,
+                source,
+                self._fetch_page,
+                self._now_ms,
+                refresh_bars=settings.candle_refresh_bars,
+            )
+            if candle_store is not None
+            else None
+        )
 
     @staticmethod
     def _make_exchange(settings: Settings) -> Any:
-        exchange = ccxt.bybit(
-            {
-                "enableRateLimit": True,
-                "timeout": settings.request_timeout_ms,
-                "rateLimit": settings.exchange_rate_limit_ms,
-            }
-        )
+        config: dict[str, Any] = {
+            "enableRateLimit": True,
+            "timeout": settings.request_timeout_ms,
+        }
+        if settings.exchange_rate_limit_ms is not None:
+            config["rateLimit"] = settings.exchange_rate_limit_ms
+        exchange = ccxt.bybit(config)
         exchange.set_sandbox_mode(settings.market_data_testnet)
         return exchange
 
