@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -112,24 +113,36 @@ def supertrend(frame: pd.DataFrame, period: int = 10, multiplier: float = 3) -> 
     middle = (frame["high"] + frame["low"]) / 2
     upper = middle + multiplier * average_range
     lower = middle - multiplier * average_range
-    trend = pd.Series(np.nan, index=frame.index, dtype="float64")
-    direction = pd.Series(0, index=frame.index, dtype="int64")
+    # Plain lists instead of per-cell pandas access: the band recursion is inherently
+    # sequential, and .iloc reads and writes made this ~95% of every backtest's time.
+    close = frame["close"].astype("float64").tolist()
+    up = upper.astype("float64").tolist()
+    low = lower.astype("float64").tolist()
+    trend = [math.nan] * len(frame)
+    direction = [0] * len(frame)
     for index in range(1, len(frame)):
-        if pd.isna(upper.iloc[index]) or pd.isna(lower.iloc[index]):
+        if math.isnan(up[index]) or math.isnan(low[index]):
             continue
-        prior_direction = direction.iloc[index - 1] or 1
-        if frame["close"].iloc[index] > upper.iloc[index - 1]:
-            direction.iloc[index] = 1
-        elif frame["close"].iloc[index] < lower.iloc[index - 1]:
-            direction.iloc[index] = -1
+        prior_direction = direction[index - 1] or 1
+        if close[index] > up[index - 1]:
+            direction[index] = 1
+        elif close[index] < low[index - 1]:
+            direction[index] = -1
         else:
-            direction.iloc[index] = prior_direction
-            if direction.iloc[index] > 0:
-                lower.iloc[index] = max(lower.iloc[index], lower.iloc[index - 1])
-            else:
-                upper.iloc[index] = min(upper.iloc[index], upper.iloc[index - 1])
-        trend.iloc[index] = lower.iloc[index] if direction.iloc[index] > 0 else upper.iloc[index]
-    return pd.DataFrame({"supertrend": trend, "direction": direction})
+            direction[index] = prior_direction
+            # Same as max()/min() with the current value first: a NaN neighbour never wins.
+            if direction[index] > 0:
+                if low[index - 1] > low[index]:
+                    low[index] = low[index - 1]
+            elif up[index - 1] < up[index]:
+                up[index] = up[index - 1]
+        trend[index] = low[index] if direction[index] > 0 else up[index]
+    return pd.DataFrame(
+        {
+            "supertrend": pd.Series(trend, index=frame.index, dtype="float64"),
+            "direction": pd.Series(direction, index=frame.index, dtype="int64"),
+        }
+    )
 
 
 def vwap(frame: pd.DataFrame) -> pd.Series:
