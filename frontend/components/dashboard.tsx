@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
-  Filter,
   Gauge,
   History,
   LoaderCircle,
@@ -17,7 +16,6 @@ import {
   Paperclip,
   Play,
   Plus,
-  RefreshCw,
   Search,
   ShieldCheck,
   Square,
@@ -48,7 +46,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
 import { StructuredBrief } from "@/components/structured-brief";
@@ -72,6 +69,7 @@ const EMPTY_RUNS: Run[] = [];
 const AGENTS = [
   { id: "data_worker", name: "Data Worker", role: "Market data", persona: "/personas/data.png" },
   { id: "multi_timeframe_analyst", name: "Analyst Agent", role: "Multi-timeframe analysis", persona: "/personas/Analyst.png" },
+  { id: "regime", name: "Regime", role: "Market state", persona: "/personas/Analyst.png" },
   { id: "strategy_builder", name: "Strategy Builder", role: "Strategy design", persona: "/personas/Strategy%20Builder.png" },
   { id: "backtest", name: "Backtest Agent", role: "Backtesting", persona: "/personas/Backtester.png" },
   { id: "critique", name: "Critique Agent", role: "Quality review", persona: "/personas/Critique.png" },
@@ -140,13 +138,6 @@ function clockLabel(value: string): string {
     : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function orderTime(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return dateLabel(new Date(value).toISOString());
-  }
-  return dateLabel(typeof value === "string" ? value : null);
-}
-
 function formatDuration(start: string, finish?: string | null, now = Date.now()): string {
   const from = new Date(start).getTime();
   const to = finish ? new Date(finish).getTime() : now;
@@ -198,7 +189,8 @@ function agentWorkingLabel(agentId: string, symbol: string): string {
     initialize: "Preparing the research run",
     data_worker: "Collecting market data",
     multi_timeframe_analyst: "Reviewing market structure",
-    strategy_builder: "Building a strategy candidate",
+    regime: "Reading the market regime",
+    strategy_builder: "Choosing a strategy family",
     backtest: "Backtesting strategy performance",
     critique: "Reviewing risk-adjusted results",
     risk_assessment: "Sizing risk for the proposed trade",
@@ -219,13 +211,14 @@ function stepSummary(step: AgentStep, symbol: string): string {
       return value.trim();
     }
     if (!isObject(value) || depth > 1) return null;
-    for (const key of ["summary", "finding", "decision", "reason", "message", "action", "template_name", "name"]) {
+    for (const key of ["summary", "recommendation", "finding", "decision", "reason", "message", "action", "template_name", "name"]) {
       const summary = describe(value[key], depth + 1);
       if (summary) return summary;
     }
     return null;
   };
   const candidates = [
+    "regime",
     "analyst_findings",
     "strategy",
     "backtest_report",
@@ -535,20 +528,11 @@ function ChainOfThought({ step, symbol }: { step: AgentStep; symbol: string }) {
 function EventCard({ event }: { event: SystemEvent }) {
   const failed = /fail|error/i.test(`${event.type} ${event.message}`);
   return (
-    <article className={cn("rise-in rounded-2xl bg-card px-4 py-3", failed && "step-failed")}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className={cn("text-sm font-medium", failed && "text-negative")}>{event.type.replaceAll("_", " ")}</p>
-            {event.run_id && <span className="max-w-48 truncate font-mono text-[10px] text-muted-foreground">{event.run_id}</span>}
-          </div>
-          <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-muted">{event.message}</p>
-        </div>
-        <span className="shrink-0 text-[10px] text-muted-foreground">{dateLabel(event.timestamp)}</span>
-      </div>
-      {event.traceback && <div className="mt-3"><RawSection title="Traceback" value={event.traceback} /></div>}
-      <div className="mt-2"><RawSection title="Event JSON" value={event} /></div>
-    </article>
+    <li className="grid grid-cols-[4.5rem_minmax(0,9rem)_minmax(0,1fr)] items-baseline gap-3 py-2 text-xs">
+      <span className="text-[11px] text-muted-foreground">{clockLabel(event.timestamp)}</span>
+      <span className={cn("truncate text-foreground/80", failed && "text-negative")}>{event.type.replaceAll("_", " ")}</span>
+      <span className="truncate text-muted" title={event.message}>{event.message}</span>
+    </li>
   );
 }
 
@@ -1552,148 +1536,94 @@ export function Dashboard() {
       ...executions.map((execution) => execution.symbol),
     ])];
     const allSelected = rows.length > 0 && rows.every((position) => selectedPositions.includes(position.run_id));
-    const executionsWithIds = executions.flatMap((execution) =>
-      execution.orders.filter((order) => Boolean(order.id ?? order.exchange_order_id)).map((order) => ({ execution, order })),
-    );
     return (
-      <div className="mx-auto max-w-5xl space-y-4">
-        <Card className="p-5">
-          <CardHeader>
-            <div>
-              <CardTitle>Open positions <span className="ml-1 text-muted">({openPositions.length})</span></CardTitle>
-              <CardDescription>Persisted positions from the framework monitor.</CardDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                className="min-h-9 rounded-full bg-background px-3 text-xs text-foreground"
-                value={symbolFilter}
-                onChange={(event) => setSymbolFilter(event.target.value)}
-                aria-label="Filter positions by symbol"
-              >
-                <option value="">All symbols</option>
-                {availableSymbols.map((symbol) => <option key={symbol}>{symbol}</option>)}
-              </select>
-              <Button variant="outline" size="sm" className="rounded-full" onClick={() => act("monitor", {}, "Monitor cycle started.")} disabled={busyAction === "monitor"}>
-                {busyAction === "monitor" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                Force monitor cycle
-              </Button>
-              <Button variant="danger" size="sm" className="rounded-full" onClick={submitFlatten} disabled={!selectedPositions.length || busyAction === "flatten" || data?.settings.dry_run}>
-                <Square className="h-3.5 w-3.5" />
-                Flatten selected
-              </Button>
-            </div>
-          </CardHeader>
-          {data?.settings.dry_run && (
-            <p className="mt-4 rounded-xl bg-accent/10 px-3 py-2 text-xs text-muted">
-              Dry-run is on. Turn it off before requesting a live position flatten.
-            </p>
-          )}
-          {rows.length ? (
-            <div className="mt-5 overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <tr>
-                    <th className="pb-3 pr-3">
-                      <input type="checkbox" checked={allSelected} onChange={(event) => setSelectedPositions(event.target.checked ? rows.map((row) => row.run_id) : [])} aria-label="Select all positions" />
-                    </th>
-                    <th className="pb-3 pr-4 font-medium">Symbol</th>
-                    <th className="pb-3 pr-4 font-medium">Side / size</th>
-                    <th className="pb-3 pr-4 font-medium">Entry / stop</th>
-                    <th className="pb-3 pr-4 font-medium">Strategy</th>
-                    <th className="pb-3 pr-4 font-medium">Edge fade</th>
-                    <th className="pb-3 pr-4 font-medium">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((position) => {
-                    const edgeFade = position.events.some((event) => event.type === "edge_fade_exit");
-                    return (
-                      <tr key={position.run_id} className="border-t border-white/[0.05] text-muted">
-                        <td className="py-3 pr-3">
-                          <input type="checkbox" checked={selectedPositions.includes(position.run_id)} onChange={() => toggleSelection(position.run_id, selectedPositions, setSelectedPositions)} aria-label={`Select ${position.symbol} position`} />
-                        </td>
-                        <td className="py-3 pr-4"><span className="flex items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol}</span></td>
-                        <td className="py-3 pr-4"><span className="capitalize text-foreground">{position.side}</span><span className="ml-2 tabular-nums">{position.amount}</span></td>
-                        <td className="py-3 pr-4 tabular-nums">{money(position.entry_price)} <span className="text-muted">/ {money(position.stop_price)}</span></td>
-                        <td className="py-3 pr-4">{textValue(position.strategy.name ?? position.strategy_key)}</td>
-                        <td className="py-3 pr-4">{edgeFade ? <Badge className="border-negative/20 bg-negative/10 text-negative">Detected</Badge> : "—"}</td>
-                        <td className="py-3 pr-4"><StatusBadge status={position.status} /></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="mt-5"><EmptyState title="No open positions" body="Open positions saved by the framework will appear here. This panel never calls an exchange from the browser." /></div>
-          )}
-          {rows.length > 0 && <div className="mt-4"><RawSection title="Open position JSON" value={rows} /></div>}
-        </Card>
-        <Card className="p-5">
-          <CardHeader>
-            <div>
-              <CardTitle>Historical executions</CardTitle>
-              <CardDescription>Saved order payloads, outcomes, and related runs.</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <select
-                className="min-h-9 rounded-full bg-background px-3 text-xs text-foreground"
-                value={executionStatusFilter}
-                onChange={(event) => setExecutionStatusFilter(event.target.value)}
-                aria-label="Filter executions by status"
-              >
-                <option value="">All statuses</option>
-                {[...new Set(executions.map((execution) => execution.status))].map((status) => <option key={status}>{status}</option>)}
-              </select>
-              <Filter className="h-4 w-4 text-muted" />
-            </div>
-          </CardHeader>
-          {!executionsWithIds.length && (
-            <p className="mt-4 rounded-xl bg-background/60 px-3 py-2 text-xs text-muted">
-              No real order IDs exist yet. Saved dry-run records remain visible below.
-            </p>
-          )}
-          {filteredExecutions.length ? (
-            <div className="mt-5 overflow-x-auto">
-              <table className="w-full min-w-[750px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <tr>{["Order ID", "Symbol", "Status", "Details", "Run", "Time"].map((heading) => <th key={heading} className="pb-3 pr-4 font-medium">{heading}</th>)}</tr>
-                </thead>
-                <tbody>
-                  {filteredExecutions.map((execution) =>
-                    (execution.orders.length ? execution.orders : [{}]).map((order, index) => (
-                      <tr key={`${execution.execution_id}-${index}`} className="border-t border-white/[0.05] text-muted">
-                        <td className="py-3 pr-4 font-mono text-foreground">{textValue(order.id ?? order.exchange_order_id, execution.status === "dry_run" ? "dry_run" : "—")}</td>
-                        <td className="py-3 pr-4">{execution.symbol}</td>
-                        <td className="py-3 pr-4"><StatusBadge status={String(order.status ?? execution.status)} /></td>
-                        <td className="py-3 pr-4">{textValue(order.side)} {order.filled ? `· ${String(order.filled)} filled` : ""}</td>
-                        <td className="max-w-40 truncate py-3 pr-4 font-mono">{execution.run_id}</td>
-                        <td className="py-3">{orderTime(order.timestamp)}</td>
-                      </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : executions.length ? (
-            <div className="mt-5"><EmptyState title="No executions match these filters" body="Change the symbol or status filter to see saved executions." /></div>
-          ) : (
-            <div className="mt-5"><EmptyState title="No executions saved" body="Framework order attempts will appear here when an execution step is recorded." /></div>
-          )}
-          {executions.length > 0 && <div className="mt-4"><RawSection title="Execution JSON" value={executions} /></div>}
-        </Card>
+      <div className="mx-auto max-w-3xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-muted">{openPositions.length} open</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="h-7 rounded-full bg-transparent px-2 text-[11px] text-muted"
+              value={symbolFilter}
+              onChange={(event) => setSymbolFilter(event.target.value)}
+              aria-label="Filter positions by symbol"
+            >
+              <option value="">All symbols</option>
+              {availableSymbols.map((symbol) => <option key={symbol}>{symbol}</option>)}
+            </select>
+            <button type="button" className="text-[11px] text-muted hover:text-foreground" onClick={() => act("monitor", {}, "Monitor cycle started.")} disabled={busyAction === "monitor"}>
+              {busyAction === "monitor" ? "Checking" : "Check"}
+            </button>
+            <button type="button" className="text-[11px] text-negative disabled:opacity-40" onClick={submitFlatten} disabled={!selectedPositions.length || busyAction === "flatten" || data?.settings.dry_run}>
+              Flatten
+            </button>
+          </div>
+        </div>
+        {data?.settings.dry_run && (
+          <p className="mt-2 text-[11px] text-muted-foreground">Dry-run is on. Turn it off before a live flatten.</p>
+        )}
+        {rows.length ? (
+          <ul className="mt-2 divide-y divide-white/[0.04]">
+            <li className="flex items-center gap-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              <input type="checkbox" checked={allSelected} onChange={(event) => setSelectedPositions(event.target.checked ? rows.map((row) => row.run_id) : [])} aria-label="Select all positions" />
+              <span className="w-28">Symbol</span>
+              <span className="w-24">Side</span>
+              <span className="w-28">Entry</span>
+              <span className="min-w-0 flex-1">Strategy</span>
+            </li>
+            {rows.map((position) => (
+              <li key={position.run_id} className="flex items-center gap-3 py-2 text-xs">
+                <input type="checkbox" checked={selectedPositions.includes(position.run_id)} onChange={() => toggleSelection(position.run_id, selectedPositions, setSelectedPositions)} aria-label={`Select ${position.symbol} position`} />
+                <span className="flex w-28 items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol.split("/")[0]}</span>
+                <span className="w-24 capitalize text-muted">{position.side} · {position.amount}</span>
+                <span className="w-28 tabular-nums text-muted">{money(position.entry_price)}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">{textValue(position.strategy.name ?? position.strategy_key)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-8 text-center text-xs text-muted-foreground">No open positions.</p>
+        )}
+        <div className="mt-10 flex items-center justify-between gap-3">
+          <p className="text-xs text-muted">Executions</p>
+          <select
+            className="h-7 rounded-full bg-transparent px-2 text-[11px] text-muted"
+            value={executionStatusFilter}
+            onChange={(event) => setExecutionStatusFilter(event.target.value)}
+            aria-label="Filter executions by status"
+          >
+            <option value="">All statuses</option>
+            {[...new Set(executions.map((execution) => execution.status))].map((status) => <option key={status}>{status}</option>)}
+          </select>
+        </div>
+        {filteredExecutions.length ? (
+          <ul className="mt-1 divide-y divide-white/[0.04]">
+            {filteredExecutions.flatMap((execution) =>
+              (execution.orders.length ? execution.orders : [{}]).map((order, index) => (
+                <li key={`${execution.execution_id}-${index}`} className="flex items-baseline gap-3 py-2 text-xs">
+                  <span className="w-16 shrink-0 text-foreground/90">{execution.symbol.split("/")[0]}</span>
+                  <span className="w-20 shrink-0 text-muted">{textValue(order.status ?? execution.status)}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {typeof order.side === "string" ? order.side : textValue(order.id ?? order.exchange_order_id, "")}
+                  </span>
+                </li>
+              )),
+            )}
+          </ul>
+        ) : (
+          <p className="mt-6 text-center text-xs text-muted-foreground">No executions saved.</p>
+        )}
       </div>
     );
   }
 
   function renderEvents() {
     if (!allEvents.length) {
-      return <EmptyState title="No system events" body="Errors, retries, monitor actions, and run-level system events will appear here." />;
+      return <p className="py-16 text-center text-xs text-muted-foreground">No system events yet.</p>;
     }
     return (
-      <div className="mx-auto max-w-3xl space-y-2">
+      <ul className="mx-auto max-w-3xl divide-y divide-white/[0.04]">
         {allEvents.map((event) => <EventCard key={event.event_id} event={event} />)}
-      </div>
+      </ul>
     );
   }
 
