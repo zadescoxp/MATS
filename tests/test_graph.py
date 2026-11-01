@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from framework.agents.common import parse_tool_response
 from framework.config.settings import Settings
 from framework.core.graph import TradingFramework
@@ -273,7 +275,13 @@ def test_critic_cycle_stops_after_three_total_strategy_attempts(candles) -> None
     )
     try:
         result = framework.run("BTC/USDT")
-        assert result.status == "failed"
+        assert result.status == "rejected"
+        assert (
+            database.connection.execute(
+                "SELECT status FROM runs WHERE run_id=?", (result.run_id,)
+            ).fetchone()["status"]
+            == "rejected"
+        )
         assert llm.calls["submit_strategy"] == 3
         assert llm.calls["submit_critique"] == 3
         assert execution.dry_run_values == []
@@ -283,6 +291,48 @@ def test_critic_cycle_stops_after_three_total_strategy_attempts(candles) -> None
             (result.run_id,),
         ).fetchall()
         assert [row["version"] for row in versions] == [0, 1, 2]
+    finally:
+        framework.close()
+        database.close()
+
+
+def test_run_config_sets_its_own_attempt_limit(candles) -> None:
+    framework, database, _, llm, _execution = _framework(
+        candles,
+        max_revision_loops=2,
+        min_backtest_net_pnl=1_000_000,
+    )
+    try:
+        result = framework.run("BTC/USDT", {"max_revision_loops": 0})
+        assert result.status == "rejected"
+        assert llm.calls["submit_strategy"] == 1
+        assert "1 total attempts" in result.errors[-1]
+        with pytest.raises(ValueError, match="max_revision_loops"):
+            framework.run("BTC/USDT", {"max_revision_loops": 21})
+    finally:
+        framework.close()
+        database.close()
+
+
+def test_rejected_run_continues_with_extra_attempts(candles) -> None:
+    framework, database, _, llm, _execution = _framework(
+        candles,
+        max_revision_loops=0,
+        min_backtest_net_pnl=1_000_000,
+    )
+    try:
+        first = framework.run("BTC/USDT")
+        assert first.status == "rejected"
+        with pytest.raises(ValueError, match="extra strategy attempts"):
+            framework.resume(first.run_id)
+
+        continued = framework.resume(first.run_id, extra_attempts=2)
+
+        assert continued.status == "rejected"
+        assert llm.calls["submit_strategy"] == 3
+        assert continued.revision_count == 2
+        assert sum("attempt limit" in error for error in continued.errors) == 1
+        assert "3 total attempts" in continued.errors[-1]
     finally:
         framework.close()
         database.close()

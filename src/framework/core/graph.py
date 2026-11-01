@@ -131,7 +131,9 @@ class TradingFramework:
         self, symbol: str, config: dict[str, Any] | None = None, *, run_id: str | None = None
     ) -> GraphState:
         options = config or {}
-        unknown = set(options).difference({"timeframes", "account_equity", "dashboard_batch_id"})
+        unknown = set(options).difference(
+            {"timeframes", "account_equity", "dashboard_batch_id", "max_revision_loops"}
+        )
         if unknown:
             raise ValueError(f"Unsupported run configuration keys: {', '.join(sorted(unknown))}")
         dashboard_batch_id = options.get("dashboard_batch_id")
@@ -146,12 +148,20 @@ class TradingFramework:
             raise ValueError("timeframes must be a list of timeframe strings")
         if not symbol.strip():
             raise ValueError("symbol must not be empty")
+        max_revision_loops = options.get("max_revision_loops")
+        if max_revision_loops is not None and (
+            isinstance(max_revision_loops, bool)
+            or not isinstance(max_revision_loops, int)
+            or not 0 <= max_revision_loops <= 20
+        ):
+            raise ValueError("max_revision_loops must be an integer from 0 to 20")
         run_id = run_id or str(uuid.uuid4())
         state = GraphState(
             run_id=run_id,
             symbol=symbol,
             timeframes_to_consider=list(timeframes),
             account_equity=options.get("account_equity"),
+            max_revision_loops=max_revision_loops,
         )
         logger.info(
             "Run queued (timeframes=%s, dry_run=%s, kill_switch=%s).",
@@ -180,13 +190,20 @@ class TradingFramework:
         }
         config_snapshot["timeframes_to_consider"] = list(timeframes)
         config_snapshot["account_equity"] = options.get("account_equity")
+        config_snapshot["max_revision_loops"] = (
+            self.settings.max_revision_loops if max_revision_loops is None else max_revision_loops
+        )
         if dashboard_batch_id is not None:
             config_snapshot["dashboard_batch_id"] = dashboard_batch_id
         self.database.create_run(run_id, symbol, config_snapshot)
         return self._invoke(state, run_id)
 
     def resume(
-        self, run_id: str | None = None, *, account_equity: float | None = None
+        self,
+        run_id: str | None = None,
+        *,
+        account_equity: float | None = None,
+        extra_attempts: int | None = None,
     ) -> GraphState:
         row = self.database.resumable_run(run_id)
         if row is None:
@@ -210,6 +227,10 @@ class TradingFramework:
             ):
                 raise ValueError("account_equity must be a positive finite number")
             state = state.model_copy(update={"account_equity": account_equity})
+        if extra_attempts is not None:
+            state = _with_extra_attempts(state, extra_attempts)
+        elif state.status == "rejected":
+            raise ValueError("A rejected run can only continue with extra strategy attempts")
         self.database.update_run_status(state.run_id, "running")
         logger.info(
             "Resuming run.",
@@ -278,7 +299,9 @@ class TradingFramework:
             result = GraphState.model_validate(output)
             self.database.update_run_status(
                 run_id,
-                result.status if result.status in {"failed", "stopped"} else "completed",
+                result.status
+                if result.status in {"failed", "stopped", "rejected"}
+                else "completed",
             )
             logger.info(
                 "Run finished (status=%s, duration=%.2fs, errors=%d).",
@@ -332,18 +355,38 @@ class TradingFramework:
             self.database.close()
 
 
+def _with_extra_attempts(state: GraphState, extra_attempts: int) -> GraphState:
+    """Reopen a rejected run so the strategy builder gets more critique-guided attempts."""
+    if isinstance(extra_attempts, bool) or not 1 <= extra_attempts <= 10:
+        raise ValueError("extra_attempts must be an integer from 1 to 10")
+    hit_limit = any("attempt limit reached" in error.lower() for error in state.errors)
+    if state.status not in {"rejected", "failed"} or not hit_limit or state.critique is None:
+        raise ValueError("Only a run whose strategies were all rejected can get more attempts")
+    next_revision = state.revision_count + 1
+    return state.model_copy(
+        update={
+            "status": "running",
+            "revision_count": next_revision,
+            "max_revision_loops": min(next_revision + extra_attempts - 1, 20),
+            "errors": [
+                error for error in state.errors if "attempt limit reached" not in error.lower()
+            ],
+        }
+    )
+
+
 def _initialize(state: GraphState) -> dict[str, str]:
     return {"status": "running"}
 
 
 def _next(state: GraphState | dict[str, Any], node: str) -> str:
     current = GraphState.model_validate(state)
-    return END if current.status in {"failed", "stopped"} else node
+    return END if current.status in {"failed", "stopped", "rejected"} else node
 
 
 def _route_after_critique(state: GraphState | dict[str, Any]) -> str:
     current = GraphState.model_validate(state)
-    if current.status in {"failed", "stopped"}:
+    if current.status in {"failed", "stopped", "rejected"}:
         return END
     if current.critique is None:
         return END

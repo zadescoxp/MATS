@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_base_url: str | None = "https://inference.baseten.co/v1"
     llm_supports_tools: bool = True
+    # Ollama defaults to a ~4k-token window, which truncates agent prompts and tool schemas.
+    ollama_num_ctx: int = Field(default=16_384, ge=2_048, le=131_072)
+    ollama_max_output_tokens: int = Field(default=2_048, ge=256, le=32_768)
     dry_run: bool = True
     kill_switch: bool = True
     log_level: str = "INFO"
@@ -52,6 +55,7 @@ class Settings(BaseSettings):
     max_account_exposure: float = Field(default=0.25, gt=0, le=1)
     edge_fade_lookback: int = Field(default=10, ge=1)
     edge_fade_min_expectancy: float = 0.0
+    edge_fade_min_trades: int = Field(default=3, ge=1)
     allow_short: bool = False
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
     exchange_rate_limit_ms: int = Field(default=1000, ge=0)

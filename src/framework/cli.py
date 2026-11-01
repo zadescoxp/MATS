@@ -24,6 +24,20 @@ def main() -> None:
     parser.add_argument("--resume", nargs="?", const="", help="Resume a run (optionally by ID).")
     parser.add_argument("--timeframe", action="append", dest="timeframes")
     parser.add_argument("--account-equity", type=float)
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        choices=range(1, 21),
+        metavar="N",
+        help="Strategy attempts before a run is marked rejected (default from settings).",
+    )
+    parser.add_argument(
+        "--extra-attempts",
+        type=int,
+        choices=range(1, 11),
+        metavar="N",
+        help="With --resume RUN_ID, give a rejected run N more strategy attempts.",
+    )
     parser.add_argument("--enable-coder", action="store_true")
     parser.add_argument("--loop", action="store_true", help="Run repeated polling cycles.")
     parser.add_argument("--interval", type=float, default=60)
@@ -58,7 +72,9 @@ def main() -> None:
         if arguments.monitor_open_positions:
             print(framework.monitor_open_positions())
         elif arguments.resume is not None:
-            result = framework.resume(arguments.resume or None)
+            result = framework.resume(
+                arguments.resume or None, extra_attempts=arguments.extra_attempts
+            )
             print(result.model_dump_json(indent=2))
             if result.status == "failed":
                 exit_code = 1
@@ -91,6 +107,11 @@ def main() -> None:
                         if arguments.account_equity is not None
                         else {}
                     ),
+                    **(
+                        {"max_revision_loops": arguments.max_attempts - 1}
+                        if arguments.max_attempts is not None
+                        else {}
+                    ),
                 },
                 max_workers=arguments.workers,
             )
@@ -107,6 +128,8 @@ def main() -> None:
                 config["timeframes"] = arguments.timeframes
             if arguments.account_equity is not None:
                 config["account_equity"] = arguments.account_equity
+            if arguments.max_attempts is not None:
+                config["max_revision_loops"] = arguments.max_attempts - 1
             result = framework.run(arguments.symbols[0], config)
             print(result.model_dump_json(indent=2))
             if result.status == "failed":

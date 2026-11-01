@@ -14,7 +14,12 @@ class PositionMonitor:
     def __call__(self) -> list[dict[str, Any]]:
         return self.monitor_positions()
 
-    def monitor_positions(self, run_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    def monitor_positions(
+        self,
+        run_ids: list[str] | None = None,
+        *,
+        external_exits: dict[str, tuple[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
         positions = self.context.database.open_positions()
         if run_ids is not None:
             selected = {position["run_id"]: position for position in positions}
@@ -22,7 +27,11 @@ class PositionMonitor:
             if missing:
                 raise ValueError(f"No open positions found for: {', '.join(sorted(missing))}")
             positions = [selected[run_id] for run_id in run_ids]
-        return [self._monitor(position) for position in positions]
+        exits = external_exits or {}
+        return [
+            self._monitor(position, external_exit=exits.get(position["run_id"]))
+            for position in positions
+        ]
 
     def flatten(self, run_ids: list[str]) -> list[dict[str, Any]]:
         if not run_ids:
@@ -39,7 +48,28 @@ class PositionMonitor:
             raise ValueError(f"No open positions found for: {', '.join(missing)}")
         return [self._monitor(positions[run_id], force=True) for run_id in run_ids]
 
-    def _monitor(self, position: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+    def edge_fade_reason(self, strategy_key: str) -> str | None:
+        """Explain why a strategy's live edge is gone, or None while it still holds."""
+        settings = self.context.settings
+        expectancy = self.context.database.recent_strategy_expectancy(
+            strategy_key,
+            settings.edge_fade_lookback,
+            min_trades=settings.edge_fade_min_trades,
+        )
+        if expectancy is None or expectancy >= settings.edge_fade_min_expectancy:
+            return None
+        return (
+            f"edge faded: rolling expectancy {expectancy:.8g} over recent closed trades is "
+            f"below {settings.edge_fade_min_expectancy:.8g}."
+        )
+
+    def _monitor(
+        self,
+        position: dict[str, Any],
+        *,
+        force: bool = False,
+        external_exit: tuple[str, str] | None = None,
+    ) -> dict[str, Any]:
         strategy = position["strategy"]
         data = fetch_strategy_ohlcv(
             self.context.market_data, position["symbol"], strategy_model(strategy)
@@ -61,24 +91,22 @@ class PositionMonitor:
             "trough_price": min([position["entry_price"], *(bar.low for bar in held_bars)]),
         }
         signal = evaluate_live_signal(strategy, data, position_context)
-        expectancy = self.context.database.recent_strategy_expectancy(
-            position["strategy_key"], self.context.settings.edge_fade_lookback
-        )
-        edge_fade = (
-            expectancy is not None and expectancy < self.context.settings.edge_fade_min_expectancy
-        )
+        edge_fade = self.edge_fade_reason(position["strategy_key"])
+        # Only a lost edge or a manual flatten retires the strategy; ordinary exits re-arm it.
+        stop_strategy = False
         if force:
             reason = "Manual flatten requested."
             event_type = "manual_flatten"
+            stop_strategy = True
         elif edge_fade:
-            reason = (
-                f"edge faded: rolling expectancy {expectancy:.8g} is below "
-                f"{self.context.settings.edge_fade_min_expectancy:.8g}."
-            )
+            reason = edge_fade
             event_type = "edge_fade_exit"
+            stop_strategy = True
         elif signal.action == "exit":
             reason = f"exit condition met: {signal.reason}"
-            event_type = "strategy_stopped"
+            event_type = "position_closed"
+        elif external_exit is not None:
+            event_type, reason = external_exit
         else:
             self.context.database.update_position_progress(
                 position["run_id"],
@@ -124,22 +152,17 @@ class PositionMonitor:
                     [protective_order.model_dump(mode="json")],
                     protective_order.status,
                 )
-                self.context.database.update_live_position(
-                    position["run_id"],
-                    status="stopped",
+                self._finish_trade(
+                    position,
                     event_type=event_type,
                     reason=reason,
                     bars_held=bars_held,
                     net_pnl=net_pnl,
+                    exit_price=exit_price,
+                    amount=float(protective_order.filled or position["amount"]),
                     last_bar_timestamp=latest_bar_timestamp,
+                    stop_strategy=stop_strategy,
                 )
-                self.context.database.mark_strategy_stopped(
-                    position["symbol"],
-                    position["strategy_key"],
-                    position["run_id"],
-                    reason,
-                )
-                self.context.database.update_run_status(position["run_id"], "stopped")
                 return {
                     "run_id": position["run_id"],
                     "symbol": position["symbol"],
@@ -201,27 +224,30 @@ class PositionMonitor:
         )
         net_pnl = pnl_per_unit * quantity_closed
         residual = max(float(position["amount"]) - quantity_closed, 0.0)
-        status = "stopped" if residual == 0 else "open"
-        reason = reason if residual == 0 else f"Partial exit; {residual} units remain. {reason}"
-        self.context.database.update_live_position(
-            position["run_id"],
-            status=status,
-            event_type=event_type,
-            reason=reason,
-            bars_held=bars_held,
-            net_pnl=net_pnl if residual == 0 else None,
-            amount=residual,
-            protective_order_id="" if residual > 0 else None,
-            last_bar_timestamp=latest_bar_timestamp,
-        )
         if residual == 0:
-            self.context.database.mark_strategy_stopped(
-                position["symbol"],
-                position["strategy_key"],
-                position["run_id"],
-                reason,
+            self._finish_trade(
+                position,
+                event_type=event_type,
+                reason=reason,
+                bars_held=bars_held,
+                net_pnl=net_pnl,
+                exit_price=exit_price,
+                amount=quantity_closed,
+                last_bar_timestamp=latest_bar_timestamp,
+                stop_strategy=stop_strategy,
             )
-            self.context.database.update_run_status(position["run_id"], "stopped")
+        else:
+            reason = f"Partial exit; {residual} units remain. {reason}"
+            self.context.database.update_live_position(
+                position["run_id"],
+                status="open",
+                event_type=event_type,
+                reason=reason,
+                bars_held=bars_held,
+                amount=residual,
+                protective_order_id="",
+                last_bar_timestamp=latest_bar_timestamp,
+            )
         self.context.database.log_event(position["run_id"], event_type, reason)
         return {
             "run_id": position["run_id"],
@@ -230,6 +256,46 @@ class PositionMonitor:
             "reason": reason,
             "exchange_order_ids": [order.id for order in result.orders],
         }
+
+    def _finish_trade(
+        self,
+        position: dict[str, Any],
+        *,
+        event_type: str,
+        reason: str,
+        bars_held: int,
+        net_pnl: float,
+        exit_price: float,
+        amount: float,
+        last_bar_timestamp: str,
+        stop_strategy: bool,
+    ) -> None:
+        database = self.context.database
+        database.update_live_position(
+            position["run_id"],
+            status="stopped" if stop_strategy else "closed",
+            event_type=event_type,
+            reason=reason,
+            bars_held=bars_held,
+            net_pnl=net_pnl,
+            last_bar_timestamp=last_bar_timestamp,
+        )
+        database.record_closed_trade(
+            run_id=position["run_id"],
+            symbol=position["symbol"],
+            strategy_key=position["strategy_key"],
+            side=position["side"],
+            amount=amount,
+            entry_price=float(position["entry_price"]),
+            exit_price=exit_price,
+            net_pnl=net_pnl,
+            reason=reason,
+        )
+        if stop_strategy:
+            database.mark_strategy_stopped(
+                position["symbol"], position["strategy_key"], position["run_id"], reason
+            )
+            database.update_run_status(position["run_id"], "stopped")
 
 
 def strategy_model(definition: dict[str, Any]) -> StrategyDefinition:

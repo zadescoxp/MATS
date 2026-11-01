@@ -1,4 +1,4 @@
-export type RunStatus = "running" | "completed" | "failed" | "stopped" | string;
+export type RunStatus = "running" | "completed" | "failed" | "stopped" | "rejected" | string;
 
 export interface AgentStep {
   step_id: string;
@@ -45,6 +45,25 @@ export interface SystemEvent {
   timestamp: string;
 }
 
+export type DiagnosisKind =
+  | "failed"
+  | "retired"
+  | "stopped"
+  | "paused"
+  | "waiting"
+  | "in_position"
+  | "no_trade"
+  | "dry_run"
+  | "rejected";
+
+export interface RunDiagnosis {
+  kind: DiagnosisKind;
+  title: string;
+  detail: string;
+  hint: string | null;
+  agent: string | null;
+}
+
 export interface Run {
   run_id: string;
   symbol: string;
@@ -56,6 +75,7 @@ export interface Run {
   strategies: StrategyAttempt[];
   executions: Execution[];
   events: SystemEvent[];
+  diagnosis: RunDiagnosis | null;
 }
 
 export interface Position {

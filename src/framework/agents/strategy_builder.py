@@ -1,11 +1,11 @@
 import json
 import logging
 
-from framework.agents.common import parse_tool_response, result_with_response, submit_tool
+from framework.agents.common import invoke_structured, result_with_response, submit_tool
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
-from framework.schemas.models import StrategyDefinition
+from framework.schemas.models import StrategyChoice, StrategyDefinition
 from framework.strategies.library import (
     REFERENCE_EXAMPLES,
     STRATEGY_LIBRARY,
@@ -109,7 +109,7 @@ class StrategyBuilderNode:
                     "Use long-horizon context for the directional bias and short-horizon "
                     "context only for timing. "
                     "eligible_candidates is the only set you may choose from. "
-                    "Copy one row's template_name and chosen_timeframe. "
+                    "Submit that row's candidate_id. "
                     "Do not invent a template or timeframe outside that list. "
                     "Measured parameters, stops, and the exit rule are kept when your copy "
                     "differs. Prefer positive net-of-cost PnL, controlled drawdown, regime fit, "
@@ -145,28 +145,28 @@ class StrategyBuilderNode:
                 ),
             },
         ]
-        response = self.context.llm.invoke_with_tools(
+        submitted, response = invoke_structured(
+            self.context.llm,
             messages,
-            [
-                submit_tool(
-                    "submit_strategy",
-                    StrategyDefinition,
-                    (
-                        "Name one measured candidate by its template and timeframe. "
-                        "Parameters are replaced with the tested row."
-                    ),
-                )
-            ],
+            submit_tool(
+                "submit_strategy",
+                StrategyChoice,
+                (
+                    "Pick one eligible candidate by candidate_id and describe its edge. "
+                    "The tested parameters of that row are used."
+                ),
+            ),
+            StrategyChoice,
             self.context.settings.model_for("strategy"),
         )
-        submitted = parse_tool_response(response, "submit_strategy", StrategyDefinition)
-        strategy, match = _resolve_measured(submitted, candidates)
+        strategy, match = _resolve_choice(submitted, candidates)
         if match != "exact":
             self.context.database.log_event(
                 state.run_id,
                 "strategy_selection_snapped",
                 (
-                    f"Submitted {submitted.template_name} on {submitted.chosen_timeframe} "
+                    f"Submitted {submitted.candidate_id or submitted.template_name} on "
+                    f"{submitted.chosen_timeframe or 'any timeframe'} "
                     f"did not match a measured candidate exactly. "
                     f"Using {strategy.template_name} on {strategy.chosen_timeframe} ({match})."
                 ),
@@ -308,6 +308,30 @@ class StrategyBuilderNode:
             if stopped_candidates:
                 info["stopped_candidates"] = stopped_candidates
         return candidates, coverage
+
+
+def _resolve_choice(
+    choice: StrategyChoice, candidates: list[dict[str, object]]
+) -> tuple[StrategyDefinition, str]:
+    by_id = next(
+        (item for item in candidates if item.get("candidate_id") == choice.candidate_id), None
+    )
+    if by_id is not None:
+        return by_id["strategy"], "exact"
+    named = next(
+        (
+            item["strategy"]
+            for item in candidates
+            if item["strategy"].template_name == choice.template_name
+        ),
+        None,
+    )
+    if named is None:
+        return _best(candidates), "best_measured"
+    reference = named.model_copy(
+        update={"chosen_timeframe": choice.chosen_timeframe or named.chosen_timeframe}
+    )
+    return _resolve_measured(reference, candidates)
 
 
 def _resolve_measured(

@@ -107,12 +107,12 @@ records:
   percentage target, ATR trailing stop, and bar-count time stop. Live position
   monitoring checks the current candle open/high/low against protective stop and target,
   opposite template signals, and time stops. A stop/target hit, opposite signal, or time
-  stop closes the position and stops that exact symbol/template/parameter fingerprint
-  until reset. `MATS_EDGE_FADE_LOOKBACK` closed trades are used to compute recent
-  average net PnL in quote-currency units; expectancy below
-  `MATS_EDGE_FADE_MIN_EXPECTANCY` also closes and
-  stops the strategy. With no closed trades, expectancy is unavailable and does not
-  trigger edge fade.
+  stop closes the position, records the trade in `strategy_trades`, and leaves the
+  strategy armed for its next entry. The last `MATS_EDGE_FADE_LOOKBACK` closed trades give
+  a rolling average net PnL in quote-currency units; once at least
+  `MATS_EDGE_FADE_MIN_TRADES` trades exist, expectancy below
+  `MATS_EDGE_FADE_MIN_EXPECTANCY` closes the position and stops that exact
+  symbol/template/parameter fingerprint until reset. A manual flatten also stops it.
 - `StrategyBuilderNode` backtests candidates from supported template/timeframe
   combinations using configured costs. It only offers candidates that meet configured
   history and trade-count thresholds, ranks candidates by net PnL and drawdown, and
@@ -141,8 +141,8 @@ create a derivative position. When monitoring a long spot position, an opposite 
 signal is treated as an exit to flat.
 Persisted open positions can be checked once with `mats --monitor-open-positions` or
 on each `mats --loop` polling cycle. Exits cancel the recorded protective order before
-sending a market flatten order. Exit events and stopped-strategy fingerprints are
-persisted so resume/new runs do not silently reopen that strategy.
+sending a market flatten order. Exit events, closed trades, and stopped-strategy
+fingerprints are persisted so resume/new runs do not silently reopen a retired strategy.
 `mats --symbol BTC/USDT --reset-stopped-strategies` explicitly clears stopped
 fingerprints for that symbol.
 

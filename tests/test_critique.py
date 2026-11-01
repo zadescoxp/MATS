@@ -149,6 +149,17 @@ def test_critique_stops_when_revision_limit_is_zero() -> None:
         backtest_report=report,
     )
     result = CritiqueNode(context)(state)
-    assert result.updates["status"] == "failed"
+    assert result.updates["status"] == "rejected"
     assert result.updates.get("revision_count", state.revision_count) == 0
+
+    per_run = CritiqueNode(context)(state.model_copy(update={"max_revision_loops": 2}))
+    assert "status" not in per_run.updates
+    assert per_run.updates["revision_count"] == 1
     database.close()
+
+
+def test_critique_decision_accepts_common_wordings() -> None:
+    from framework.schemas.models import Critique
+
+    assert Critique.model_validate({"decision": "approve"}).decision == "APPROVE"
+    assert Critique.model_validate({"decision": " Rejected "}).decision == "REJECT"
