@@ -19,6 +19,7 @@ from framework.agents.position_monitor import PositionMonitor
 from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.config.connections import ConsoleConnections, snapshot_environment
 from framework.config.settings import Settings, get_settings
+from framework.core.diagnostics import diagnose_run
 from framework.core.graph import TradingFramework
 from framework.core.logging_config import configure_logging
 from framework.core.state import GraphState
@@ -853,18 +854,21 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
             }
             for row in connection.execute("SELECT * FROM entry_watchers ORDER BY created_at")
         ]
+        watchers_by_run = {watcher["run_id"]: watcher for watcher in entry_watchers}
+        snapshot_runs = []
+        for run in runs:
+            item = {
+                **{key: value for key, value in run.items() if key != "config_snapshot"},
+                "config": json.loads(run["config_snapshot"]),
+                "steps": [step for step in steps if step["run_id"] == run["run_id"]],
+                "strategies": [item for item in strategies if item["run_id"] == run["run_id"]],
+                "executions": [item for item in executions if item["run_id"] == run["run_id"]],
+                "events": [item for item in run_events if item["run_id"] == run["run_id"]],
+            }
+            item["diagnosis"] = diagnose_run(item, watchers_by_run.get(run["run_id"]))
+            snapshot_runs.append(item)
         return {
-            "runs": [
-                {
-                    **{key: value for key, value in run.items() if key != "config_snapshot"},
-                    "config": json.loads(run["config_snapshot"]),
-                    "steps": [step for step in steps if step["run_id"] == run["run_id"]],
-                    "strategies": [item for item in strategies if item["run_id"] == run["run_id"]],
-                    "executions": [item for item in executions if item["run_id"] == run["run_id"]],
-                    "events": [item for item in run_events if item["run_id"] == run["run_id"]],
-                }
-                for run in runs
-            ],
+            "runs": snapshot_runs,
             "positions": positions,
             "system_events": system_events,
             "entry_watchers": entry_watchers,
