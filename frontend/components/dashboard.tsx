@@ -2250,7 +2250,13 @@ export function Dashboard() {
                       }
                     }}
                     rows={1}
-                    placeholder={agentsAreWorking ? "" : "Start trading BTC/USDT and ETH/USDT"}
+                    placeholder={
+                      agentsAreWorking
+                        ? ""
+                        : viewportWidth && viewportWidth < 480
+                          ? "Trade BTC and ETH…"
+                          : "Start trading BTC/USDT and ETH/USDT"
+                    }
                     aria-label="Tell the agents what to run"
                     className="max-h-32 min-h-10 w-full resize-none bg-transparent px-1 py-2.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground"
                   />
