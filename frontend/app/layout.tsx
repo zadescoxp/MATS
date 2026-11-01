@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-interface" });
-const jetBrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
+const geist = Geist({ subsets: ["latin"], variable: "--font-interface" });
+const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
   title: "MATS | Research Console",
@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} ${jetBrainsMono.variable}`}>{children}</body>
+      <body className={`${geist.variable} ${geistMono.variable}`}>{children}</body>
     </html>
   );
 }
