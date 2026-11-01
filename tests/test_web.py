@@ -730,3 +730,31 @@ def test_local_http_api_exposes_state_and_confirmed_setting_action(tmp_path: Pat
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_start_passes_max_attempts_as_run_revision_limit(tmp_path: Path, monkeypatch) -> None:
+    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
+    threads = _capture_threads(monkeypatch)
+
+    service.start({"symbols": ["BTC/USDT"], "max_attempts": 5})
+
+    assert threads[0].args[2]["max_revision_loops"] == 4
+    with pytest.raises(ValueError, match="max_attempts"):
+        service.start({"symbols": ["BTC/USDT"], "max_attempts": 0})
+
+
+def test_rejected_run_resumes_only_with_extra_attempts(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "state.db"
+    database = Database(path)
+    database.create_run("run-rejected", "BTC/USDT", {})
+    database.update_run_status("run-rejected", "rejected")
+    database.close()
+    service = DashboardService(Settings(database_path=path))
+    threads = _capture_threads(monkeypatch)
+
+    with pytest.raises(ValueError, match="more strategy attempts"):
+        service.resume("run-rejected")
+    response = service.resume("run-rejected", extra_attempts=2)
+
+    assert response["message"] == "Trying 2 more strategy attempt(s)."
+    assert threads[0].args[3] == 2
