@@ -129,6 +129,21 @@ CREATE TABLE IF NOT EXISTS strategy_family_memory (
 );
 CREATE INDEX IF NOT EXISTS idx_family_memory_lookup
     ON strategy_family_memory(symbol, regime, created_at);
+CREATE TABLE IF NOT EXISTS strategy_trades (
+    trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    symbol TEXT NOT NULL,
+    strategy_key TEXT NOT NULL,
+    side TEXT NOT NULL,
+    amount REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL,
+    net_pnl REAL NOT NULL,
+    reason TEXT NOT NULL,
+    closed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_trades_key
+    ON strategy_trades(strategy_key, closed_at);
 """
 
 
@@ -653,17 +668,60 @@ class Database:
                 (bars_held, last_bar_timestamp, _now(), run_id),
             )
 
-    def recent_strategy_expectancy(self, strategy_key: str, lookback: int) -> float | None:
+    def record_closed_trade(
+        self,
+        *,
+        run_id: str,
+        symbol: str,
+        strategy_key: str,
+        side: str,
+        amount: float,
+        entry_price: float,
+        exit_price: float | None,
+        net_pnl: float,
+        reason: str,
+    ) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO strategy_trades
+                   (run_id, symbol, strategy_key, side, amount, entry_price, exit_price,
+                    net_pnl, reason, closed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    symbol,
+                    strategy_key,
+                    side,
+                    amount,
+                    entry_price,
+                    exit_price,
+                    net_pnl,
+                    reason,
+                    _now(),
+                ),
+            )
+
+    def strategy_trades(self, run_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT * FROM strategy_trades WHERE run_id = ? ORDER BY trade_id",
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recent_strategy_expectancy(
+        self, strategy_key: str, lookback: int, *, min_trades: int = 1
+    ) -> float | None:
         if lookback <= 0:
             raise ValueError("lookback must be positive")
         with self._lock:
             rows = self.connection.execute(
-                """SELECT net_pnl FROM live_positions
-                   WHERE strategy_key = ? AND status = 'closed' AND net_pnl IS NOT NULL
-                   ORDER BY updated_at DESC LIMIT ?""",
+                """SELECT net_pnl FROM strategy_trades
+                   WHERE strategy_key = ?
+                   ORDER BY trade_id DESC LIMIT ?""",
                 (strategy_key, lookback),
             ).fetchall()
-        if not rows:
+        if not rows or len(rows) < min_trades:
             return None
         return sum(float(row["net_pnl"]) for row in rows) / len(rows)
 
