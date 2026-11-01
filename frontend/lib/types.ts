@@ -1,4 +1,4 @@
-export type RunStatus = "running" | "completed" | "failed" | "stopped" | string;
+export type RunStatus = "running" | "completed" | "failed" | "stopped" | "rejected" | string;
 
 export interface AgentStep {
   step_id: string;
@@ -53,7 +53,8 @@ export type DiagnosisKind =
   | "waiting"
   | "in_position"
   | "no_trade"
-  | "dry_run";
+  | "dry_run"
+  | "rejected";
 
 export interface RunDiagnosis {
   kind: DiagnosisKind;
