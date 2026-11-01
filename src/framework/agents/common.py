@@ -4,6 +4,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from framework.config.settings import ModelRoute
 from framework.core.recovery import AgentResult
 from framework.llm.client import LLMResponse, ToolDefinition
 
@@ -14,6 +15,56 @@ def submit_tool(name: str, model: type[ModelT], description: str) -> ToolDefinit
     schema = model.model_json_schema()
     schema.pop("title", None)
     return ToolDefinition(name=name, description=description, parameters=schema)
+
+
+def invoke_structured(
+    llm: Any,
+    messages: list[dict[str, Any]],
+    tool: ToolDefinition,
+    model: type[ModelT],
+    route: ModelRoute | str,
+    *,
+    repairs: int = 1,
+) -> tuple[ModelT, LLMResponse]:
+    """Call a model for one validated tool submission, letting it correct a bad reply.
+
+    When the reply has no matching tool call or fails validation, the error is sent back
+    and the model gets `repairs` more chances. Token counts and cost cover every call.
+    """
+    conversation = list(messages)
+    totals = LLMResponse()
+    for attempt in range(repairs + 1):
+        response = llm.invoke_with_tools(conversation, [tool], route)
+        totals = LLMResponse(
+            content=response.content,
+            tool_calls=response.tool_calls,
+            prompt_tokens=totals.prompt_tokens + response.prompt_tokens,
+            completion_tokens=totals.completion_tokens + response.completion_tokens,
+            cost=totals.cost + response.cost,
+        )
+        try:
+            return parse_tool_response(response, tool.name, model), totals
+        except ValueError as exc:
+            # Pydantic's ValidationError is a ValueError.
+            if attempt == repairs:
+                raise
+            conversation = [
+                *conversation,
+                {"role": "assistant", "content": response.content or ""},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your {tool.name} call was invalid: {_short_error(exc)} "
+                        f"Call {tool.name} once more with corrected arguments that match its "
+                        "schema exactly. Lists must be JSON arrays, not strings."
+                    ),
+                },
+            ]
+    raise AssertionError("unreachable")
+
+
+def _short_error(exc: Exception) -> str:
+    return " ".join(str(exc).split())[:800]
 
 
 def parse_tool_response(response: LLMResponse, tool_name: str, model: type[ModelT]) -> ModelT:
