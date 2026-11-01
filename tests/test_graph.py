@@ -188,6 +188,8 @@ def _framework(
         retry_attempts=1,
         dry_run=False,
         kill_switch=True,
+        include_external_context=False,
+        include_pair_context=False,
     )
     database = Database(":memory:")
     market = FakeMarketData(candles)
