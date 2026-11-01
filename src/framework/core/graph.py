@@ -22,7 +22,6 @@ from framework.agents.regime import RegimeNode
 from framework.agents.risk_assessment import RiskAssessmentNode
 from framework.agents.strategy_builder import StrategyBuilderNode
 from framework.config.settings import Settings, get_settings
-from framework.core.checkpointer import GraphCheckpointer
 from framework.core.context import AgentContext
 from framework.core.logging_config import configure_logging
 from framework.core.recovery import NodeRunner
@@ -74,7 +73,6 @@ class TradingFramework:
             execution=self.execution,
             coder_enabled=enable_coder,
         )
-        self.checkpointer = GraphCheckpointer(self.database)
         self.position_monitor = PositionMonitor(self.context)
         self.graph = self._build_graph()
 
@@ -125,7 +123,9 @@ class TradingFramework:
         if self.enable_coder:
             graph.add_conditional_edges("coder", lambda state: _next(state, "execution"))
         graph.add_edge("execution", END)
-        return graph.compile(checkpointer=self.checkpointer.saver)
+        # Recovery uses NodeRunner's own checkpoints and saved step outputs, so LangGraph's
+        # checkpointer (a second full copy of the state per step) is not attached.
+        return graph.compile()
 
     def run(
         self, symbol: str, config: dict[str, Any] | None = None, *, run_id: str | None = None
@@ -350,7 +350,6 @@ class TradingFramework:
             event.wait(interval_seconds)
 
     def close(self) -> None:
-        self.checkpointer.close()
         if self._owns_database:
             self.database.close()
 
