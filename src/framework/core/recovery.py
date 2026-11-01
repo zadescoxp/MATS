@@ -126,6 +126,15 @@ def describe_error(exc: BaseException) -> str:
             f"Could not resolve {host}. DNS lookup failed, "
             "so the request never reached the exchange."
         )
+    # ccxt network errors often look like "bybit GET https://api.bybit.com/..."
+    # with no further detail — surface a helpful message instead of the raw URL.
+    if _is_ccxt_network_error(joined):
+        host = _host_from(joined) or _host_from_url(joined) or "api.bybit.com"
+        hint = _network_hint(joined)
+        return (
+            f"Could not reach {host} ({hint}). "
+            "Check your internet connection and try again."
+        )
     summary = texts[0] if texts else type(exc).__name__
     extra = next((text for text in texts[1:] if text not in summary), "")
     if extra:
@@ -147,4 +156,30 @@ def _is_transient(error: Exception) -> bool:
         isinstance(error, TimeoutError | ConnectionError)
         or any(token in name for token in ("timeout", "network", "ratelimit", "connection"))
         or "httpx" in module
+        or ("ccxt" in module and any(token in name for token in ("network", "timeout")))
     )
+
+
+def _is_ccxt_network_error(text: str) -> bool:
+    lower = text.lower()
+    return "api.bybit.com" in lower or (
+        "bybit" in lower and "get https://" in lower and "instruments-info" in lower
+    )
+
+
+def _host_from_url(text: str) -> str | None:
+    for part in text.split():
+        if "://" in part:
+            host = part.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0]
+            if "." in host:
+                return host
+    return None
+
+
+def _network_hint(text: str) -> str:
+    lower = text.lower()
+    if "timeout" in lower:
+        return "request timed out"
+    if "connection" in lower or "network" in lower:
+        return "network error"
+    return "network error"
