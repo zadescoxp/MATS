@@ -141,6 +141,17 @@ Public market history is fetched from Bybit mainnet by default, while the execut
 adapter remains on Bybit testnet. Set `MATS_MARKET_DATA_TESTNET=true` only when
 intentionally using the sparse testnet candle history.
 
+Closed candles are cached in `MATS_CANDLE_CACHE_PATH` (`./data/candles.db`), separately for
+mainnet and testnet data. The cache also records which time ranges it has verified with the
+exchange, so later runs, resumes, and the live strategy algorithm download only candles they
+do not have, plus the last `MATS_CANDLE_REFRESH_BARS` closed candles in case the exchange
+revised them. The still-forming candle is always fetched fresh and never stored. Requests page
+1000 candles at a time with explicit start and end times, a range counts as verified only up to
+the newest candle the exchange returned, and genuine gaps in the exchange's own history are
+logged once. Delete the file to rebuild it, or set `MATS_CANDLE_CACHE_ENABLED=false` to
+download every time. Exchange requests use ccxt's built-in Bybit throttle unless
+`MATS_EXCHANGE_RATE_LIMIT_MS` is set.
+
 Each symbol gets three strategy attempts by default: one initial candidate and up to
 two critique-guided revisions (`MATS_MAX_REVISION_LOOPS=2`). A run can set its own limit with
 the console's **Strategy attempts** option or `mats --max-attempts N`. When the critique
