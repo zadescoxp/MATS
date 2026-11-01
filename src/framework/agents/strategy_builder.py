@@ -1,7 +1,7 @@
 import json
 import logging
 
-from framework.agents.common import parse_tool_response, result_with_response, submit_tool
+from framework.agents.common import invoke_structured, result_with_response, submit_tool
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
@@ -145,21 +145,20 @@ class StrategyBuilderNode:
                 ),
             },
         ]
-        response = self.context.llm.invoke_with_tools(
+        submitted, response = invoke_structured(
+            self.context.llm,
             messages,
-            [
-                submit_tool(
-                    "submit_strategy",
-                    StrategyDefinition,
-                    (
-                        "Name one measured candidate by its template and timeframe. "
-                        "Parameters are replaced with the tested row."
-                    ),
-                )
-            ],
+            submit_tool(
+                "submit_strategy",
+                StrategyDefinition,
+                (
+                    "Name one measured candidate by its template and timeframe. "
+                    "Parameters are replaced with the tested row."
+                ),
+            ),
+            StrategyDefinition,
             self.context.settings.model_for("strategy"),
         )
-        submitted = parse_tool_response(response, "submit_strategy", StrategyDefinition)
         strategy, match = _resolve_measured(submitted, candidates)
         if match != "exact":
             self.context.database.log_event(
