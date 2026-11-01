@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from time import perf_counter
 from typing import Any
 
@@ -120,6 +121,15 @@ class LLMClient:
             if not isinstance(arguments, dict):
                 raise ValueError(f"Tool {call.function.name!r} arguments must be a JSON object")
             calls.append(ToolCall(id=call.id, name=call.function.name, arguments=arguments))
+        if not calls and choice.content:
+            calls = text_tool_calls(choice.content, {tool.name for tool in tools})
+            if calls:
+                logger.info(
+                    "Recovered tool call written as text (provider=%s, model=%s, tool=%s).",
+                    route.provider,
+                    route.model,
+                    calls[0].name,
+                )
         usage = response.usage
         hidden = getattr(response, "_hidden_params", {}) or {}
         result = LLMResponse(
@@ -137,3 +147,45 @@ class LLMClient:
             ",".join(call.name for call in result.tool_calls) or "none",
         )
         return result
+
+
+_FENCE = re.compile(r"```(?:json)?|</?tool_call>", re.IGNORECASE)
+
+
+def text_tool_calls(content: str, tool_names: set[str]) -> list[ToolCall]:
+    """Recover tool calls that a model wrote as JSON text instead of native tool calls.
+
+    Some local models (for example qwen2.5-coder through Ollama) reply with
+    {"name": ..., "arguments": {...}} in the message body. Only calls naming one of the
+    offered tools are accepted, and their arguments are still schema-validated later.
+    """
+    text = _FENCE.sub(" ", content)
+    decoder = json.JSONDecoder()
+    calls: list[ToolCall] = []
+    position = 0
+    while (start := text.find("{", position)) != -1:
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            position = start + 1
+            continue
+        position = end
+        for item in value if isinstance(value, list) else [value]:
+            call = _call_from_object(item, tool_names, len(calls))
+            if call is not None:
+                calls.append(call)
+    return calls
+
+
+def _call_from_object(item: Any, tool_names: set[str], index: int) -> ToolCall | None:
+    if not isinstance(item, dict) or item.get("name") not in tool_names:
+        return None
+    arguments = item.get("arguments", item.get("parameters"))
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(arguments, dict):
+        return None
+    return ToolCall(id=f"text-call-{index}", name=item["name"], arguments=arguments)
