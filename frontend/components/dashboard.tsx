@@ -618,6 +618,7 @@ export function Dashboard() {
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
   const [startAttempts, setStartAttempts] = useState(DEFAULT_ATTEMPTS);
+  const [backtestVersion, setBacktestVersion] = useState<number | null>(null);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -669,6 +670,10 @@ export function Dashboard() {
       stream.close();
     };
   }, [updateState]);
+
+  useEffect(() => {
+    setBacktestVersion(null);
+  }, [selectedRunId]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 1100px)");
@@ -767,6 +772,10 @@ export function Dashboard() {
   }, [selectedRun]);
 
   const activeAttempt = latestAttempt(selectedRun);
+  // The Backtest tab follows the newest attempt unless an earlier one is picked.
+  const backtestAttempts = [...(selectedRun?.strategies ?? [])].sort((a, b) => a.version - b.version);
+  const shownAttempt =
+    backtestAttempts.find((attempt) => attempt.version === backtestVersion) ?? activeAttempt;
   const curve = equityPoints(activeAttempt);
   const tokensForRun = selectedRun?.steps.reduce((sum, step) => sum + step.tokens_used, 0) ?? 0;
   const costForRun = selectedRun?.steps.reduce((sum, step) => sum + step.cost, 0) ?? 0;
@@ -1547,7 +1556,7 @@ export function Dashboard() {
   }
 
   function renderStrategy() {
-    const attempt = activeAttempt;
+    const attempt = shownAttempt;
     if (!selectedRun || !attempt) {
       return <EmptyState title="No strategy or backtest yet" body="Strategy, critique, and backtest data appear when the framework saves an attempt." />;
     }
@@ -1573,10 +1582,57 @@ export function Dashboard() {
     ];
     return (
       <div className="mx-auto max-w-5xl">
+        {backtestAttempts.length > 1 && (
+          <div role="tablist" aria-label="Strategy attempts" className="mb-6 flex gap-2 overflow-x-auto pb-1">
+            {backtestAttempts.map((item, index) => {
+              const selected = item.version === attempt.version;
+              const pnl = numberValue(item.report?.net_pnl);
+              return (
+                <button
+                  key={item.strategy_id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() =>
+                    setBacktestVersion(item.version === activeAttempt?.version ? null : item.version)
+                  }
+                  className={cn(
+                    "min-w-[9.5rem] shrink-0 rounded-xl border px-3 py-2 text-left transition-colors duration-150",
+                    selected
+                      ? "border-white/[0.16] bg-card"
+                      : "border-white/[0.06] hover:border-white/[0.1] hover:bg-card/60",
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium">Attempt {index + 1}</span>
+                    {item.decision && (
+                      <span
+                        className={cn(
+                          "text-[10px] font-medium",
+                          item.decision === "APPROVE" ? "text-positive" : "text-negative",
+                        )}
+                      >
+                        {item.decision === "APPROVE" ? "Approved" : "Rejected"}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-1 block truncate text-[11px] text-muted">
+                    {textValue(item.strategy.template_name, "strategy")} · {textValue(item.strategy.chosen_timeframe, "—")}
+                  </span>
+                  <span className={cn("mt-0.5 block text-[11px] tabular-nums", item.report ? (pnl >= 0 ? "text-positive" : "text-negative") : "text-muted-foreground")}>
+                    {item.report ? money(pnl) : "Not backtested"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 className="truncate text-lg font-semibold tracking-tight">{strategyName}</h2>
-            <p className="mt-1 text-xs text-muted">Version {attempt.version} · {selectedRun.symbol}</p>
+            <p className="mt-1 text-xs text-muted">
+              Attempt {backtestAttempts.findIndex((item) => item.version === attempt.version) + 1} of {backtestAttempts.length} · {selectedRun.symbol}
+            </p>
           </div>
           {attempt.decision && <StatusBadge status={attempt.decision} />}
         </div>
@@ -1608,11 +1664,21 @@ export function Dashboard() {
           />
         </div>
         <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
-          {attempt.decision && <span>Critique {attempt.decision.toLowerCase()}{attempt.issues?.length ? ` · ${attempt.issues[0]}` : ""}</span>}
+          {attempt.decision && <span>Critique {attempt.decision.toLowerCase()}</span>}
           <button type="button" className="inline-flex items-center gap-1 text-accent hover:underline" onClick={() => focusAgent("strategy_builder")}>Strategy builder <ArrowRight className="h-3 w-3" /></button>
           <button type="button" className="inline-flex items-center gap-1 text-accent hover:underline" onClick={() => focusAgent("backtest")}>Backtest <ArrowRight className="h-3 w-3" /></button>
           <button type="button" className="inline-flex items-center gap-1 text-accent hover:underline" onClick={() => focusAgent("critique")}>Critique <ArrowRight className="h-3 w-3" /></button>
         </div>
+        {attempt.issues && attempt.issues.length > 0 && (
+          <div className="mt-4 rounded-xl border border-white/[0.06] px-4 py-3">
+            <p className="text-xs font-medium">Why the critique {attempt.decision === "APPROVE" ? "flagged" : "rejected"} this attempt</p>
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5 text-muted">
+              {attempt.issues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <details className="mt-4">
           <summary className="cursor-pointer text-[11px] text-muted-foreground">Record</summary>
           <div className="mt-3 space-y-3">
