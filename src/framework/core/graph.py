@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from time import perf_counter
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -23,6 +24,7 @@ from framework.agents.strategy_builder import StrategyBuilderNode
 from framework.config.settings import Settings, get_settings
 from framework.core.checkpointer import GraphCheckpointer
 from framework.core.context import AgentContext
+from framework.core.logging_config import configure_logging
 from framework.core.recovery import NodeRunner
 from framework.core.state import GraphState
 from framework.llm.client import LLMClient
@@ -48,6 +50,7 @@ class TradingFramework:
         stop_event: Event | None = None,
     ):
         self.settings = settings or get_settings()
+        configure_logging(self.settings.log_level)
         self.database = database or Database(self.settings.database_path)
         self.market_data = market_data or MarketDataTools(self.settings)
         self.llm = llm or LLMClient(self.settings)
@@ -150,6 +153,13 @@ class TradingFramework:
             timeframes_to_consider=list(timeframes),
             account_equity=options.get("account_equity"),
         )
+        logger.info(
+            "Run queued (timeframes=%s, dry_run=%s, kill_switch=%s).",
+            ",".join(timeframes),
+            self.settings.dry_run,
+            self.settings.kill_switch,
+            extra={"mats_run_id": run_id, "mats_symbol": symbol},
+        )
         config_snapshot = self.settings.model_dump(
             mode="json",
             exclude={
@@ -201,6 +211,10 @@ class TradingFramework:
                 raise ValueError("account_equity must be a positive finite number")
             state = state.model_copy(update={"account_equity": account_equity})
         self.database.update_run_status(state.run_id, "running")
+        logger.info(
+            "Resuming run.",
+            extra={"mats_run_id": state.run_id, "mats_symbol": state.symbol},
+        )
         return self._invoke(state, state.run_id)
 
     def monitor_open_positions(self) -> list[dict[str, Any]]:
@@ -251,6 +265,11 @@ class TradingFramework:
             worker.close()
 
     def _invoke(self, state: GraphState, run_id: str) -> GraphState:
+        started_at = perf_counter()
+        logger.info(
+            "Run started.",
+            extra={"mats_run_id": run_id, "mats_symbol": state.symbol},
+        )
         try:
             output = self.graph.invoke(
                 state.model_dump(mode="json"),
@@ -261,8 +280,19 @@ class TradingFramework:
                 run_id,
                 result.status if result.status in {"failed", "stopped"} else "completed",
             )
+            logger.info(
+                "Run finished (status=%s, duration=%.2fs, errors=%d).",
+                result.status,
+                perf_counter() - started_at,
+                len(result.errors),
+                extra={"mats_run_id": run_id, "mats_symbol": state.symbol},
+            )
             return result
         except Exception as exc:
+            logger.exception(
+                "Run crashed; saving failure state.",
+                extra={"mats_run_id": run_id, "mats_symbol": state.symbol},
+            )
             self.database.log_event(run_id, "graph_failed", str(exc), error=exc)
             self.database.update_run_status(run_id, "failed")
             checkpoint = self.database.latest_checkpoint(run_id)
