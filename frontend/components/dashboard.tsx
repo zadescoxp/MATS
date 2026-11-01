@@ -623,6 +623,8 @@ export function Dashboard() {
   const [now, setNow] = useState(() => Date.now());
   const [wideViewport, setWideViewport] = useState<boolean | null>(null);
   const notifiedFailures = useRef(new Set<string>());
+  // Failures already in history on first load are shown in the run list, not toasted.
+  const historyAcknowledged = useRef(false);
   const rail = usePanelWidth("mats.panel.rail", RAIL_BOUNDS);
   const inspector = usePanelWidth("mats.panel.inspector", INSPECTOR_BOUNDS);
   const viewportWidth = useViewportWidth();
@@ -686,6 +688,16 @@ export function Dashboard() {
 
   useEffect(() => {
     if (!data) return;
+    if (!historyAcknowledged.current) {
+      historyAcknowledged.current = true;
+      for (const run of data.runs) {
+        if (["failed", "rejected"].includes(run.status)) notifiedFailures.current.add(run.run_id);
+      }
+      for (const operation of data.operations) {
+        if (operation.status === "failed") notifiedFailures.current.add(operation.operation_id);
+      }
+      return;
+    }
     for (const operation of data.operations) {
       if (operation.status !== "failed" || notifiedFailures.current.has(operation.operation_id)) continue;
       notifiedFailures.current.add(operation.operation_id);
