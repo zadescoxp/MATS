@@ -1680,7 +1680,7 @@ export function Dashboard() {
     }
     return (
       <div
-        className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-md"
+        className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-2 backdrop-blur-md sm:p-4"
         onMouseDown={(event) => {
           if (event.target === event.currentTarget) setSettingsOpen(false);
         }}
@@ -2219,6 +2219,11 @@ function StartDialog({
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
+  const timeframeGroups = [
+    { label: "Short-term", detail: "Fast market moves", values: ["1m", "5m", "15m"] },
+    { label: "Intraday", detail: "Within the trading day", values: ["30m", "1h", "2h", "4h"] },
+    { label: "Long-term", detail: "Broader market trends", values: ["6h", "12h", "1d", "1w"] },
+  ];
   const visibleSymbols = symbols.filter((symbol) => {
     if (!needle) return true;
     return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
@@ -2241,6 +2246,7 @@ function StartDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="start-run-title"
+        aria-busy={busy}
         onSubmit={(event) => {
           event.preventDefault();
           if (step < 2) {
@@ -2249,190 +2255,304 @@ function StartDialog({
           }
           onSubmit(event);
         }}
-        className="rise-in relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-[28px] border border-white/[0.06] bg-[#141416] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+        className="rise-in relative flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/[0.08] bg-surface shadow-[0_28px_90px_rgba(0,0,0,0.55)] sm:max-h-[calc(100dvh-2rem)]"
       >
         {busy && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden rounded-t-[28px]">
-            <div className="h-full w-1/3 bg-accent" style={{ animation: "progress-slide 1.2s ease-in-out infinite" }} />
-          </div>
+          <div
+            className="progress-rail pointer-events-none absolute inset-x-0 top-0 z-10 bg-accent/10"
+            role="progressbar"
+            aria-label="Starting run"
+          />
         )}
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 id="start-run-title" className="text-lg font-semibold tracking-tight">Start a run</h2>
-            <p className="mt-1 text-xs leading-5 text-muted">
-              {step === 0 && "Choose the markets to test. Each one gets its own agents."}
-              {step === 1 && "Choose the candles those agents should study."}
-              {step === 2 && "Set the capital, then decide whether orders can leave the machine."}
-            </p>
+        <header className="shrink-0 border-b border-white/[0.06] px-4 pb-4 pt-5 sm:px-6 sm:pb-5 sm:pt-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-accent">New analysis</p>
+              <h2 id="start-run-title" className="mt-1 text-xl font-semibold tracking-tight">Set up your run</h2>
+              <p className="mt-1 text-xs leading-5 text-muted">
+                {step === 0 && "Choose the markets to analyze. Each gets its own run."}
+                {step === 1 && "Select the candle intervals to compare."}
+                {step === 2 && "Review capital and safety settings before starting."}
+              </p>
+            </div>
+            <button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-white/[0.07] hover:text-foreground" aria-label="Close dialog">
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:bg-white/10 hover:text-foreground" aria-label="Close dialog">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <ol className="mt-5 flex gap-2">
-          {START_STEPS.map((label, index) => {
-            const reachable = index === 0
-              || (index === 1 && selectedSymbols.length > 0)
-              || (index === 2 && selectedSymbols.length > 0 && selectedTimeframes.length > 0);
-            return (
-            <li key={label} className="min-w-0 flex-1">
-              <button
-                type="button"
-                disabled={!reachable}
-                onClick={() => setStep(index)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-[11px] font-medium transition-colors",
-                  index === step ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5",
-                  !reachable && "cursor-default hover:bg-transparent",
-                )}
-              >
-                <span className={cn("grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px]", index === step ? "bg-accent text-white" : "bg-white/10")}>
-                  {index + 1}
-                </span>
-                {label}
-              </button>
-            </li>
-            );
-          })}
-        </ol>
-
-        {step === 0 && (
-          <div className="mt-5 min-h-0">
-            <label className="relative block" htmlFor="coin-search">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-              <Input
-                id="coin-search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search Bitcoin, SOL, PEPE…"
-                autoFocus
-                className="rounded-2xl border-transparent bg-background/60 pl-9"
-              />
-            </label>
-            {selectedSymbols.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {selectedSymbols.map((symbol) => (
-                  <button
-                    key={symbol}
-                    type="button"
-                    onClick={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)}
-                    className="inline-flex items-center gap-1.5 rounded-full bg-white/10 py-1 pl-1 pr-2 text-[11px]"
-                  >
-                    <CoinMark symbol={symbol} small />
-                    <span>{symbol.split("/")[0]}</span>
-                    <X className="h-3 w-3 text-muted" />
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="mt-3 max-h-72 overflow-y-auto pr-1">
-              <div className="grid gap-2 sm:grid-cols-2">
-                {visibleSymbols.map((symbol) => {
-                  const selected = selectedSymbols.includes(symbol);
-                  return (
-                    <label
-                      key={symbol}
+          <nav className="mt-5" aria-label="Run setup progress">
+            <ol className="flex gap-2 sm:gap-3">
+              {START_STEPS.map((label, index) => {
+                const reachable = index === 0
+                  || (index === 1 && selectedSymbols.length > 0)
+                  || (index === 2 && selectedSymbols.length > 0 && selectedTimeframes.length > 0);
+                const complete = index < step;
+                return (
+                  <li key={label} className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      aria-current={index === step ? "step" : undefined}
+                      disabled={!reachable}
+                      onClick={() => setStep(index)}
                       className={cn(
-                        "flex cursor-pointer items-center gap-2.5 rounded-2xl px-3 py-2.5 text-xs transition-colors",
-                        selected ? "bg-white/10" : "bg-background/40 hover:bg-white/5",
+                        "flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left text-[11px] font-medium transition-colors sm:px-2",
+                        index === step ? "text-foreground" : complete ? "text-foreground/80" : "text-muted-foreground",
+                        !reachable && "cursor-not-allowed opacity-45",
                       )}
                     >
-                      <input type="checkbox" checked={selected} onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)} />
-                      <CoinMark symbol={symbol} small />
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium">{marketName(symbol)}</span>
-                        <span className="block text-[10px] text-muted-foreground">{symbol}</span>
+                      <span className={cn(
+                        "grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] transition-colors",
+                        index === step
+                          ? "border-accent bg-accent text-white"
+                          : complete
+                            ? "border-positive/40 bg-positive/10 text-positive"
+                            : "border-white/10 bg-white/[0.03] text-muted",
+                      )}>
+                        {complete ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
                       </span>
-                    </label>
-                  );
-                })}
-              </div>
-              {!visibleSymbols.length && (
-                <p className="px-1 py-8 text-center text-xs text-muted">No coins match “{query.trim()}”.</p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {step === 1 && (
-          <fieldset className="mt-5">
-            <legend className="text-xs font-medium text-muted">Timeframes</legend>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {timeframes.map((timeframe) => {
-                const selected = selectedTimeframes.includes(timeframe);
-                return (
-                  <button
-                    key={timeframe}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => toggleSelection(timeframe, selectedTimeframes, setSelectedTimeframes)}
-                    className={cn(
-                      "rounded-full px-3 py-1.5 text-xs transition-colors",
-                      selected ? "bg-accent/15 text-foreground" : "bg-background/50 text-muted hover:text-foreground",
-                    )}
-                  >
-                    {timeframe}
-                  </button>
+                      <span className="truncate">{label}</span>
+                    </button>
+                  </li>
                 );
               })}
+            </ol>
+            <div
+              className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.06]"
+              role="progressbar"
+              aria-label="Run setup progress"
+              aria-valuemin={1}
+              aria-valuemax={START_STEPS.length}
+              aria-valuenow={step + 1}
+            >
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-500 ease-out"
+                style={{ width: `${((step + 1) / START_STEPS.length) * 100}%` }}
+              />
             </div>
-            <p className="mt-3 text-[11px] leading-5 text-muted">
-              {selectedSymbols.length} {selectedSymbols.length === 1 ? "market" : "markets"} selected. Pick every horizon the agents should compare.
-            </p>
-          </fieldset>
-        )}
+          </nav>
+        </header>
 
-        {step === 2 && (
-          <div className="mt-5">
-            <label className="block text-xs font-medium text-muted" htmlFor="account-equity">Total account equity</label>
-            <Input
-              id="account-equity"
-              type="number"
-              min="0.01"
-              step="any"
-              value={accountEquity}
-              onChange={(event) => setAccountEquity(event.target.value)}
-              placeholder="Optional"
-              className="mt-2 rounded-2xl border-transparent bg-background/60"
-            />
-            <p className="mt-2 text-[11px] leading-5 text-muted">
-              Split evenly across the selected markets. Live runs use the available testnet quote balance when this is empty.
-            </p>
-            <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
-              <span>
-                <span className="block text-xs font-medium">Dry run</span>
-                <span className={cn("mt-1 block text-[11px]", dryRun ? "text-muted" : "text-negative")}>
-                  {dryRun ? "No exchange order placement." : "Guarded Bybit testnet orders can be placed."}
-                </span>
-              </span>
-              <Switch checked={dryRun} label={`Toggle dry-run; currently ${dryRun ? "on" : "off"}`} onChange={setDryRun} />
-            </div>
-            <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl bg-background/50 px-4 py-3">
-              <span>
-                <span className="block text-xs font-medium">Kill switch</span>
-                <span className="mt-1 block text-[11px] text-muted">Forces order placement back to dry-run.</span>
-              </span>
-              <Switch checked={killSwitch} label={`Toggle kill switch; currently ${killSwitch ? "on" : "off"}`} onChange={setKillSwitch} />
-            </div>
-          </div>
-        )}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          {step === 0 && (
+            <section aria-labelledby="market-step-title">
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3 id="market-step-title" className="text-sm font-semibold">Choose markets</h3>
+                  <p className="mt-1 text-xs text-muted">Select one or more assets for independent runs.</p>
+                </div>
+                <Badge className="shrink-0 border-accent/20 bg-accent/[0.08] text-accent">
+                  {selectedSymbols.length} selected
+                </Badge>
+              </div>
+              <label className="relative block" htmlFor="coin-search">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="coin-search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search by name or symbol"
+                  autoFocus
+                  className="h-10 rounded-xl border-white/[0.07] bg-background/70 pl-10 placeholder:text-muted-foreground"
+                />
+              </label>
+              {selectedSymbols.length > 0 && (
+                <div className="mt-3 max-h-[4.5rem] overflow-y-auto rounded-xl border border-white/[0.06] bg-background/40 p-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedSymbols.map((symbol) => (
+                      <button
+                        key={symbol}
+                        type="button"
+                        onClick={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)}
+                        aria-label={`Remove ${marketName(symbol)}`}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.04] py-1 pl-1 pr-2 text-[10px] transition-colors hover:border-negative/30 hover:bg-negative/[0.08]"
+                      >
+                        <CoinMark symbol={symbol} small />
+                        <span className="max-w-24 truncate">{symbol.split("/")[0]}</span>
+                        <X className="h-3 w-3 text-muted" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="mt-3 max-h-[min(42dvh,24rem)] overflow-y-auto rounded-2xl border border-white/[0.06] bg-background/30 p-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {visibleSymbols.map((symbol) => {
+                    const selected = selectedSymbols.includes(symbol);
+                    return (
+                      <label
+                        key={symbol}
+                        className={cn(
+                          "flex min-h-[4.25rem] cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors",
+                          selected
+                            ? "border-accent/35 bg-accent/[0.07]"
+                            : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.12] hover:bg-white/[0.04]",
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => toggleSelection(symbol, selectedSymbols, setSelectedSymbols)}
+                          aria-label={`Select ${marketName(symbol)} (${symbol})`}
+                        />
+                        <CoinMark symbol={symbol} small />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-medium">{marketName(symbol)}</span>
+                          <span className="mt-0.5 block text-[10px] text-muted-foreground">{symbol}</span>
+                        </span>
+                        {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />}
+                      </label>
+                    );
+                  })}
+                </div>
+                {!visibleSymbols.length && (
+                  <p className="px-1 py-8 text-center text-xs text-muted">No markets match “{query.trim()}”.</p>
+                )}
+              </div>
+            </section>
+          )}
 
-        <div className="mt-6 flex justify-between gap-2">
+          {step === 1 && (
+            <section aria-labelledby="timeframe-step-title">
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3 id="timeframe-step-title" className="text-sm font-semibold">Choose timeframes</h3>
+                  <p className="mt-1 text-xs leading-5 text-muted">Compare short-term moves with broader market trends.</p>
+                </div>
+                <Badge className="shrink-0 border-accent/20 bg-accent/[0.08] text-accent">
+                  {selectedTimeframes.length} selected
+                </Badge>
+              </div>
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTimeframes(timeframes)}
+                  className="rounded-full border border-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-muted transition-colors hover:border-white/15 hover:text-foreground"
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTimeframes([])}
+                  disabled={!selectedTimeframes.length}
+                  className="rounded-full border border-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-muted transition-colors hover:border-white/15 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="space-y-4">
+                {timeframeGroups.map((group) => (
+                  <fieldset key={group.label}>
+                    <legend className="text-xs font-medium">{group.label}</legend>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">{group.detail}</p>
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {group.values.filter((timeframe) => timeframes.includes(timeframe)).map((timeframe) => {
+                        const selected = selectedTimeframes.includes(timeframe);
+                        return (
+                          <button
+                            key={timeframe}
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => toggleSelection(timeframe, selectedTimeframes, setSelectedTimeframes)}
+                            className={cn(
+                              "flex min-h-11 items-center justify-between rounded-xl border px-3 text-xs font-medium transition-colors",
+                              selected
+                                ? "border-accent/35 bg-accent/[0.08] text-foreground"
+                                : "border-white/[0.07] bg-background/50 text-muted hover:border-white/[0.14] hover:text-foreground",
+                            )}
+                          >
+                            {timeframe}
+                            <span className={cn(
+                              "grid h-4 w-4 place-items-center rounded-full border",
+                              selected ? "border-accent bg-accent text-white" : "border-white/15",
+                            )}>
+                              {selected && <CheckCircle2 className="h-3 w-3" />}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                ))}
+              </div>
+              <div className="mt-5 flex items-center gap-2 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-2.5 text-[11px] text-muted">
+                <Gauge className="h-4 w-4 shrink-0 text-accent" />
+                <span>{selectedSymbols.length} {selectedSymbols.length === 1 ? "market" : "markets"} will be analyzed across {selectedTimeframes.length} {selectedTimeframes.length === 1 ? "timeframe" : "timeframes"}.</span>
+              </div>
+            </section>
+          )}
+
+          {step === 2 && (
+            <section aria-labelledby="capital-step-title">
+              <div className="mb-4">
+                <h3 id="capital-step-title" className="text-sm font-semibold">Capital & safeguards</h3>
+                <p className="mt-1 text-xs leading-5 text-muted">These settings help size positions and protect your account.</p>
+              </div>
+              <div className="rounded-2xl border border-white/[0.07] bg-background/35 p-4">
+                <label className="block text-xs font-medium" htmlFor="account-equity">Total account equity <span className="font-normal text-muted">(optional)</span></label>
+                <div className="relative mt-2">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">$</span>
+                  <Input
+                    id="account-equity"
+                    type="number"
+                    min="0.01"
+                    step="any"
+                    value={accountEquity}
+                    onChange={(event) => setAccountEquity(event.target.value)}
+                    placeholder="Enter account equity"
+                    className="h-11 rounded-xl border-white/[0.07] bg-surface pl-8"
+                  />
+                </div>
+                <p className="mt-2 text-[11px] leading-5 text-muted">
+                  Split evenly across selected markets. Leave blank to use the available testnet quote balance for live runs.
+                </p>
+              </div>
+              <div className="mt-3 divide-y divide-white/[0.06] rounded-2xl border border-white/[0.07] bg-background/35 px-4">
+                <div className="flex items-center justify-between gap-4 py-3.5">
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">Dry run</span>
+                    <span className={cn("mt-1 block text-[11px]", dryRun ? "text-muted" : "text-negative")}>
+                      {dryRun ? "No exchange orders will be placed." : "Guarded Bybit testnet orders may be placed."}
+                    </span>
+                  </span>
+                  <Switch checked={dryRun} label={`Toggle dry-run; currently ${dryRun ? "on" : "off"}`} onChange={setDryRun} />
+                </div>
+                <div className="flex items-center justify-between gap-4 py-3.5">
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">Kill switch</span>
+                    <span className="mt-1 block text-[11px] text-muted">Forces order placement back to dry-run.</span>
+                  </span>
+                  <Switch checked={killSwitch} label={`Toggle kill switch; currently ${killSwitch ? "on" : "off"}`} onChange={setKillSwitch} />
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-1.5">
+                {selectedSymbols.map((symbol) => (
+                  <Badge key={symbol} className="border-white/[0.07] bg-white/[0.03] text-muted">
+                    {symbol.split("/")[0]}
+                  </Badge>
+                ))}
+                <Badge className="border-accent/20 bg-accent/[0.08] text-accent">
+                  {selectedTimeframes.length} timeframes
+                </Badge>
+              </div>
+            </section>
+          )}
+        </div>
+
+        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-white/[0.06] bg-surface/95 px-4 py-3.5 sm:px-6">
           <Button type="button" variant="ghost" className="rounded-full" onClick={step === 0 ? onClose : () => setStep(step - 1)}>
             {step === 0 ? "Cancel" : "Back"}
           </Button>
           {step < 2 ? (
-            <Button type="button" variant="primary" className="rounded-full" disabled={!canContinue} onClick={continueStep}>
-              Next
+            <Button type="button" variant="primary" className="rounded-full px-5" disabled={!canContinue} onClick={continueStep}>
+              Continue
               <ArrowRight className="h-4 w-4" />
             </Button>
           ) : (
-            <Button type="submit" variant="primary" className="rounded-full" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
+            <Button type="submit" variant="primary" className="rounded-full px-5" disabled={busy || !selectedSymbols.length || !selectedTimeframes.length}>
               {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Start {selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}
+              {busy ? "Starting…" : `Start ${selectedSymbols.length > 1 ? `${selectedSymbols.length} runs` : "run"}`}
             </Button>
           )}
-        </div>
+        </footer>
       </form>
     </div>
   );
