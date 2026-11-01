@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from framework.persistence.candle_series import SCHEMA as CANDLE_SERIES_SCHEMA
+from framework.persistence.candle_series import CandleSeriesStore
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS runs (
@@ -198,6 +201,7 @@ class Database:
                 _enable_wal(self.connection)
                 self.connection.execute("PRAGMA busy_timeout = 30000")
                 self.connection.executescript(SCHEMA)
+                self.connection.executescript(CANDLE_SERIES_SCHEMA)
                 step_columns = {
                     row["name"] for row in self.connection.execute("PRAGMA table_info(agent_steps)")
                 }
@@ -271,7 +275,7 @@ class Database:
                        started_at = excluded.started_at,
                        finished_at = NULL
                    WHERE agent_steps.status != 'completed'""",
-                (step_id, run_id, agent_name, json_dumps(input_data), _now()),
+                (step_id, run_id, agent_name, self._dumps_packed(input_data), _now()),
             )
             return cursor.rowcount == 1
 
@@ -293,7 +297,7 @@ class Database:
                        tokens_used = ?, cost = ?, finished_at = ?
                    WHERE step_id = ?""",
                 (
-                    json_dumps(output) if output is not None else None,
+                    self._dumps_packed(output) if output is not None else None,
                     json_dumps(tool_calls or []),
                     status,
                     error,
@@ -318,14 +322,14 @@ class Database:
                    WHERE step_id = ? AND status = 'completed'""",
                 (step_id,),
             ).fetchone()
-        return json.loads(row["output_json"]) if row and row["output_json"] else None
+        return self._loads_unpacked(row["output_json"]) if row and row["output_json"] else None
 
     def checkpoint(self, run_id: str, node_name: str, phase: str, state: dict[str, Any]) -> None:
         with self._lock, self.connection:
             self.connection.execute(
                 """INSERT INTO node_checkpoints
                    (run_id, node_name, phase, state_json, timestamp) VALUES (?, ?, ?, ?, ?)""",
-                (run_id, node_name, phase, json_dumps(state), _now()),
+                (run_id, node_name, phase, self._dumps_packed(state), _now()),
             )
 
     def latest_checkpoint(self, run_id: str) -> dict[str, Any] | None:
@@ -335,7 +339,7 @@ class Database:
                    ORDER BY timestamp DESC, rowid DESC LIMIT 1""",
                 (run_id,),
             ).fetchone()
-        return json.loads(row["state_json"]) if row else None
+        return self._loads_unpacked(row["state_json"]) if row else None
 
     def start_entry_watcher(self, run_id: str, interval_seconds: int) -> None:
         now = _now()
@@ -782,7 +786,7 @@ class Database:
                    ORDER BY started_at DESC LIMIT 1""",
                 (run_id, agent_name),
             ).fetchone()
-        return json.loads(row["output_json"]) if row and row["output_json"] else None
+        return self._loads_unpacked(row["output_json"]) if row and row["output_json"] else None
 
 
 def _now() -> str:
