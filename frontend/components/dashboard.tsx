@@ -49,7 +49,7 @@ import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
-import { RunDiagnosisBanner } from "@/components/run-diagnosis";
+import { RejectedRunNotice, RunDiagnosisBanner } from "@/components/run-diagnosis";
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -67,6 +67,9 @@ import type {
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"];
 const EMPTY_RUNS: Run[] = [];
+const DEFAULT_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 10;
+const EXTRA_ATTEMPTS = 2;
 
 const AGENTS = [
   { id: "data_worker", name: "Data Worker", role: "Market data", persona: "/personas/data.png" },
@@ -270,6 +273,7 @@ function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
   if (watcher?.status === "in_position") return "Trading · position open";
   if (watcher?.status === "watching") return "Trading · waiting for entry";
   if (watcher?.status === "paused") return "Paused by a safety switch";
+  if (run.diagnosis?.kind === "rejected") return "No strategy approved";
   if (run.status === "failed") return run.diagnosis?.title ?? "Needs attention";
   if (run.status === "stopped") return "Stopped";
   if (run.status === "completed") return "Completed";
@@ -608,6 +612,7 @@ export function Dashboard() {
   const [startDefaultsLoaded, setStartDefaultsLoaded] = useState(false);
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
+  const [startAttempts, setStartAttempts] = useState(DEFAULT_ATTEMPTS);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -679,8 +684,12 @@ export function Dashboard() {
       setNotice({ kind: "error", message: operation.error ?? "Monitor action failed." });
     }
     for (const run of data.runs) {
-      if (run.status !== "failed" || notifiedFailures.current.has(run.run_id)) continue;
+      if (!["failed", "rejected"].includes(run.status) || notifiedFailures.current.has(run.run_id)) continue;
       notifiedFailures.current.add(run.run_id);
+      if (run.diagnosis?.kind === "rejected") {
+        setNotice({ kind: "info", message: `${run.symbol}: ${run.diagnosis.title.toLowerCase()}.` });
+        continue;
+      }
       const event = run.events.find((item) => /fail|error/i.test(`${item.type} ${item.message}`));
       setNotice({
         kind: "error",
@@ -857,7 +866,13 @@ export function Dashboard() {
     [updateState],
   );
 
-  async function launchRun(symbols: string[], timeframes: string[], equity: string, dryRun: boolean) {
+  async function launchRun(
+    symbols: string[],
+    timeframes: string[],
+    equity: string,
+    dryRun: boolean,
+    attempts = startAttempts,
+  ) {
     if (!symbols.length || !timeframes.length) {
       setNotice({ kind: "error", message: "Select at least one symbol and timeframe." });
       return;
@@ -869,7 +884,7 @@ export function Dashboard() {
     ) {
       return;
     }
-    const payload: Record<string, unknown> = { symbols, timeframes, dry_run: dryRun };
+    const payload: Record<string, unknown> = { symbols, timeframes, dry_run: dryRun, max_attempts: attempts };
     if (equity.trim()) {
       const value = Number(equity.replace(/,/g, ""));
       if (!Number.isFinite(value) || value <= 0) {
@@ -901,6 +916,31 @@ export function Dashboard() {
   async function submitStart(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await launchRun(startSymbols, startTimeframes, accountEquity, startDryRun);
+  }
+
+  async function continueRejectedRun(run: Run) {
+    await act(
+      "resume",
+      { run_id: run.run_id, extra_attempts: EXTRA_ATTEMPTS },
+      `${run.symbol}: trying ${EXTRA_ATTEMPTS} more strategy attempts.`,
+    );
+  }
+
+  function reconfigureRun(run: Run) {
+    const config = run.config;
+    const timeframes = Array.isArray(config.timeframes_to_consider)
+      ? config.timeframes_to_consider.filter((item): item is string => typeof item === "string")
+      : [];
+    const previousLimit = typeof config.max_revision_loops === "number" ? config.max_revision_loops + 1 : DEFAULT_ATTEMPTS;
+    const equity = typeof config.account_equity === "number" ? String(config.account_equity) : "";
+    setStartSymbols([run.symbol]);
+    if (timeframes.length) setStartTimeframes(timeframes);
+    setAccountEquity(equity);
+    setStartAttempts(Math.min(previousLimit + EXTRA_ATTEMPTS, MAX_ATTEMPTS));
+    if (data) setStartDryRun(data.settings.dry_run);
+    setStartStep(1);
+    setShowStart(true);
+    setRailOpen(false);
   }
 
   function submitCommand(event?: FormEvent) {
@@ -1108,7 +1148,7 @@ export function Dashboard() {
                 <span
                   className={cn(
                     "h-1.5 w-1.5 shrink-0 rounded-full",
-                    live ? "bg-accent agent-live" : run.status === "failed" ? "bg-negative" : run.status === "completed" ? "bg-positive" : "bg-muted-foreground",
+                    live ? "bg-accent agent-live" : run.diagnosis?.kind === "rejected" ? "bg-accent" : run.status === "failed" ? "bg-negative" : run.status === "completed" ? "bg-positive" : "bg-muted-foreground",
                   )}
                 />
               </button>
@@ -1247,12 +1287,24 @@ export function Dashboard() {
             </div>
           </div>
         )}
-        {selectedRun.status !== "failed" && selectedRun.diagnosis && (
+        {selectedRun.diagnosis?.kind === "rejected" && (
+          <div className="mt-4">
+            <RejectedRunNotice
+              diagnosis={selectedRun.diagnosis}
+              extraAttempts={EXTRA_ATTEMPTS}
+              busy={busyAction === "resume"}
+              onMoreAttempts={() => continueRejectedRun(selectedRun)}
+              onChangeSettings={() => reconfigureRun(selectedRun)}
+              onDismiss={() => setSelectedRunId(null)}
+            />
+          </div>
+        )}
+        {selectedRun.status !== "failed" && selectedRun.diagnosis && selectedRun.diagnosis.kind !== "rejected" && (
           <div className="mt-4">
             <RunDiagnosisBanner diagnosis={selectedRun.diagnosis} />
           </div>
         )}
-        {selectedRun.status === "failed" && (
+        {selectedRun.status === "failed" && selectedRun.diagnosis?.kind !== "rejected" && (
           <div className="step-failed mt-4 flex items-center justify-between gap-4 rounded-2xl bg-negative/10 px-4 py-3">
             <div className="flex items-center gap-3">
               <AlertCircle className="h-4 w-4 shrink-0 text-negative" />
@@ -2221,6 +2273,8 @@ export function Dashboard() {
           setAccountEquity={setAccountEquity}
           dryRun={startDryRun}
           setDryRun={setStartDryRun}
+          attempts={startAttempts}
+          setAttempts={setStartAttempts}
           killSwitch={killSwitchEnabled}
           setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
           step={startStep}
@@ -2247,6 +2301,8 @@ function StartDialog({
   setAccountEquity,
   dryRun,
   setDryRun,
+  attempts,
+  setAttempts,
   killSwitch,
   setKillSwitch,
   step,
@@ -2265,6 +2321,8 @@ function StartDialog({
   setAccountEquity: (value: string) => void;
   dryRun: boolean;
   setDryRun: (value: boolean) => void;
+  attempts: number;
+  setAttempts: (value: number) => void;
   killSwitch: boolean;
   setKillSwitch: (value: boolean) => void;
   step: number;
@@ -2560,6 +2618,35 @@ function StartDialog({
                 <p className="mt-2 text-[11px] leading-5 text-muted">
                   Split evenly across selected markets. Leave blank to use the available testnet quote balance for live runs.
                 </p>
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl border border-white/[0.07] bg-background/35 px-4 py-3.5">
+                <span className="min-w-0">
+                  <span className="block text-xs font-medium" id="attempts-label">Strategy attempts</span>
+                  <span className="mt-1 block text-[11px] leading-4 text-muted">
+                    How many strategies the critique may review before the run stops without one.
+                  </span>
+                </span>
+                <div className="flex shrink-0 items-center gap-1" role="group" aria-labelledby="attempts-label">
+                  <button
+                    type="button"
+                    aria-label="Fewer attempts"
+                    disabled={attempts <= 1}
+                    onClick={() => setAttempts(Math.max(1, attempts - 1))}
+                    className="grid h-8 w-8 place-items-center rounded-full border border-white/[0.07] text-sm text-muted transition-colors hover:text-foreground disabled:opacity-40"
+                  >
+                    −
+                  </button>
+                  <span className="w-7 text-center text-sm font-semibold tabular-nums" aria-live="polite">{attempts}</span>
+                  <button
+                    type="button"
+                    aria-label="More attempts"
+                    disabled={attempts >= MAX_ATTEMPTS}
+                    onClick={() => setAttempts(Math.min(MAX_ATTEMPTS, attempts + 1))}
+                    className="grid h-8 w-8 place-items-center rounded-full border border-white/[0.07] text-sm text-muted transition-colors hover:text-foreground disabled:opacity-40"
+                  >
+                    +
+                  </button>
+                </div>
               </div>
               <div className="mt-3 divide-y divide-white/[0.06] rounded-2xl border border-white/[0.07] bg-background/35 px-4">
                 <div className="flex items-center justify-between gap-4 py-3.5">
