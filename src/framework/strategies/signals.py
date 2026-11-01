@@ -5,7 +5,17 @@ import numpy as np
 import pandas as pd
 
 from framework.schemas.models import LiveSignal, OHLCVBar, StrategyDefinition
-from framework.tools.technicals import atr, bollinger_bands, ema, macd, rsi, supertrend
+from framework.tools.technicals import (
+    adx,
+    atr,
+    bollinger_bands,
+    donchian,
+    ema,
+    macd,
+    rsi,
+    sma,
+    supertrend,
+)
 
 
 def evaluate_live_signal(
@@ -154,6 +164,46 @@ def evaluate_live_signal(
             reason = "Lower-timeframe bearish crossover aligned with higher-timeframe trend."
         elif higher == "neutral":
             reason = "Lower-timeframe timing and higher-timeframe trend do not align."
+    elif strategy.template_name == "mean_reversion":
+        long_signal, short_signal, reason = _mean_reversion(close, params)
+    elif strategy.template_name == "stat_arb_spread":
+        long_signal, short_signal, reason = _stat_arb(frame, latest_ohlcv_dict, params)
+    elif strategy.template_name == "breakout_confirmed":
+        long_signal, short_signal, reason, current_atr = _confirmed_breakout(frame, params)
+    elif strategy.template_name == "volatility_fade":
+        long_signal, short_signal, reason = _volatility_fade(close, params)
+    elif strategy.template_name == "carry_funding":
+        long_signal, short_signal, reason = _carry_funding(latest_ohlcv_dict, params)
+    elif strategy.template_name == "regime_gated_trend":
+        fast_period = int(params.get("fast_period", strategy.fast_period))
+        slow_period = int(params.get("slow_period", strategy.slow_period))
+        fast = ema(close, fast_period)
+        slow = ema(close, slow_period)
+        trend_gate = _adx_value(frame, int(params.get("adx_period", 14)))
+        minimum = float(params.get("adx_minimum", 25))
+        gated = trend_gate is not None and trend_gate >= minimum
+        long_signal = _crossed_up(fast, slow) and gated
+        short_signal = _crossed_down(fast, slow) and gated
+        if long_signal:
+            reason = f"EMA cross confirmed by ADX {trend_gate:.1f}."
+        elif short_signal:
+            reason = f"EMA cross confirmed by ADX {trend_gate:.1f}."
+        elif _crossed_up(fast, slow) or _crossed_down(fast, slow):
+            reason = "EMA cross ignored because ADX is below the trend gate."
+    elif strategy.template_name == "multi_timeframe_hybrid":
+        period = int(params.get("rsi_period", 14))
+        oversold = float(params.get("oversold", 35))
+        overbought = float(params.get("overbought", 65))
+        strength = rsi(close, period)
+        higher = _higher_timeframe_bias(strategy, latest_ohlcv_dict)
+        long_signal = _crossed_up_level(strength, oversold) and higher == "bullish"
+        short_signal = _crossed_down_level(strength, overbought) and higher == "bearish"
+        if long_signal:
+            reason = "Lower-timeframe RSI reverted inside a bullish higher-timeframe bias."
+        elif short_signal:
+            reason = "Lower-timeframe RSI reverted inside a bearish higher-timeframe bias."
+        elif higher == "neutral":
+            reason = "Higher-timeframe bias is neutral, so the hybrid stays flat."
 
     if strategy.exit_rule == "trailing_atr" and current_atr is None:
         current_atr = _last_finite(atr(frame, int(params.get("atr_period", 14))))
@@ -334,6 +384,193 @@ def _crossed_down(left: pd.Series, right: pd.Series) -> bool:
         and _finite(right.iloc[-1])
         and left.iloc[-2] >= right.iloc[-2]
         and left.iloc[-1] < right.iloc[-1]
+    )
+
+
+def _mean_reversion(close: pd.Series, params: Mapping[str, Any]) -> tuple[bool, bool, str]:
+    period = int(params.get("z_period", 20))
+    entry = float(params.get("z_entry", 1.5))
+    score = _zscore(close, period)
+    rsi_period = int(params.get("rsi_period", 2))
+    extreme = float(params.get("rsi_extreme", 10))
+    strength = rsi(close, rsi_period)
+    z_long = _crossed_up_level(score, -entry)
+    z_short = _crossed_down_level(score, entry)
+    rsi_long = _crossed_up_level(strength, extreme)
+    rsi_short = _crossed_down_level(strength, 100 - extreme)
+    previous = close.iloc[-2]
+    latest = close.iloc[-1]
+    reclaimed = _finite(latest) and _finite(previous) and latest > previous
+    lost = _finite(latest) and _finite(previous) and latest < previous
+    long_signal = (z_long or rsi_long) and reclaimed
+    short_signal = (z_short or rsi_short) and lost
+    if long_signal:
+        reason = "Price reclaimed after a downside extreme."
+    elif short_signal:
+        reason = "Price fell back after an upside extreme."
+    else:
+        reason = "No complete entry condition matched."
+    return long_signal, short_signal, reason
+
+
+def _stat_arb(
+    frame: pd.DataFrame,
+    data: Mapping[str, Sequence[OHLCVBar | Mapping[str, Any]]],
+    params: Mapping[str, Any],
+) -> tuple[bool, bool, str]:
+    pair = data.get("pair")
+    if not pair:
+        return False, False, "Pair series is unavailable, so relative value stays flat."
+    pair_frame = _frame(pair)
+    ratio = _aligned_ratio(frame, pair_frame)
+    if ratio is None or len(ratio) < 5:
+        return False, False, "Pair series does not overlap enough to score the ratio."
+    entry = float(params.get("z_entry", 1.5))
+    score = _zscore(ratio, int(params.get("z_period", 30)))
+    long_signal = _crossed_up_level(score, -entry)
+    short_signal = _crossed_down_level(score, entry)
+    if long_signal:
+        reason = "Ratio z-score reverted up from a cheap extreme."
+    elif short_signal:
+        reason = "Ratio z-score reverted down from a rich extreme."
+    else:
+        reason = "No complete entry condition matched."
+    return long_signal, short_signal, reason
+
+
+def _confirmed_breakout(
+    frame: pd.DataFrame, params: Mapping[str, Any]
+) -> tuple[bool, bool, str, float | None]:
+    period = int(params.get("channel_period", 20))
+    channel = donchian(frame, period)
+    average_range = atr(frame, int(params.get("atr_period", 14)))
+    current_atr = _last_finite(average_range)
+    volume_mean = sma(frame["volume"], period)
+    expansion = float(params.get("atr_expansion", 1.05))
+    volume_multiple = float(params.get("volume_multiple", 1.5))
+    atr_mean = average_range.rolling(period, min_periods=period).mean()
+    expanding = (
+        _finite(average_range.iloc[-1])
+        and _finite(atr_mean.iloc[-1])
+        and average_range.iloc[-1] >= atr_mean.iloc[-1] * expansion
+    )
+    volume_spike = (
+        _finite(volume_mean.iloc[-1])
+        and frame["volume"].iloc[-1] >= volume_mean.iloc[-1] * volume_multiple
+    )
+    prior_high = channel["upper"].iloc[-2]
+    prior_low = channel["lower"].iloc[-2]
+    long_signal = (
+        _finite(prior_high) and frame["close"].iloc[-1] > prior_high and expanding and volume_spike
+    )
+    short_signal = (
+        _finite(prior_low) and frame["close"].iloc[-1] < prior_low and expanding and volume_spike
+    )
+    if long_signal:
+        reason = "Donchian break confirmed by ATR expansion and a volume spike."
+    elif short_signal:
+        reason = "Donchian breakdown confirmed by ATR expansion and a volume spike."
+    else:
+        reason = "No complete entry condition matched."
+    return long_signal, short_signal, reason, current_atr
+
+
+def _volatility_fade(close: pd.Series, params: Mapping[str, Any]) -> tuple[bool, bool, str]:
+    period = int(params.get("bollinger_period", 20))
+    bands = bollinger_bands(close, period, float(params.get("bollinger_deviations", 2.0)))
+    long_signal = (
+        _finite(bands["lower"].iloc[-2])
+        and close.iloc[-2] < bands["lower"].iloc[-2]
+        and _finite(bands["lower"].iloc[-1])
+        and bands["lower"].iloc[-1] <= close.iloc[-1] <= bands["upper"].iloc[-1]
+    )
+    short_signal = (
+        _finite(bands["upper"].iloc[-2])
+        and close.iloc[-2] > bands["upper"].iloc[-2]
+        and _finite(bands["upper"].iloc[-1])
+        and bands["lower"].iloc[-1] <= close.iloc[-1] <= bands["upper"].iloc[-1]
+    )
+    if long_signal:
+        reason = "Close returned inside the band after a downside expansion."
+    elif short_signal:
+        reason = "Close returned inside the band after an upside expansion."
+    else:
+        reason = "No complete entry condition matched."
+    return long_signal, short_signal, reason
+
+
+def _carry_funding(
+    data: Mapping[str, Sequence[OHLCVBar | Mapping[str, Any]]],
+    params: Mapping[str, Any],
+) -> tuple[bool, bool, str]:
+    series = data.get("funding")
+    if not series or len(series) < 2:
+        return False, False, "Funding history is unavailable, so carry stays flat."
+    rates = [_funding_rate(item) for item in series]
+    if any(rate is None for rate in rates[-2:]):
+        return False, False, "Funding history is unavailable, so carry stays flat."
+    threshold = abs(float(params.get("funding_threshold", 0.0001)))
+    previous, latest = rates[-2], rates[-1]
+    assert previous is not None and latest is not None
+    long_signal = previous > -threshold >= latest
+    short_signal = previous < threshold <= latest
+    if long_signal:
+        reason = "Funding crossed into a negative carry that pays the long."
+    elif short_signal:
+        reason = "Funding crossed into a positive carry that pays the short."
+    else:
+        reason = "No complete entry condition matched."
+    return long_signal, short_signal, reason
+
+
+def _funding_rate(item: OHLCVBar | Mapping[str, Any]) -> float | None:
+    close = item.close if isinstance(item, OHLCVBar) else item.get("close")
+    if close is None or not _finite(close):
+        return None
+    return float(close) - 1
+
+
+def _aligned_ratio(frame: pd.DataFrame, pair: pd.DataFrame) -> pd.Series | None:
+    if "timestamp" not in frame.columns or "timestamp" not in pair.columns:
+        size = min(len(frame), len(pair))
+        if size < 5:
+            return None
+        denominator = pair["close"].iloc[-size:].reset_index(drop=True).replace(0, np.nan)
+        return frame["close"].iloc[-size:].reset_index(drop=True) / denominator
+    left = frame[["timestamp", "close"]].copy()
+    right = pair[["timestamp", "close"]].rename(columns={"close": "pair_close"})
+    merged = left.merge(right, on="timestamp", how="inner")
+    if len(merged) < 5:
+        return None
+    return merged["close"] / merged["pair_close"].replace(0, np.nan)
+
+
+def _zscore(close: pd.Series, period: int) -> pd.Series:
+    mean = sma(close, period)
+    deviation = close.rolling(period, min_periods=period).std(ddof=0).replace(0, np.nan)
+    return (close - mean) / deviation
+
+
+def _adx_value(frame: pd.DataFrame, period: int) -> float | None:
+    value = adx(frame, period).iloc[-1]["adx"]
+    return float(value) if _finite(value) else None
+
+
+def _crossed_up_level(values: pd.Series, level: float) -> bool:
+    return (
+        len(values) >= 2
+        and _finite(values.iloc[-2])
+        and _finite(values.iloc[-1])
+        and values.iloc[-2] <= level < values.iloc[-1]
+    )
+
+
+def _crossed_down_level(values: pd.Series, level: float) -> bool:
+    return (
+        len(values) >= 2
+        and _finite(values.iloc[-2])
+        and _finite(values.iloc[-1])
+        and values.iloc[-2] >= level > values.iloc[-1]
     )
 
 
