@@ -514,6 +514,12 @@ def strategy_fingerprint(strategy: StrategyDefinition) -> str:
             "take_profit_pct": strategy.take_profit_pct,
             "time_stop_bars": strategy.time_stop_bars,
             "trailing_atr_multiple": strategy.trailing_atr_multiple,
+            # Spot and perpetual, long-only and long/short, trade differently.
+            **(
+                {"market": strategy.market, "short_entries": strategy.short_entries}
+                if strategy.market != "spot"
+                else {}
+            ),
         },
         separators=(",", ":"),
         sort_keys=True,
