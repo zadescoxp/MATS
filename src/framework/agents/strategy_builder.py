@@ -21,6 +21,7 @@ from framework.strategies.library import (
 )
 from framework.strategies.regime import diagnose_regime
 from framework.strategies.search import TemplateJob, measure_template
+from framework.tools.markets import MarketType, is_perpetual, market_type
 
 _MAX_CANDIDATES_PER_TIMEFRAME = 5
 # Measurements reused by later attempts of the same run on the same candles.
@@ -148,7 +149,10 @@ class StrategyBuilderNode:
                     "unit of fees and slippage), fewer longer trades, controlled drawdown, "
                     "regime fit, and a family that has not recently lost in this regime. "
                     "Call submit_strategy exactly once. On revision, choose a different "
-                    "eligible row and apply the critique instructions."
+                    "eligible row and apply the critique instructions. "
+                    "market says what the run trades: spot strategies only go long and sit "
+                    "in cash on bearish signals; perpetual strategies with short_entries also "
+                    "go short on bearish signals, so a falling market can be an opportunity."
                 ),
             },
             {
@@ -156,6 +160,11 @@ class StrategyBuilderNode:
                 "content": json.dumps(
                     {
                         "symbol": state.symbol,
+                        "market": {
+                            "type": market_type(state.symbol),
+                            "short_entries": is_perpetual(state.symbol)
+                            and self.context.settings.allow_short,
+                        },
                         "regime": regime,
                         "reference_examples": REFERENCE_EXAMPLES,
                         "family_memory": self.context.database.recent_family_results(
@@ -343,7 +352,15 @@ class StrategyBuilderNode:
                             reason = "needs_higher_timeframe"
                             break
                         parameters["higher_timeframe"] = min(available_higher, key=_timeframe_rank)
-                    entries.append(_template_strategy(template_name, timeframe, parameters))
+                    entries.append(
+                        _template_strategy(
+                            template_name,
+                            timeframe,
+                            parameters,
+                            market=market_type(state.symbol),
+                            short_entries=is_perpetual(state.symbol) and settings.allow_short,
+                        )
+                    )
                 if reason or series is None:
                     skipped.setdefault(reason or "missing_pair_or_funding_data", []).append(
                         template_name
@@ -388,7 +405,12 @@ class StrategyBuilderNode:
 
 
 def _template_strategy(
-    template_name: str, timeframe: str, parameters: dict[str, object]
+    template_name: str,
+    timeframe: str,
+    parameters: dict[str, object],
+    *,
+    market: MarketType = "spot",
+    short_entries: bool = False,
 ) -> StrategyDefinition:
     template = STRATEGY_LIBRARY[template_name]
     risk = template["default_risk"]
@@ -408,6 +430,8 @@ def _template_strategy(
         time_stop_bars=template.get("default_time_stop_bars"),
         trailing_atr_multiple=template.get("default_trailing_atr_multiple"),
         filters=["volume_positive"] if template_name == "ema_crossover" else [],
+        market=market,
+        short_entries=short_entries,
     )
 
 
@@ -454,6 +478,7 @@ def _measurement_key(state: GraphState, capital: float, settings: Settings) -> t
         settings.walk_forward_split,
         settings.min_backtest_trades,
         settings.min_strategy_bars,
+        settings.allow_short,
     )
 
 
@@ -657,10 +682,11 @@ def strategy_series(
         if isinstance(pair_symbol, str):
             parameters["pair_symbol"] = pair_symbol
         series["pair"] = pair
-    if template_name == "carry_funding":
-        funding = state.market_context.get("funding_history")
-        if not funding:
-            return None
+    funding = state.market_context.get("funding_history")
+    if template_name == "carry_funding" and not funding:
+        return None
+    # Carry reads funding as its signal; perpetual positions also pay it in the backtest.
+    if funding and (template_name == "carry_funding" or is_perpetual(state.symbol)):
         series["funding"] = funding
     return series
 
