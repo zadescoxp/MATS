@@ -64,7 +64,7 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_EDGE_FADE_LOOKBACK` / `MATS_EDGE_FADE_MIN_TRADES` / `MATS_EDGE_FADE_MIN_EXPECTANCY` | `10` / `3` / `0` | When a live strategy is retired |
 | `MATS_DATABASE_PATH` | `./data/state.db` | Runs, steps, checkpoints, positions |
 | `MATS_CANDLE_CACHE_PATH` | `./data/candles.db` | Local candle cache |
-| `MATS_MIN_HISTORY_DAYS` / `MATS_MAX_HISTORY_BARS` | `30` / `5000` | Research history depth per timeframe |
+| `MATS_MIN_HISTORY_DAYS` / `MATS_MAX_HISTORY_BARS` | `180` / `10000` | Research history depth per timeframe |
 | `MATS_LOG_LEVEL` | `INFO` | `DEBUG` adds diagnostic detail |
 
 See [`.env.example`](./.env.example) for the full list.
@@ -97,9 +97,9 @@ reply is still invalid the error is sent back for one corrected attempt.
 
 ## How a run works
 
-1. **Data Worker** downloads at least `MATS_MIN_HISTORY_DAYS` (30) days of candles per
-   timeframe, never fewer than 500 and at most `MATS_MAX_HISTORY_BARS` (5000): about 17
-   days of 5m, 30 days of 15m and 1h, and 500 candles of 4h or 1d. Only missing candles
+1. **Data Worker** downloads at least `MATS_MIN_HISTORY_DAYS` (180) days of candles per
+   timeframe, never fewer than 500 and at most `MATS_MAX_HISTORY_BARS` (10000): about 35
+   days of 5m, 104 days of 15m, 180 days of 1h and 4h, and 500 candles of 1d. Only missing candles
    are downloaded (see [Market data](#market-data-and-the-candle-cache)). It also fetches
    the ticker, a reference pair at the same depth (for example ETH for BTC), funding
    history, and news and sentiment.
