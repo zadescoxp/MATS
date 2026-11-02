@@ -191,6 +191,10 @@ class StrategyDefinition(BaseModel):
         default_factory=list
     )
     revision_notes: list[str] = Field(default_factory=list)
+    # Spot strategies only buy and sell what they hold. Perpetual strategies trade the
+    # linear contract and, with short_entries, open shorts on bearish signals too.
+    market: Literal["spot", "perpetual"] = "spot"
+    short_entries: bool = False
 
     @model_validator(mode="after")
     def validate_periods(self) -> "StrategyDefinition":
@@ -198,6 +202,8 @@ class StrategyDefinition(BaseModel):
             raise ValueError(
                 "template_name and entry_rule must identify the same supported template"
             )
+        if self.short_entries and self.market != "perpetual":
+            raise ValueError("Only perpetual strategies can open short positions")
         if self.fast_period >= self.slow_period:
             raise ValueError("fast_period must be less than slow_period")
         return self
@@ -225,6 +231,9 @@ class TradeRecord(BaseModel):
     slippage: float = Field(ge=0)
     net_pnl: float
     exit_reason: str
+    side: Literal["long", "short"] = "long"
+    # Perpetual funding paid while the trade was open (negative when it was received).
+    funding: float = 0.0
 
 
 class BacktestReport(BaseModel):
