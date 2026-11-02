@@ -174,6 +174,24 @@ def _hit_attempt_limit(run: dict[str, Any]) -> bool:
 
 
 def _rejected(run: dict[str, Any]) -> dict[str, Any]:
+    in_cash = next(
+        (
+            str(error)
+            for step in reversed(run.get("steps") or [])
+            for error in reversed(((step.get("output") or {}).get("errors")) or [])
+            if str(error).startswith("Staying in cash")
+        ),
+        None,
+    )
+    if in_cash:
+        return _result(
+            "rejected",
+            "Staying in cash: no edge after costs",
+            in_cash[:600],
+            "This is the system working: no measured strategy earned more than its fees and "
+            "slippage on this history, so nothing trades. Try again when the regime changes, "
+            "or on higher timeframes where each trade can cover its costs.",
+        )
     attempts = len(run.get("strategies") or [])
     return _result(
         "rejected",
@@ -201,6 +219,14 @@ def _watcher_outcome(watcher: dict[str, Any], events: list[dict[str, Any]]) -> d
             "Trading: position open",
             check["message"] if check else "The algorithm is managing an open position.",
             None,
+        )
+    if status == "paper":
+        check = _latest(events, {"forward_test"})
+        return _result(
+            "paper",
+            "Approved, paper trading before going live",
+            check["message"] if check else "Paper trading on candles after approval.",
+            "Live orders start once the forward test closes enough paper trades at a profit.",
         )
     if status == "watching":
         check = _latest(events, {"algorithm_check"})
