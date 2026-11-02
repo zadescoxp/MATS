@@ -234,6 +234,9 @@ def test_entry_watcher_checks_every_interval_without_repeating_same_bar_executio
         def edge_fade_reason(self, _key):
             return None
 
+        def retry_pending_repays(self):
+            pass
+
     class FakeWorker:
         def __init__(self, **_kwargs):
             self.database = FakeDatabase()
@@ -403,6 +406,9 @@ def _algorithm_harness(monkeypatch, *, open_position: bool, news):
 
         def edge_fade_reason(self, _key):
             return None
+
+        def retry_pending_repays(self):
+            pass
 
         def monitor_positions(self, run_ids, *, external_exits=None):
             calls.append(f"monitor:{sorted((external_exits or {}).values())}")
@@ -900,3 +906,40 @@ def test_account_is_not_connected_without_credentials(tmp_path: Path) -> None:
     settings.bybit_api_secret = None
 
     assert service.refresh_account()["account"] == {"connected": False}
+
+
+def test_leveraged_live_start_is_refused_when_spot_margin_is_off(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pydantic import SecretStr
+
+    from framework.schemas.models import AccountBalance
+
+    class FakeExecutionTools:
+        def __init__(self, _settings):
+            pass
+
+        def get_balance(self):
+            return AccountBalance(free={"USDT": 1000.0})
+
+        def spot_margin_enabled(self):
+            return False
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=False,
+        kill_switch=False,
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
+
+    with pytest.raises(ValueError, match="spot margin, which is off"):
+        service.start({"symbols": ["BTC/USDT"], "dry_run": False, "leverage": 2})
+    service.start({"symbols": ["BTC/USDT"], "dry_run": False, "leverage": 1})
+
+    assert threads[0].args[2]["leverage"] == 1.0
+    with pytest.raises(ValueError, match="leverage must be"):
+        service.start({"symbols": ["BTC/USDT"], "leverage": 5})
