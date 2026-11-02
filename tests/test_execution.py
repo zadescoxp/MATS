@@ -138,3 +138,19 @@ def test_market_order_is_sized_in_base_units_and_closed_fill_counts_as_filled() 
     assert exchange.created_params[0]["marketUnit"] == "baseCoin"
     assert result.status == "filled"
     assert result.filled == 0.0999
+
+
+def test_borrowing_order_is_sent_as_a_spot_margin_order() -> None:
+    settings = Settings(
+        bybit_api_key=SecretStr("test-key"),
+        bybit_api_secret=SecretStr("test-secret"),
+        bybit_testnet=True,
+    )
+    exchange = ClosedFillExchange()
+    tools = ExecutionTools(settings, exchange=exchange)
+
+    tools.place_order("BTC/USDT", "buy", 0.1, dry_run=False, idempotency_key="a", borrow=True)
+    tools.place_order("BTC/USDT", "buy", 0.1, dry_run=False, idempotency_key="b")
+
+    assert exchange.created_params[0]["isLeverage"] == 1
+    assert "isLeverage" not in exchange.created_params[1]
