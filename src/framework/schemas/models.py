@@ -334,6 +334,18 @@ class AccountBalance(BaseModel):
     used: dict[str, float | None] = Field(default_factory=dict)
     total: dict[str, float | None] = Field(default_factory=dict)
     currencies: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Bybit's own account payload (account type, equity, per-coin USD value, borrowing).
+    info: dict[str, Any] = Field(default_factory=dict)
+
+    def available(self, currency: str) -> float:
+        """Free amount of a currency, or 0 when the account holds none."""
+        value = self.free.get(currency)
+        if value is None:
+            value = self.currencies.get(currency, {}).get("free")
+        try:
+            return max(float(value or 0), 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
 
 def json_safe(value: Any) -> Any:
