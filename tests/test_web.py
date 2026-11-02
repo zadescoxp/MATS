@@ -183,7 +183,7 @@ def test_entry_watcher_checks_every_interval_without_repeating_same_bar_executio
     expected_detail: str,
 ) -> None:
     path = tmp_path / "state.db"
-    settings = Settings(database_path=path, dry_run=False, kill_switch=False)
+    settings = Settings(database_path=path, dry_run=False, kill_switch=False, forward_test_trades=0)
     service = DashboardService(settings)
     database = Database(path)
     database.create_run("run-watch", "BTC/USDT", {})
@@ -457,7 +457,12 @@ def test_algorithm_blocks_entry_on_news_risk(tmp_path: Path, monkeypatch) -> Non
         monkeypatch, open_position=False, news=news
     )
     service = DashboardService(
-        Settings(database_path=tmp_path / "state.db", dry_run=False, kill_switch=False)
+        Settings(
+            database_path=tmp_path / "state.db",
+            dry_run=False,
+            kill_switch=False,
+            forward_test_trades=0,
+        )
     )
 
     service._watch_entries("run-algo", stop_event, 60)
@@ -967,3 +972,78 @@ def test_a_live_run_can_start_while_another_is_active(tmp_path: Path, monkeypatc
 
     assert len(threads) == 2
     assert all(thread.is_alive() for thread in threads)
+
+
+def test_forward_test_gates_live_orders_until_paper_trades_pay(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from framework.schemas.models import OHLCVBar, StrategyDefinition
+    from framework.strategies.forward_test import ForwardTest
+
+    path = tmp_path / "state.db"
+    # Built first, so it has no watcher to restore in a background thread.
+    service = DashboardService(Settings(database_path=path, forward_test_trades=3))
+    database = Database(path)
+    database.create_run("run-paper", "BTC/USDT", {})
+    database.start_entry_watcher("run-paper", 60)
+    verdicts = iter(
+        [
+            ForwardTest("pending", 1, 5.0, 10, "Forward test: 1 of 3 paper trades closed."),
+            ForwardTest("passed", 3, 25.0, 30, "Forward test passed: 3 of 3 closed."),
+        ]
+    )
+    monkeypatch.setattr("framework.web.forward_test", lambda *_args, **_kwargs: next(verdicts))
+    approved = datetime(2026, 11, 1, tzinfo=UTC)
+    state = SimpleNamespace(
+        symbol="BTC/USDT",
+        strategy=StrategyDefinition(name="s", description="s", chosen_timeframe="1h"),
+        raw_data={"1h": [OHLCVBar(timestamp=approved, open=1, high=1, low=1, close=1, volume=1)]},
+        account_equity=None,
+    )
+    worker = SimpleNamespace(context=SimpleNamespace(backtester=None, market_data=None))
+
+    try:
+        assert not service._forward_test_ok(worker, database, "run-paper", state, False)
+        assert not service._forward_test_ok(worker, database, "run-paper", state, True)
+        assert service._forward_test_ok(worker, database, "run-paper", state, True)
+        # Remembered: no more paper trading, even on a candle that is not new.
+        assert service._forward_test_ok(worker, database, "run-paper", state, False)
+        assert database.forward_test_passed("run-paper")
+        assert [row["run_id"] for row in database.entry_watchers(active_only=True)] == ["run-paper"]
+    finally:
+        database.close()
+
+
+def test_failed_forward_test_retires_the_strategy(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from framework.schemas.models import OHLCVBar, StrategyDefinition
+    from framework.strategies.forward_test import ForwardTest
+    from framework.strategies.library import strategy_fingerprint
+
+    path = tmp_path / "state.db"
+    # Built first, so it has no watcher to restore in a background thread.
+    service = DashboardService(Settings(database_path=path, forward_test_trades=3))
+    database = Database(path)
+    database.create_run("run-paper", "BTC/USDT", {})
+    database.start_entry_watcher("run-paper", 60)
+    detail = "Forward test failed: 3 of 3 paper trades closed, net -12.00 after costs."
+    monkeypatch.setattr(
+        "framework.web.forward_test",
+        lambda *_args, **_kwargs: ForwardTest("failed", 3, -12.0, 40, detail),
+    )
+    strategy = StrategyDefinition(name="s", description="s", chosen_timeframe="1h")
+    bar = OHLCVBar(
+        timestamp=datetime(2026, 11, 1, tzinfo=UTC), open=1, high=1, low=1, close=1, volume=1
+    )
+    state = SimpleNamespace(
+        symbol="BTC/USDT", strategy=strategy, raw_data={"1h": [bar]}, account_equity=None
+    )
+    worker = SimpleNamespace(context=SimpleNamespace(backtester=None, market_data=None))
+
+    try:
+        assert not service._forward_test_ok(worker, database, "run-paper", state, True)
+        assert database.strategy_stop_reason("BTC/USDT", strategy_fingerprint(strategy)) == detail
+        assert not database.forward_test_passed("run-paper")
+    finally:
+        database.close()
