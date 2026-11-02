@@ -26,6 +26,9 @@ Critique APPROVE → Risk → [optional Coder] → Execution → live strategy a
   critique approves a backtest that clears the net-of-cost thresholds.
 - **Spot, long only.** Short signals are never sent to the exchange. With
   `MATS_ALLOW_SHORT=true` they can be simulated in dry-run.
+- **No borrowing unless you opt in.** Leverage is 1x by default; see [Leverage](#leverage).
+- **Only your real balance is traded.** Live orders are sized against what the Bybit account
+  actually holds; see [Balances](#balances).
 - **Every live entry gets a protective stop.** If the stop cannot be confirmed, the
   position is flattened immediately.
 - **Credentials stay in the Python process.** API keys are never sent to the browser.
@@ -57,6 +60,7 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_INITIAL_CAPITAL` | `10000` | Capital for dry-run sizing and backtests |
 | `MATS_FEE_RATE_TAKER` / `MATS_SLIPPAGE_PERCENT` | `0.001` / `0.0005` | Costs charged on every backtest fill |
 | `MATS_MAX_RISK_PER_TRADE` / `MATS_MAX_ACCOUNT_EXPOSURE` | `0.01` / `0.25` | Risk agent sizing limits |
+| `MATS_SPOT_LEVERAGE` | `1` | Spot margin multiple for long entries (1 to 3; 1 = no borrowing) |
 | `MATS_EDGE_FADE_LOOKBACK` / `MATS_EDGE_FADE_MIN_TRADES` / `MATS_EDGE_FADE_MIN_EXPECTANCY` | `10` / `3` / `0` | When a live strategy is retired |
 | `MATS_DATABASE_PATH` | `./data/state.db` | Runs, steps, checkpoints, positions |
 | `MATS_CANDLE_CACHE_PATH` | `./data/candles.db` | Local candle cache |
@@ -166,6 +170,25 @@ uses money the account actually holds:
   coin. A position sold outside MATS is recorded as closed without sending an order.
 
 Dry runs are simulated and do not need a balance.
+
+### Leverage
+
+Bybit Unified accounts can trade spot on margin: an order flagged `isLeverage` borrows the
+shortfall in the quote currency. MATS leaves this off (1x) unless you choose 2x or 3x per run
+in the start dialog, or set `MATS_SPOT_LEVERAGE`:
+
+- Only long entries borrow, and only when the free balance cannot pay for the order.
+- Leverage raises the exposure limits, but the loss at each stop is still capped at
+  `MATS_MAX_RISK_PER_TRADE` of equity, so a stop-limited trade never gets bigger.
+- Borrowing is limited to (leverage - 1) times the free balance and to what Bybit will lend.
+- After every leveraged exit, MATS repays the loan from the free balance with Bybit's
+  no-conversion repay. Bybit refuses repayments from minute 04:00 to 05:30 of each hour, so a
+  refused repay is remembered and retried on every later check.
+- Spot margin must already be on in Bybit (it asks for a short quiz). MATS never changes that
+  or any other account setting; a leveraged live run is refused while it is off.
+
+Borrowing costs interest until repaid, and on a Unified account a liquidation can sell your
+other holdings too.
 
 For multi-symbol live batches, a supplied account equity is split evenly across symbols;
 otherwise the available testnet quote balance is fetched once and split. Only one live batch
