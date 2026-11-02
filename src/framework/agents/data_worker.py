@@ -6,6 +6,7 @@ from typing import Any
 from framework.config.settings import Settings
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
+from framework.schemas.models import OHLCVBar
 from framework.strategies.signals import LIVE_SIGNAL_BARS
 from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import collect_context, reference_pair
@@ -102,7 +103,12 @@ class DataWorkerNode:
                 logger.warning("Funding history unavailable; continuing without it.", exc_info=True)
                 funding = []
             if funding:
-                market_context["funding_history"] = funding
+                # Stored as JSON like the pair candles: market context is serialized for
+                # model prompts and checkpoints.
+                market_context["funding_history"] = [
+                    item.model_dump(mode="json") if isinstance(item, OHLCVBar) else item
+                    for item in funding
+                ]
         if self.context.settings.include_orderbook:
             book = self.context.market_data.fetch_orderbook(state.symbol)
             market_context["orderbook"] = book.model_dump(mode="json")
