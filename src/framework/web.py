@@ -107,6 +107,7 @@ class DashboardService:
                 "strategy_timeframes": _STRATEGY_TIMEFRAMES,
                 "spot_leverage": self.settings.spot_leverage,
                 "allow_short": self.settings.allow_short,
+                "forward_test_trades": self.settings.forward_test_trades,
             }
             data["connections"] = self.connections.public(self._environment)
             data["account"] = self._account
@@ -148,6 +149,13 @@ class DashboardService:
             or not 1 <= leverage <= 3
         ):
             raise ValueError("leverage must be a number from 1 to 3.")
+        paper_trades = payload.get("paper_trades")
+        if paper_trades is not None and (
+            isinstance(paper_trades, bool)
+            or not isinstance(paper_trades, int)
+            or not 0 <= paper_trades <= 50
+        ):
+            raise ValueError("paper_trades must be an integer from 0 to 50.")
         max_attempts = payload.get("max_attempts")
         if max_attempts is not None and (
             isinstance(max_attempts, bool)
@@ -195,6 +203,8 @@ class DashboardService:
                     config["max_revision_loops"] = max_attempts - 1
                 if leverage is not None:
                     config["leverage"] = float(leverage)
+                if paper_trades is not None:
+                    config["paper_trades"] = paper_trades
                 if symbol in equity_by_symbol:
                     config["account_equity"] = equity_by_symbol[symbol]
                 elif account_equity is not None:
@@ -774,7 +784,9 @@ class DashboardService:
         self, worker: Any, database: Any, run_id: str, state: GraphState, is_new_bar: bool
     ) -> bool:
         """Whether this algorithm may trade live: its paper trades since approval paid off."""
-        required = self.settings.forward_test_trades
+        # Runs saved before paper trading became a per-run option have no paper_trades.
+        per_run = getattr(state, "paper_trades", None)
+        required = per_run if per_run is not None else self.settings.forward_test_trades
         if required == 0 or database.forward_test_passed(run_id):
             return True
         strategy = state.strategy
