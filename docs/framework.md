@@ -150,7 +150,7 @@ records:
   `cost_edge_ratio` and `buy_and_hold_return` metrics. The critique rejects a strategy
   that loses on either segment or whose cost-edge ratio is too low. These measured gates
   decide: when all pass, the model's review is advisory, its objections are stored as
-  `Advisory:` issues and the strategy is approved for the forward test
+  `Advisory:` issues and the strategy is approved
   (`MATS_CRITIC_CAN_VETO=true` lets the model's REJECT stand). Spot backtests open long positions only; bearish signals
   close an open long. Perpetual strategies may also short (see below). Fees and slippage
   are charged on entry and exit.
@@ -280,12 +280,16 @@ symbol gets a separate persisted run.
 
 ## Live strategy algorithm
 
-Before an algorithm's first live order it is forward tested
+Paper trading is optional and off by default. A run turns it on with the `paper_trades`
+run option (the start dialog's *Paper trade first* toggle, which always sends it) or
+`MATS_FORWARD_TEST_TRADES` for runs that do not set it. It delays live entries and can cost
+profits, since moves during the paper phase are never traded live. When it is on, before an
+algorithm's first live order it is forward tested
 (`framework.strategies.forward_test`): on each new closed candle the strategy is replayed
 over the candles that closed after its research history ended, the watcher shows status
-`paper`, and no order is placed. Once `MATS_FORWARD_TEST_TRADES` paper trades have closed
+`paper`, and no order is placed. Once the required paper trades have closed
 with a net profit the run is marked as passed and trades live from then on; if they closed
-at a loss the strategy is retired. `MATS_FORWARD_TEST_TRADES=0` skips the forward test.
+at a loss the strategy is retired. With paper trading off it trades live at once.
 
 When a dashboard run with dry-run off ends with an approved strategy,
 `DashboardService` starts an algorithm for it (`entry_watchers` row, 60-second loop):
