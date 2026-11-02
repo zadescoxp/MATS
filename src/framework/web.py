@@ -151,15 +151,6 @@ class DashboardService:
                 self.settings.dry_run if dry_run_override is None else dry_run_override
             )
             if not effective_dry_run and not self.settings.kill_switch:
-                active = [
-                    run_id
-                    for run_id, event in self._stop_events.items()
-                    if not event.is_set() and self._run_is_active(run_id)
-                ]
-                if active:
-                    raise ValueError("A live run is already active.")
-
-            if not effective_dry_run and not self.settings.kill_switch:
                 self._check_live_funds(symbols, account_equity)
                 if (leverage or self.settings.spot_leverage) > 1 and not (
                     self._execution_tools().spot_margin_enabled()
@@ -288,7 +279,6 @@ class DashboardService:
         run_id: str | None,
         *,
         account_equity: float | None = None,
-        allow_parallel_live: bool = False,
         extra_attempts: int | None = None,
     ) -> dict[str, str]:
         database = Database(self.settings.database_path)
@@ -332,16 +322,6 @@ class DashboardService:
             with self._lock:
                 if self._run_is_active(selected_id):
                     raise ValueError(f"Run {selected_id} is already active.")
-                active_live_run = (
-                    not self.settings.dry_run
-                    and not self.settings.kill_switch
-                    and any(
-                        run_id != selected_id and thread.is_alive()
-                        for run_id, thread in self._threads.items()
-                    )
-                )
-                if active_live_run and not allow_parallel_live:
-                    raise ValueError("A live run is already active.")
                 stop_event = threading.Event()
                 self._stop_events[selected_id] = stop_event
                 thread = threading.Thread(
@@ -397,12 +377,11 @@ class DashboardService:
                     if isinstance(run["config"].get("account_equity"), int | float)
                     else None,
                 ),
-                allow_parallel_live=True,
             )
             for run in candidates
         ]
         for watcher_id in watcher_ids:
-            self.resume(watcher_id, allow_parallel_live=True)
+            self.resume(watcher_id)
         return {
             "run_ids": [item["run_id"] for item in resumed] + watcher_ids,
             "message": f"Resume requested for {len(resumed) + len(watcher_ids)} run(s).",
