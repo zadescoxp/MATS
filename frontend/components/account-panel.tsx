@@ -16,10 +16,12 @@ export function AccountPanel({
   account,
   busy,
   onRefresh,
+  onOpenDetails,
 }: {
   account: AccountSnapshot | undefined;
   busy: boolean;
   onRefresh: () => void;
+  onOpenDetails: () => void;
 }) {
   if (!account?.connected) {
     return (
@@ -93,6 +95,13 @@ export function AccountPanel({
       ) : (
         <p className="mt-3 text-[11px] text-muted">The account holds no assets.</p>
       )}
+      <button
+        type="button"
+        onClick={onOpenDetails}
+        className="mt-3 text-[11px] text-muted transition-colors hover:text-foreground"
+      >
+        All balances and assets →
+      </button>
     </section>
   );
 }
