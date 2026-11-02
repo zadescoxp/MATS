@@ -158,6 +158,7 @@ class StrategyDefinition(BaseModel):
         "regime_gated_trend",
         "htf_trend_ltf_timing",
         "multi_timeframe_hybrid",
+        "time_series_momentum",
     ] = "ema_crossover"
     entry_rule: Literal[
         "ema_crossover",
@@ -173,6 +174,7 @@ class StrategyDefinition(BaseModel):
         "regime_gated_trend",
         "htf_trend_ltf_timing",
         "multi_timeframe_hybrid",
+        "time_series_momentum",
     ] = "ema_crossover"
     exit_rule: Literal[
         "ema_crossover", "opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"
@@ -240,6 +242,8 @@ class BacktestReport(BaseModel):
     equity_curve: list[dict[str, Any]]
     trades: list[TradeRecord]
     metrics: dict[str, float | int | None]
+    # In-sample and out-of-sample summaries of the same backtest; None on short histories.
+    walk_forward: dict[str, Any] | None = None
 
 
 class Critique(BaseModel):
