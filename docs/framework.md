@@ -225,6 +225,20 @@ strategy model submits a `StrategyChoice` naming a measured candidate.
 5. Add unit tests using fake market/model/exchange clients. Check checkpoint recovery
    and ensure that a completed step is not called again.
 
+## Balances and leverage
+
+Live sizing reads the Bybit account through `ExecutionTools.get_balance`
+(`AccountBalance.available`, `framework.tools.account`). Risk sizing caps run capital to
+the free quote balance, `ExecutionNode` re-checks affordability before each entry and
+sizes the protective stop to the coin actually received, and `PositionMonitor` sells only
+what is held. With `leverage` above 1 (run config or `MATS_SPOT_LEVERAGE`, at most 3) and
+spot margin on, buying power adds up to (leverage - 1) times the free balance, limited by
+Bybit's `availableToBorrow`; the order is sent with `isLeverage=1` only when cash does not
+cover it, and the position records its leverage. Closing a leveraged position calls
+`ExecutionTools.repay_borrowed` (`POST /v5/account/no-convert-repay`); refused repays go
+to `pending_repays` and are retried by every monitor and algorithm check. MATS never
+changes account settings such as margin mode or auto-repay.
+
 ## Operational safety
 
 `MATS_DRY_RUN=true` and `MATS_KILL_SWITCH=true` are safe defaults. A live testnet
