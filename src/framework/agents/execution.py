@@ -12,6 +12,7 @@ from framework.schemas.models import (
 from framework.strategies.library import strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
+from framework.tools.account import coin_detail
 
 
 class ExecutionNode:
@@ -127,8 +128,11 @@ class ExecutionNode:
                 "status": "completed",
             }
 
+        leverage = state.leverage or self.context.settings.spot_leverage
+        leverage = leverage if signal.action == "long" else 1.0
+        borrow = False
         if not dry_run and signal.action == "long":
-            affordable = self._affordable_amount(state.symbol, signal.price)
+            affordable, free_units = self._affordable_amount(state.symbol, signal.price, leverage)
             if affordable < amount:
                 quote = state.symbol.split("/")[-1]
                 self.context.database.log_event(
@@ -148,6 +152,17 @@ class ExecutionNode:
                     dry_run,
                     f"Not enough {quote} is free on the Bybit account for this entry.",
                 )
+            borrow = amount > free_units
+            if borrow:
+                self.context.database.log_event(
+                    state.run_id,
+                    "order_uses_leverage",
+                    (
+                        f"Buying {amount:.8g} at {leverage:g}x leverage; about "
+                        f"{(amount - free_units) * signal.price:,.2f} "
+                        f"{state.symbol.split('/')[-1]} is borrowed and repaid after the exit."
+                    ),
+                )
 
         side = "buy" if signal.action == "long" else "sell"
         entry_bar = data[state.strategy.chosen_timeframe][-1].timestamp.isoformat()
@@ -165,6 +180,7 @@ class ExecutionNode:
             "market",
             dry_run=dry_run,
             idempotency_key=f"{order_key}:spot-entry",
+            borrow=borrow,
         )
         orders = [_order_dict(order) for order in outcome.orders]
         errors = list(outcome.errors)
@@ -284,6 +300,7 @@ class ExecutionNode:
                 entry_order_id=entry_order_id,
                 protective_order_id=protective_order_id,
                 entry_bar_timestamp=entry_bar,
+                leverage=leverage if borrow else 1.0,
             )
             if emergency_flattened:
                 self.context.database.update_live_position(
@@ -332,14 +349,21 @@ class ExecutionNode:
             "status": "completed",
         }
 
-    def _affordable_amount(self, symbol: str, price: float) -> float:
-        """Most the free quote balance can buy at this price after fees and slippage."""
+    def _affordable_amount(self, symbol: str, price: float, leverage: float) -> tuple[float, float]:
+        """Units the account can buy (with any allowed borrowing) and units its cash covers."""
         settings = self.context.settings
         quote = symbol.split("/")[-1]
-        free = self.context.execution.get_balance().available(quote)
+        balance = self.context.execution.get_balance()
+        free = balance.available(quote)
+        borrowable = 0.0
+        if leverage > 1 and self.context.execution.spot_margin_enabled():
+            lendable = coin_detail(balance, quote, "availableToBorrow")
+            borrowable = min(free * (leverage - 1), lendable)
         per_unit = price * (1 + settings.fee_rate_taker + settings.slippage_percent)
+        if per_unit <= 0:
+            return 0.0, 0.0
         # A small margin keeps exchange rounding from tipping the order over the balance.
-        return max(free / per_unit * 0.999, 0.0) if per_unit > 0 else 0.0
+        return max((free + borrowable) / per_unit * 0.999, 0.0), max(free / per_unit * 0.999, 0.0)
 
     def _held_after_fill(self, symbol: str, filled: float, action: str) -> float:
         if action != "long":
