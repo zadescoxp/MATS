@@ -54,7 +54,9 @@ def measure_template(job: TemplateJob) -> dict[str, Any]:
         signals = tool.signals(entry, job.candles, data=job.series)[:end]
         for update in risk_variants(entry):
             strategy = entry.model_copy(update=update)
-            report = tool.simulate(strategy, in_sample, signals, job.capital)
+            report = tool.simulate(
+                strategy, in_sample, signals, job.capital, funding=job.series.get("funding")
+            )
             tested += 1
             most_trades = max(most_trades, report.total_trades)
             if report.total_trades < job.min_trades:
