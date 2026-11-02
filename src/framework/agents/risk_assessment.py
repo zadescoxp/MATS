@@ -5,6 +5,7 @@ from framework.core.state import GraphState
 from framework.schemas.models import LiveSignal, RiskAssessment
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
+from framework.tools.account import coin_detail
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,28 @@ class RiskAssessmentNode:
         equity_source = "run override"
         quote_currency = state.symbol.split("/")[-1]
         balance_notes: list[str] = []
+        live = not (self.context.settings.dry_run or self.context.settings.kill_switch)
+        leverage = state.leverage or self.context.settings.spot_leverage
+        if leverage > 1 and signal.action != "long":
+            leverage = 1.0  # only long spot entries borrow
         # Live orders can only use money the Bybit account actually holds right now.
         free_quote: float | None = None
-        if signal.action in {"long", "short"} and not (
-            self.context.settings.dry_run or self.context.settings.kill_switch
-        ):
-            free_quote = self.context.execution.get_balance().available(quote_currency)
+        borrow_capacity = 0.0
+        if signal.action in {"long", "short"} and live:
+            balance = self.context.execution.get_balance()
+            free_quote = balance.available(quote_currency)
+            if leverage > 1:
+                if self.context.execution.spot_margin_enabled():
+                    borrow_capacity = min(
+                        free_quote * (leverage - 1),
+                        coin_detail(balance, quote_currency, "availableToBorrow"),
+                    )
+                else:
+                    balance_notes.append(
+                        "Spot margin is off on the Bybit account, so this run trades without "
+                        "leverage. Turn spot margin on in Bybit to borrow."
+                    )
+                    leverage = 1.0
             if equity is None:
                 equity = free_quote
                 equity_source = "testnet available balance"
@@ -61,6 +78,17 @@ class RiskAssessmentNode:
         if signal.action == "short" and not self.context.settings.allow_short:
             constraints.append("Short entry is disabled; size is zero.")
         constraints.append(f"Risk sized using {equity_source}.")
+        if leverage > 1:
+            borrow_note = (
+                f" Up to {borrow_capacity:,.2f} {quote_currency} may be borrowed."
+                if free_quote is not None
+                else " Dry run: no borrowing happens."
+            )
+            constraints.append(
+                f"Leverage {leverage:g}x raises the exposure limit; the loss at the stop is "
+                f"still capped at {self.context.settings.max_risk_per_trade:.1%} of equity."
+                + borrow_note
+            )
 
         stop_price = signal.stop or current_price * (1 - state.strategy.stop_loss_pct)
         stop_distance = abs(current_price - stop_price)
@@ -69,14 +97,16 @@ class RiskAssessmentNode:
         risk_budget = equity * self.context.settings.max_risk_per_trade
         exposure_cap = equity * self.context.settings.max_account_exposure
         strategy_cap = equity * state.strategy.position_fraction
+        # Leverage lifts the exposure caps; the loss budget at the stop stays the same.
         caps = [
             risk_budget / stop_distance,
-            exposure_cap / current_price,
-            strategy_cap / current_price,
+            exposure_cap * leverage / current_price,
+            strategy_cap * leverage / current_price,
         ]
         if free_quote is not None:
             costs = self.context.settings.fee_rate_taker + self.context.settings.slippage_percent
-            caps.append(max(free_quote, 0.0) / (current_price * (1 + costs)))
+            buying_power = max(free_quote, 0.0) + borrow_capacity
+            caps.append(buying_power / (current_price * (1 + costs)))
         amount = min(caps)
         if free_quote is not None and free_quote <= 0:
             amount = 0.0
