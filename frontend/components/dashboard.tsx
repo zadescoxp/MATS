@@ -45,6 +45,7 @@ import {
 import { PersonaAvatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AccountPanel } from "@/components/account-panel";
 import { BacktestChart } from "@/components/backtest-chart";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
@@ -1732,6 +1733,13 @@ export function Dashboard() {
     const allSelected = rows.length > 0 && rows.every((position) => selectedPositions.includes(position.run_id));
     return (
       <div className="mx-auto max-w-3xl">
+        <div className="mb-6">
+          <AccountPanel
+            account={data?.account}
+            busy={busyAction === "refresh_account"}
+            onRefresh={() => act("refresh_account", {}, "Balances refreshed.")}
+          />
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-muted">{openPositions.length} open</p>
           <div className="flex flex-wrap items-center gap-2">
@@ -2390,6 +2398,7 @@ export function Dashboard() {
       {showStart && (
         <StartDialog
           strategyTimeframes={data?.settings.strategy_timeframes ?? []}
+          availableQuote={data?.account?.connected ? data.account.assets?.find((asset) => asset.asset === "USDT")?.free ?? 0 : null}
           symbols={runSymbols}
           selectedSymbols={startSymbols}
           setSelectedSymbols={setStartSymbols}
@@ -2446,6 +2455,7 @@ function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
 
 function StartDialog({
   strategyTimeframes,
+  availableQuote,
   symbols,
   selectedSymbols,
   setSelectedSymbols,
@@ -2467,6 +2477,8 @@ function StartDialog({
   busy,
 }: {
   strategyTimeframes: string[];
+  /** Free USDT on the connected Bybit account, or null when no account is connected. */
+  availableQuote: number | null;
   symbols: string[];
   selectedSymbols: string[];
   setSelectedSymbols: (value: string[]) => void;
@@ -2500,6 +2512,7 @@ function StartDialog({
   });
   const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
   const advice = timeframeAdvice(selectedTimeframes, strategyTimeframes);
+  const liveOrders = !dryRun && !killSwitch;
 
   function continueStep() {
     if (!canContinue) return;
@@ -2787,6 +2800,16 @@ function StartDialog({
                 <p className="mt-2 text-[11px] leading-5 text-muted">
                   Split evenly across selected markets. Leave blank to use the available testnet quote balance for live runs.
                 </p>
+                {availableQuote !== null && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Available on Bybit: <span className="tabular-nums text-foreground/85">{availableQuote.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT</span>
+                  </p>
+                )}
+                {liveOrders && availableQuote !== null && Number(accountEquity) > availableQuote && (
+                  <p role="alert" className="mt-2 text-[11px] leading-5 text-negative">
+                    This is more than the USDT available on Bybit. A live run will refuse to start; lower the capital or leave it blank.
+                  </p>
+                )}
               </div>
               <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl border border-white/[0.07] bg-background/35 px-4 py-3.5">
                 <span className="min-w-0">
