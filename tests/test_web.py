@@ -1047,3 +1047,62 @@ def test_failed_forward_test_retires_the_strategy(tmp_path: Path, monkeypatch) -
         assert not database.forward_test_passed("run-paper")
     finally:
         database.close()
+
+
+def test_paper_trading_is_off_by_default_and_chosen_per_run(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from framework.schemas.models import OHLCVBar, StrategyDefinition
+    from framework.strategies.forward_test import ForwardTest
+
+    assert Settings(_env_file=None).forward_test_trades == 0
+
+    path = tmp_path / "state.db"
+    service = DashboardService(Settings(database_path=path, forward_test_trades=0))
+    database = Database(path)
+    database.create_run("run-choice", "BTC/USDT", {})
+    database.start_entry_watcher("run-choice", 60)
+    required: list[int] = []
+
+    def paper(*args, **_kwargs):
+        required.append(args[5])
+        return ForwardTest("pending", 0, 0.0, 1, "Forward test: 0 paper trades closed.")
+
+    monkeypatch.setattr("framework.web.forward_test", paper)
+    approved = datetime(2026, 11, 1, tzinfo=UTC)
+    worker = SimpleNamespace(context=SimpleNamespace(backtester=None, market_data=None))
+
+    candle = OHLCVBar(timestamp=approved, open=1, high=1, low=1, close=1, volume=1)
+
+    def state(paper_trades):
+        return SimpleNamespace(
+            symbol="BTC/USDT",
+            strategy=StrategyDefinition(name="s", description="s", chosen_timeframe="1h"),
+            raw_data={"1h": [candle]},
+            account_equity=None,
+            paper_trades=paper_trades,
+        )
+
+    try:
+        # Off by default: the algorithm may trade live at once, with no paper trading.
+        assert service._forward_test_ok(worker, database, "run-choice", state(None), True)
+        assert service._forward_test_ok(worker, database, "run-choice", state(0), True)
+        assert required == []
+        # A run that turned it on waits for its own number of paper trades.
+        assert not service._forward_test_ok(worker, database, "run-choice", state(2), True)
+        assert required == [2]
+    finally:
+        database.close()
+
+
+def test_start_passes_the_paper_trading_choice_to_each_run(tmp_path: Path, monkeypatch) -> None:
+    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
+    threads = _capture_threads(monkeypatch)
+
+    service.start({"symbols": ["BTC/USDT", "ETH/USDT"], "paper_trades": 3})
+    service.start({"symbols": ["SOL/USDT"]})
+
+    assert [thread.args[2].get("paper_trades") for thread in threads] == [3, 3, None]
+    for bad in (-1, 51, True, 2.5):
+        with pytest.raises(ValueError, match="paper_trades"):
+            service.start({"symbols": ["BTC/USDT"], "paper_trades": bad})
