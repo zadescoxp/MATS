@@ -73,14 +73,20 @@ class Settings(BaseSettings):
     fee_rate_maker: float = Field(default=0.001, ge=0, lt=1)
     slippage_percent: float = Field(default=0.0005, ge=0, lt=1)
     slippage_fixed: float = Field(default=0.0, ge=0)
+    # Bybit linear perpetual fees (non-VIP); spot uses fee_rate_taker / fee_rate_maker.
+    perpetual_fee_rate_taker: float = Field(default=0.00055, ge=0, lt=1)
+    perpetual_fee_rate_maker: float = Field(default=0.0002, ge=0, lt=1)
     max_risk_per_trade: float = Field(default=0.01, gt=0, le=1)
     max_account_exposure: float = Field(default=0.25, gt=0, le=1)
     edge_fade_lookback: int = Field(default=10, ge=1)
     edge_fade_min_expectancy: float = 0.0
     edge_fade_min_trades: int = Field(default=3, ge=1)
-    allow_short: bool = False
+    # Perpetual strategies may open shorts. Spot never shorts: it only sells what it holds.
+    allow_short: bool = True
     # Spot margin: 1 trades only the account's own money. Above 1, long entries may borrow
     # the quote currency up to this multiple of the free balance (Bybit Unified accounts).
+    # On perpetuals the same multiple caps position size against the free margin; the
+    # contract leverage set on Bybit must be at least this high.
     spot_leverage: float = Field(default=1.0, ge=1.0, le=3.0)
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
     # None keeps ccxt's per-exchange throttle (20ms for Bybit, scaled by endpoint cost).
