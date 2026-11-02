@@ -368,7 +368,7 @@ and raw exchange payloads are never logged.
   (about 20 to 40 seconds per timeframe per attempt on this machine).
 - **Perpetuals:** USDT/USDC linear contracts only (no inverse or dated futures), one-way
   position mode, and the contract leverage is whatever is set on Bybit. Live perpetual
-  orders have only been checked against captured requests, not a testnet fill yet.
+  orders were round-tripped on testnet (short, reduce-only stop, cancel, reduce-only close).
 - **Testnet only:** mainnet execution is deliberately disabled.
 
 ## Tests and checks
