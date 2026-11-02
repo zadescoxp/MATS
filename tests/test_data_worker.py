@@ -2,7 +2,8 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from framework.agents.data_worker import DataWorkerNode
+from framework.agents.data_worker import DataWorkerNode, history_bars
+from framework.config.settings import Settings
 from framework.core.state import GraphState
 from framework.schemas.models import OHLCVBar
 from framework.tools.market_data import OHLCVResult, TickerSnapshot
@@ -84,3 +85,12 @@ def test_data_worker_requests_deeper_history_for_short_timeframes() -> None:
     assert ("ETH/USDT", "5m", 5000) in requested  # the reference pair gets the same depth
     assert history_bars("15m", settings) == 2880
     assert history_bars("1M", settings) == 500
+
+
+def test_default_history_covers_months_of_every_strategy_timeframe() -> None:
+    settings = Settings(_env_file=None)
+
+    assert history_bars("1h", settings) == 4320  # 180 days
+    assert history_bars("4h", settings) == 1080  # 180 days
+    assert history_bars("15m", settings) == 10_000  # about 104 days, capped
+    assert history_bars("1d", settings) == 500  # never fewer than live uses
