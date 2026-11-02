@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -13,6 +14,10 @@ from framework.strategies.library import strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
 from framework.tools.account import coin_detail
+
+# Concurrent live runs share one Bybit balance. One live entry at a time checks the free
+# balance and places its orders, so a second run sees what the first one spent.
+_LIVE_ORDER_LOCK = threading.Lock()
 
 
 class ExecutionNode:
@@ -78,6 +83,19 @@ class ExecutionNode:
         }
 
     def _place_entry(
+        self,
+        state: GraphState,
+        signal: LiveSignal,
+        data: dict[str, Sequence[OHLCVBar]],
+        dry_run: bool,
+        fingerprint: str,
+    ) -> dict[str, ExecutionReport | LiveSignal | str]:
+        if dry_run:
+            return self._enter(state, signal, data, dry_run, fingerprint)
+        with _LIVE_ORDER_LOCK:
+            return self._enter(state, signal, data, dry_run, fingerprint)
+
+    def _enter(
         self,
         state: GraphState,
         signal: LiveSignal,
