@@ -500,3 +500,53 @@ def test_unleveraged_exit_never_calls_repay() -> None:
         assert execution.exchange.repays == []
     finally:
         database.close()
+
+
+def test_concurrent_live_entries_cannot_spend_the_same_balance() -> None:
+    import threading
+    import time
+
+    from framework.schemas.models import LiveSignal
+
+    class SpendingExchange(Exchange):
+        def create_order(self, symbol, order_type, side, amount, price, params):
+            time.sleep(0.05)  # widen the window between the balance check and the fill
+            order = super().create_order(symbol, order_type, side, amount, price, params)
+            if "triggerPrice" not in params and side == "buy":
+                self.free["USDT"] -= amount * 120 * (1 + 0.001)
+                self.free["BTC"] = self.free.get("BTC", 0.0) + amount
+            return order
+
+    settings, database, market, _execution = _setup()
+    exchange = SpendingExchange(free={"USDT": 15.0})  # enough for about one planned entry
+    execution = ExecutionTools(settings, exchange=exchange)
+    try:
+        context = _context(settings, database, market, execution)
+        for run_id in ("run-a", "run-b"):
+            database.create_run(run_id, "BTC/USDT", {})
+        states = [_approved_state(run_id, market.candles) for run_id in ("run-a", "run-b")]
+
+        def enter(state):
+            ExecutionNode(context)._place_entry(
+                state,
+                LiveSignal(action="long", reason="probe", strength=1, price=120.0, stop=117.6),
+                {"1h": market.candles},
+                False,
+                f"fingerprint-{state.run_id}",
+            )
+
+        threads = [threading.Thread(target=enter, args=(state,)) for state in states]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        spent = sum(
+            order["amount"] * 120
+            for order in exchange.orders
+            if order["side"] == "buy" and "triggerPrice" not in order["info"]
+        )
+        assert spent <= 15.0
+        assert exchange.free["USDT"] >= 0
+    finally:
+        database.close()
