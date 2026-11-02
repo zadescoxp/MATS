@@ -175,8 +175,13 @@ class ExecutionTools:
     def cancel_order(self, order_id: str, symbol: str, *, trigger: bool = False) -> OrderSnapshot:
         params = _trigger_params(symbol, trigger)
         if params:
-            return _normalize_order(self.exchange.cancel_order(order_id, symbol, params), symbol)
-        return _normalize_order(self.exchange.cancel_order(order_id, symbol), symbol)
+            reply = self.exchange.cancel_order(order_id, symbol, params)
+        else:
+            reply = self.exchange.cancel_order(order_id, symbol)
+        if not reply.get("status"):
+            # Bybit's cancel reply carries only IDs; the order itself says if it is canceled.
+            reply = self._fetch_order(order_id, symbol, params)
+        return _normalize_order(reply, symbol)
 
     def get_order(self, order_id: str, symbol: str, *, trigger: bool = False) -> OrderSnapshot:
         return _normalize_order(
@@ -250,8 +255,15 @@ class ExecutionTools:
             order = self.exchange.create_order(symbol, "market", side, amount, None, params)
         except ccxt.DuplicateOrderId:
             order = self._fetch_order(None, symbol, {"orderLinkId": link_id})
+        if not order.get("status") and order.get("id"):
+            # Bybit's create reply carries only IDs; confirm the stop is resting before it
+            # is trusted. A failed lookup leaves it unconfirmed, so the caller flattens.
+            try:
+                order = self._fetch_order(order["id"], symbol, _trigger_params(symbol, True))
+            except Exception:
+                logger.warning("Protective stop could not be confirmed.", exc_info=True)
         result = OrderExecutionResult(
-            status=order.get("status", "open"),
+            status=order.get("status") or "unknown",
             orders=[_normalize_order(order, symbol)],
         )
         logger.info("Protective stop response received (status=%s).", result.status)
@@ -327,7 +339,8 @@ def _normalize_order(order: dict[str, Any], symbol: str) -> OrderSnapshot:
         symbol=order.get("symbol") or symbol,
         type=order.get("type"),
         side=order.get("side"),
-        status=order.get("status", "unknown"),
+        # Bybit's create reply has status None until the order is looked up.
+        status=order.get("status") or "unknown",
         amount=order.get("amount"),
         price=order.get("price"),
         average=order.get("average"),
