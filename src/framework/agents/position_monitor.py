@@ -5,6 +5,7 @@ from framework.core.context import AgentContext
 from framework.schemas.models import OrderSnapshot, StrategyDefinition
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
+from framework.tools.markets import base_currency, is_perpetual, quote_currency
 
 
 class PositionMonitor:
@@ -137,7 +138,7 @@ class PositionMonitor:
         protective_order_id = position.get("protective_order_id")
         if protective_order_id:
             protective_order = self.context.execution.get_order(
-                protective_order_id, position["symbol"]
+                protective_order_id, position["symbol"], trigger=True
             )
             if protective_order.status in {"closed", "filled"}:
                 exit_price = _fill_price([protective_order], signal.price)
@@ -174,7 +175,7 @@ class PositionMonitor:
             try:
                 if protective_order.status not in {"canceled", "rejected"}:
                     canceled = self.context.execution.cancel_order(
-                        protective_order_id, position["symbol"]
+                        protective_order_id, position["symbol"], trigger=True
                     )
                 else:
                     canceled = protective_order
@@ -193,15 +194,23 @@ class PositionMonitor:
 
         exit_side = "sell" if position["side"] == "long" else "buy"
         exit_amount = float(position["amount"])
-        if position["side"] == "long":
-            # Sell only what the account holds: fees or a manual sale can leave less.
-            base = position["symbol"].split("/")[0]
-            held = self.context.execution.get_balance().available(base)
+        perpetual = is_perpetual(position["symbol"])
+        if position["side"] == "long" or perpetual:
+            # Close only what the account holds: fees, liquidation, or a manual close can
+            # leave less, and a perpetual exit must never open the opposite position.
+            base = base_currency(position["symbol"])
+            if perpetual:
+                held = self.context.execution.position_size(position["symbol"])
+                holding = f"{position['symbol']} position"
+            else:
+                held = self.context.execution.get_balance().available(base)
+                holding = base
             if held <= 0:
                 reason = (
-                    f"No {base} is held on Bybit any more; the position was closed outside MATS."
+                    f"No {holding} is held on Bybit any more; the position was closed outside MATS."
                 )
-                net_pnl = (signal.price - float(position["entry_price"])) * exit_amount
+                direction = 1 if position["side"] == "long" else -1
+                net_pnl = (signal.price - float(position["entry_price"])) * exit_amount * direction
                 self._finish_trade(
                     position,
                     event_type="closed_outside_mats",
@@ -228,6 +237,7 @@ class PositionMonitor:
             "market",
             dry_run=False,
             idempotency_key=(f"{position['run_id']}:position-exit:{position['bars_held']}"),
+            reduce_only=perpetual,
         )
         self.context.database.save_execution(
             f"{position['run_id']}-exit-{bars_held}",
@@ -327,8 +337,9 @@ class PositionMonitor:
                 position["symbol"], position["strategy_key"], position["run_id"], reason
             )
             database.update_run_status(position["run_id"], "stopped")
-        if float(position.get("leverage") or 1) > 1:
-            self._repay(position["symbol"].split("/")[-1], position["run_id"])
+        # Only leveraged spot positions borrowed; perpetual margin is never a loan.
+        if float(position.get("leverage") or 1) > 1 and not is_perpetual(position["symbol"]):
+            self._repay(quote_currency(position["symbol"]), position["run_id"])
 
     def retry_pending_repays(self) -> None:
         """Retry loans that could not be repaid at exit (e.g. Bybit's hourly blackout)."""
