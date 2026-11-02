@@ -132,6 +132,8 @@ export interface DashboardState {
     spot_leverage?: number;
     /** Whether perpetual strategies may open shorts. */
     allow_short?: boolean;
+    /** Paper trades required before live orders; 0 (the default) means paper trading is off. */
+    forward_test_trades?: number;
   };
   operations: Operation[];
   active_run_ids: string[];
