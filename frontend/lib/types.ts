@@ -128,6 +128,8 @@ export interface DashboardState {
     timeframes: string[];
     /** Timeframes at least one strategy template can trade. */
     strategy_timeframes?: string[];
+    /** Default spot leverage (1 = no borrowing). */
+    spot_leverage?: number;
   };
   operations: Operation[];
   active_run_ids: string[];
