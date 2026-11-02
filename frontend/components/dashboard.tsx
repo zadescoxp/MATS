@@ -19,6 +19,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Wallet,
   Square,
   X,
 } from "lucide-react";
@@ -47,6 +48,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AccountPanel } from "@/components/account-panel";
 import { BacktestChart } from "@/components/backtest-chart";
+import { BalancesSection } from "@/components/balances-section";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
@@ -55,7 +57,7 @@ import { RejectedRunNotice, RunDiagnosisBanner } from "@/components/run-diagnosi
 import { StructuredBrief } from "@/components/structured-brief";
 import { createStateStream, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { COIN_SYMBOLS, marketName } from "@/lib/markets";
+import { COIN_SYMBOLS, coinLogo, marketName } from "@/lib/markets";
 import { parseRunRequest } from "@/lib/run-intent";
 import type {
   AgentStep,
@@ -99,7 +101,7 @@ const CHART_TOOLTIP = {
 };
 
 type Notice = { kind: "success" | "error" | "info"; message: string };
-type SettingsSection = "connections" | "usage";
+type SettingsSection = "balances" | "connections" | "usage";
 type RailTab = "running" | "history";
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -348,65 +350,7 @@ function StatusBadge({ status }: { status: string }) {
 function CoinMark({ symbol, small = false }: { symbol: string; small?: boolean }) {
   const base = symbol.split("/")[0]?.toUpperCase() ?? "";
   const size = small ? 28 : 34;
-  const logos: Record<string, string> = {
-    BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.png",
-    ETH: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
-    SOL: "https://cryptologos.cc/logos/solana-sol-logo.png",
-    BNB: "https://cryptologos.cc/logos/bnb-bnb-logo.png",
-    XRP: "https://cryptologos.cc/logos/xrp-xrp-logo.png",
-    DOGE: "https://cryptologos.cc/logos/dogecoin-doge-logo.png",
-    ADA: "https://cryptologos.cc/logos/cardano-ada-logo.png",
-    AVAX: "https://cryptologos.cc/logos/avalanche-avax-logo.png",
-    LINK: "https://cryptologos.cc/logos/chainlink-link-logo.png",
-    DOT: "https://cryptologos.cc/logos/polkadot-new-dot-logo.png",
-    TRX: "https://cryptologos.cc/logos/tron-trx-logo.png",
-    TON: "https://cryptologos.cc/logos/toncoin-ton-logo.png",
-    LTC: "https://cryptologos.cc/logos/litecoin-ltc-logo.png",
-    BCH: "https://cryptologos.cc/logos/bitcoin-cash-bch-logo.png",
-    ATOM: "https://cryptologos.cc/logos/cosmos-atom-logo.png",
-    NEAR: "https://cryptologos.cc/logos/near-protocol-near-logo.png",
-    APT: "https://cryptologos.cc/logos/aptos-apt-logo.png",
-    SUI: "https://cryptologos.cc/logos/sui-sui-logo.png",
-    SEI: "https://cryptologos.cc/logos/sei-sei-logo.png",
-    INJ: "https://cryptologos.cc/logos/injective-inj-logo.png",
-    TIA: "https://cryptologos.cc/logos/celestia-tia-logo.png",
-    FIL: "https://cryptologos.cc/logos/filecoin-fil-logo.png",
-    ICP: "https://cryptologos.cc/logos/internet-computer-icp-logo.png",
-    HBAR: "https://cryptologos.cc/logos/hedera-hbar-logo.png",
-    ETC: "https://cryptologos.cc/logos/ethereum-classic-etc-logo.png",
-    UNI: "https://cryptologos.cc/logos/uniswap-uni-logo.png",
-    AAVE: "https://cryptologos.cc/logos/aave-aave-logo.png",
-    MKR: "https://cryptologos.cc/logos/maker-mkr-logo.png",
-    LDO: "https://cryptologos.cc/logos/lido-dao-ldo-logo.png",
-    ARB: "https://cryptologos.cc/logos/arbitrum-arb-logo.png",
-    OP: "https://cryptologos.cc/logos/optimism-ethereum-op-logo.png",
-    STX: "https://cryptologos.cc/logos/stacks-stx-logo.png",
-    RUNE: "https://cryptologos.cc/logos/thorchain-rune-logo.png",
-    GRT: "https://cryptologos.cc/logos/the-graph-grt-logo.png",
-    IMX: "https://cryptologos.cc/logos/immutable-x-imx-logo.png",
-    SAND: "https://cryptologos.cc/logos/the-sandbox-sand-logo.png",
-    MANA: "https://cryptologos.cc/logos/decentraland-mana-logo.png",
-    PEPE: "https://cryptologos.cc/logos/pepe-pepe-logo.png",
-    SHIB: "https://cryptologos.cc/logos/shiba-inu-shib-logo.png",
-    BONK: "https://cryptologos.cc/logos/bonk1-bonk-logo.png",
-    WIF: "https://cryptologos.cc/logos/dogwifhat-wif-logo.png",
-    FLOKI: "https://cryptologos.cc/logos/floki-inu-floki-logo.png",
-    JUP: "https://cryptologos.cc/logos/jupiter-jup-logo.png",
-    PYTH: "https://cryptologos.cc/logos/pyth-network-pyth-logo.png",
-    ONDO: "https://cryptologos.cc/logos/ondo-ondo-logo.png",
-    ENA: "https://cryptologos.cc/logos/ethena-ena-logo.png",
-    TAO: "https://cryptologos.cc/logos/bittensor-tao-logo.png",
-    PENDLE: "https://cryptologos.cc/logos/pendle-pendle-logo.png",
-    CRV: "https://cryptologos.cc/logos/curve-dao-token-crv-logo.png",
-    POL: "https://cryptologos.cc/logos/polygon-matic-logo.png",
-    ALGO: "https://cryptologos.cc/logos/algorand-algo-logo.png",
-    XLM: "https://cryptologos.cc/logos/stellar-xlm-logo.png",
-    KAS: "https://cryptologos.cc/logos/kaspa-kas-logo.png",
-    ORDI: "https://cryptologos.cc/logos/ordi-ordi-logo.png",
-    WLD: "https://coin-images.coingecko.com/coins/images/31069/small/worldcoin.jpeg?1696529903",
-    FET: "https://coin-images.coingecko.com/coins/images/5681/small/ASI.png?1719827289",
-  };
-  const logo = logos[base];
+  const logo = coinLogo(base);
   const [failedLogo, setFailedLogo] = useState<string | null>(null);
   return (
     <span
@@ -1206,9 +1150,10 @@ export function Dashboard() {
           <button
             type="button"
             onClick={() => {
-              setSettingsSection("connections");
+              setSettingsSection("balances");
               setSettingsOpen(true);
             }}
+            aria-label="Open balances and settings"
             className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-card"
           >
             <span className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-sky-400 via-violet-400 to-orange-300 text-xs font-semibold text-zinc-950">
@@ -1216,7 +1161,11 @@ export function Dashboard() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] font-medium">Zade</span>
-              <span className="block text-[11px] text-muted-foreground">Workspace</span>
+              <span className="block truncate text-[11px] tabular-nums text-muted-foreground">
+                {data?.account?.connected && data.account.total_equity_usd != null
+                  ? `${data.account.total_equity_usd.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 })} · ${data.account.venue_name ?? "Bybit"}${data.account.testnet ? " testnet" : ""}`
+                  : "Workspace"}
+              </span>
             </span>
             <Menu className="h-4 w-4 text-muted-foreground" />
           </button>
@@ -1746,6 +1695,10 @@ export function Dashboard() {
             account={data?.account}
             busy={busyAction === "refresh_account"}
             onRefresh={() => act("refresh_account", {}, "Balances refreshed.")}
+            onOpenDetails={() => {
+              setSettingsSection("balances");
+              setSettingsOpen(true);
+            }}
           />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1889,6 +1842,14 @@ export function Dashboard() {
             <nav className="mt-6 space-y-1" aria-label="Settings sections">
               <button
                 type="button"
+                onClick={() => setSettingsSection("balances")}
+                className={cn("flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors", settingsSection === "balances" ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5")}
+              >
+                <Wallet className="h-4 w-4" />
+                Balances & assets
+              </button>
+              <button
+                type="button"
                 onClick={() => setSettingsSection("connections")}
                 className={cn("flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors", settingsSection === "connections" ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5")}
               >
@@ -1914,7 +1875,14 @@ export function Dashboard() {
             >
               <X className="h-4 w-4" />
             </button>
-            {settingsSection === "connections" ? (
+            {settingsSection === "balances" ? (
+              <BalancesSection
+                accounts={data?.accounts ?? []}
+                busy={busyAction === "refresh_account"}
+                onRefresh={() => act("refresh_account", {}, "Balances refreshed.")}
+                onOpenConnections={() => setSettingsSection("connections")}
+              />
+            ) : settingsSection === "connections" ? (
               <div className="max-w-lg">
                 <h2 className="text-lg font-semibold tracking-tight">Connections</h2>
                 <p className="mt-1 text-xs leading-5 text-muted">
