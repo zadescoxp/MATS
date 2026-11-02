@@ -130,6 +130,8 @@ export interface DashboardState {
     strategy_timeframes?: string[];
     /** Default spot leverage (1 = no borrowing). */
     spot_leverage?: number;
+    /** Whether perpetual strategies may open shorts. */
+    allow_short?: boolean;
   };
   operations: Operation[];
   active_run_ids: string[];
