@@ -23,20 +23,29 @@ class RiskAssessmentNode:
         signal = evaluate_live_signal(state.strategy, live_data)
         equity = state.account_equity
         equity_source = "run override"
-        if (
-            signal.action in {"long", "short"}
-            and equity is None
-            and not (self.context.settings.dry_run or self.context.settings.kill_switch)
+        quote_currency = state.symbol.split("/")[-1]
+        balance_notes: list[str] = []
+        # Live orders can only use money the Bybit account actually holds right now.
+        free_quote: float | None = None
+        if signal.action in {"long", "short"} and not (
+            self.context.settings.dry_run or self.context.settings.kill_switch
         ):
-            balance = self.context.execution.get_balance()
-            quote_currency = state.symbol.split("/")[-1]
-            free_balance = balance.free.get(quote_currency)
-            if free_balance is None:
-                free_balance = balance.currencies.get(quote_currency, {}).get("free")
-            if free_balance is None or float(free_balance) <= 0:
-                raise ValueError(f"No available {quote_currency} balance for testnet risk sizing")
-            equity = float(free_balance)
-            equity_source = "testnet available balance"
+            free_quote = self.context.execution.get_balance().available(quote_currency)
+            if equity is None:
+                equity = free_quote
+                equity_source = "testnet available balance"
+            elif equity > free_quote:
+                balance_notes.append(
+                    f"Run capital {equity:,.2f} is more than the {free_quote:,.2f} "
+                    f"{quote_currency} available on Bybit; sized on the available balance."
+                )
+                equity = free_quote
+                equity_source = "testnet available balance"
+            if free_quote <= 0:
+                balance_notes.append(
+                    f"No {quote_currency} is available on the Bybit account; size is zero."
+                )
+                equity = self.context.settings.initial_capital  # keeps the plan readable
         if equity is None:
             equity = self.context.settings.initial_capital
             equity_source = "configured initial capital"
@@ -46,7 +55,7 @@ class RiskAssessmentNode:
         if not current_price or current_price <= 0:
             raise ValueError("Risk assessment requires a current positive market price")
 
-        constraints: list[str] = []
+        constraints: list[str] = list(balance_notes)
         if signal.action not in {"long", "short"}:
             constraints.append(f"Live signal is {signal.action}: {signal.reason} Size is zero.")
         if signal.action == "short" and not self.context.settings.allow_short:
@@ -60,11 +69,17 @@ class RiskAssessmentNode:
         risk_budget = equity * self.context.settings.max_risk_per_trade
         exposure_cap = equity * self.context.settings.max_account_exposure
         strategy_cap = equity * state.strategy.position_fraction
-        amount = min(
+        caps = [
             risk_budget / stop_distance,
             exposure_cap / current_price,
             strategy_cap / current_price,
-        )
+        ]
+        if free_quote is not None:
+            costs = self.context.settings.fee_rate_taker + self.context.settings.slippage_percent
+            caps.append(max(free_quote, 0.0) / (current_price * (1 + costs)))
+        amount = min(caps)
+        if free_quote is not None and free_quote <= 0:
+            amount = 0.0
         if (
             signal.action not in {"long", "short"}
             or signal.action == "short"
