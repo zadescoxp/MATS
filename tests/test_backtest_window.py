@@ -40,7 +40,10 @@ def test_each_bar_sees_the_live_window_and_nothing_from_its_future(monkeypatch) 
     def record(strategy, data, position=None):
         seen.append(
             {
-                timeframe: (len(series), series[-1].timestamp if series else None)
+                timeframe: (
+                    len(series),
+                    series["timestamp"].iloc[-1].to_pydatetime() if len(series) else None,
+                )
                 for timeframe, series in data.items()
             }
         )
