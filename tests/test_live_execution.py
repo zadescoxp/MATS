@@ -29,9 +29,13 @@ class Market:
 
 
 class Exchange:
-    def __init__(self) -> None:
+    def __init__(self, free: dict[str, float] | None = None) -> None:
         self.orders: list[dict] = []
         self.order_count = 0
+        self.free = free if free is not None else {"USDT": 100_000.0, "BTC": 10.0}
+
+    def fetch_balance(self):
+        return {"free": dict(self.free), "used": {}, "total": dict(self.free), "info": {}}
 
     def create_order(self, symbol, order_type, side, amount, price, params):
         self.order_count += 1
@@ -283,3 +287,96 @@ def _bar(timestamp: datetime, close: float, *, low: float | None = None) -> OHLC
         close=close,
         volume=10,
     )
+
+
+def test_entry_is_held_when_the_account_has_no_quote_balance() -> None:
+    settings, database, market, execution = _setup()
+    execution.exchange.free = {"USDT": 0.0}
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-broke", "BTC/USDT", {})
+
+        result = ExecutionNode(context)(_approved_state("run-broke", market.candles))
+
+        assert result["execution_result"].status == "hold"
+        assert "Not enough USDT" in result["execution_result"].execution_result
+        assert execution.exchange.order_count == 0
+    finally:
+        database.close()
+
+
+def test_entry_is_shrunk_to_what_the_free_balance_can_buy() -> None:
+    settings, database, market, execution = _setup()
+    execution.exchange.free = {"USDT": 6.0, "BTC": 10.0}  # the plan wants ~12 USDT of BTC
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-small", "BTC/USDT", {})
+
+        ExecutionNode(context)(_approved_state("run-small", market.candles))
+
+        entry = execution.exchange.orders[0]
+        assert entry["side"] == "buy"
+        assert entry["amount"] * 120 * (1 + settings.fee_rate_taker) < 6.0
+        events = [
+            row["type"] for row in database.connection.execute("SELECT type FROM system_events")
+        ]
+        assert "order_limited_by_balance" in events
+    finally:
+        database.close()
+
+
+def test_protective_stop_covers_only_the_coin_actually_received() -> None:
+    settings, database, market, execution = _setup()
+    execution.exchange.free = {"USDT": 100_000.0, "BTC": 0.0999}  # fee taken in BTC
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-fee", "BTC/USDT", {})
+
+        ExecutionNode(context)(_approved_state("run-fee", market.candles))
+
+        stop = next(order for order in execution.exchange.orders if "triggerPrice" in order["info"])
+        assert stop["amount"] == 0.0999
+        assert database.open_positions("BTC/USDT")[0]["amount"] == 0.0999
+    finally:
+        database.close()
+
+
+def test_exit_sells_only_the_coin_held_and_closes_cleanly() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-dust", "BTC/USDT", {})
+        ExecutionNode(context)(_approved_state("run-dust", market.candles))
+        execution.exchange.free = {"USDT": 100_000.0, "BTC": 0.0999}  # fee taken in BTC
+        entry = market.candles[-1]
+        market.candles = [*market.candles, _bar(entry.timestamp + timedelta(hours=1), 115, low=114)]
+
+        decision = PositionMonitor(context)()[0]
+
+        exit_order = execution.exchange.orders[-1]
+        assert exit_order["side"] == "sell" and exit_order["amount"] == 0.0999
+        assert decision["action"] == "position_closed"
+        assert database.open_positions("BTC/USDT") == []
+    finally:
+        database.close()
+
+
+def test_position_sold_outside_mats_is_recorded_without_an_order() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-gone", "BTC/USDT", {})
+        ExecutionNode(context)(_approved_state("run-gone", market.candles))
+        execution.exchange.free = {"USDT": 100_000.0}  # the BTC was sold by hand
+        orders_before = execution.exchange.order_count
+        entry = market.candles[-1]
+        market.candles = [*market.candles, _bar(entry.timestamp + timedelta(hours=1), 115, low=114)]
+
+        decision = PositionMonitor(context)()[0]
+
+        assert decision["action"] == "closed_outside_mats"
+        assert execution.exchange.order_count == orders_before
+        assert database.open_positions("BTC/USDT") == []
+        assert database.strategy_trades("run-gone")[0]["reason"].startswith("No BTC is held")
+    finally:
+        database.close()
