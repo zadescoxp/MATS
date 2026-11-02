@@ -246,6 +246,7 @@ class ExecutionTools:
                 for key, value in balance.items()
                 if key not in {"free", "used", "total", "info"} and isinstance(value, dict)
             },
+            info=balance.get("info") if isinstance(balance.get("info"), dict) else {},
         )
         logger.info("Account balance received (currencies=%d).", len(result.total))
         return result
