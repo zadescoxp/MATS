@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -496,7 +497,9 @@ def test_perpetual_research_fetches_funding_for_the_whole_history() -> None:
 
     for symbol in (PERP, "BTC/USDT"):
         state = GraphState(run_id="run", symbol=symbol, timeframes_to_consider=["1h"])
-        assert node(state)["market_context"]["funding_history"]
+        context = node(state)["market_context"]
+        assert context["funding_history"]
+        json.dumps(context["funding_history"])  # prompts and checkpoints serialize it
 
     # Spot carry reads the perpetual's funding rate; spot itself has none.
     assert calls == [(PERP, {"since": int(START.timestamp() * 1000)}), (PERP, {})]
