@@ -151,6 +151,22 @@ console runs it as a continuous strategy algorithm, checking every 60 seconds:
 - **Stopping:** stopping one run stops only that run. **Stop all** stops every run and turns
   the kill switch on. Algorithms are restored after an API restart.
 
+### Balances
+
+With Bybit keys configured, the console shows the account's holdings (free, locked, USD
+value, and any borrowing) in the Positions tab, refreshed every 30 seconds. Live trading only
+uses money the account actually holds:
+
+- A live run will not start without any of the quote currency (USDT), or when the capital you
+  enter is more than what is free.
+- Risk sizing uses the free balance; larger run capital is capped to it, with a note.
+- Each entry re-checks the free balance (including fees and slippage) and buys less, or holds,
+  if the account cannot pay for the full order.
+- Protective stops and exits sell only the coin actually held; Bybit takes spot buy fees in the
+  coin. A position sold outside MATS is recorded as closed without sending an order.
+
+Dry runs are simulated and do not need a balance.
+
 For multi-symbol live batches, a supplied account equity is split evenly across symbols;
 otherwise the available testnet quote balance is fetched once and split. Only one live batch
 runs at a time.
