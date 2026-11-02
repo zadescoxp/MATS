@@ -127,6 +127,28 @@ class ExecutionNode:
                 "status": "completed",
             }
 
+        if not dry_run and signal.action == "long":
+            affordable = self._affordable_amount(state.symbol, signal.price)
+            if affordable < amount:
+                quote = state.symbol.split("/")[-1]
+                self.context.database.log_event(
+                    state.run_id,
+                    "order_limited_by_balance",
+                    (
+                        f"Planned {amount:.8g} needs more {quote} than is free on Bybit; "
+                        f"buying {affordable:.8g} instead."
+                    ),
+                )
+                amount = affordable
+            if amount <= 0:
+                quote = state.symbol.split("/")[-1]
+                return self._hold(
+                    state,
+                    signal,
+                    dry_run,
+                    f"Not enough {quote} is free on the Bybit account for this entry.",
+                )
+
         side = "buy" if signal.action == "long" else "sell"
         entry_bar = data[state.strategy.chosen_timeframe][-1].timestamp.isoformat()
         # One entry per bar; a re-armed strategy needs fresh keys for its next entry.
@@ -171,6 +193,9 @@ class ExecutionNode:
             protective_orders = stop_result.orders
             orders.extend(_order_dict(order) for order in protective_orders)
         elif outcome.status in {"filled", "partially_filled"} and filled > 0:
+            # Bybit takes spot buy fees in the coin, so less than `filled` may be held.
+            filled = self._held_after_fill(state.symbol, filled, signal.action)
+            position_amount = filled
             try:
                 stop_result = self.context.execution.place_protective_stop(
                     state.symbol,
@@ -246,7 +271,7 @@ class ExecutionNode:
                 strategy_key=fingerprint,
                 strategy=state.strategy.model_dump(mode="json"),
                 side=signal.action,
-                amount=outcome.filled or amount,
+                amount=position_amount,
                 entry_price=entry_price,
                 stop_price=stop,
                 take_profit_price=(
@@ -276,7 +301,7 @@ class ExecutionNode:
                     state.run_id,
                     "Protective stop placement failed; position was immediately flattened.",
                 )
-            elif filled < (outcome.filled or amount):
+            elif filled < position_amount:
                 self.context.database.update_live_position(
                     state.run_id,
                     status="open",
@@ -306,6 +331,38 @@ class ExecutionNode:
             "live_signal": signal,
             "status": "completed",
         }
+
+    def _affordable_amount(self, symbol: str, price: float) -> float:
+        """Most the free quote balance can buy at this price after fees and slippage."""
+        settings = self.context.settings
+        quote = symbol.split("/")[-1]
+        free = self.context.execution.get_balance().available(quote)
+        per_unit = price * (1 + settings.fee_rate_taker + settings.slippage_percent)
+        # A small margin keeps exchange rounding from tipping the order over the balance.
+        return max(free / per_unit * 0.999, 0.0) if per_unit > 0 else 0.0
+
+    def _held_after_fill(self, symbol: str, filled: float, action: str) -> float:
+        if action != "long":
+            return filled
+        base = symbol.split("/")[0]
+        try:
+            held = self.context.execution.get_balance().available(base)
+        except Exception:
+            return filled
+        return min(filled, held) if held > 0 else filled
+
+    def _hold(
+        self, state: GraphState, signal: LiveSignal, dry_run: bool, reason: str
+    ) -> dict[str, ExecutionReport | LiveSignal | str]:
+        report = ExecutionReport(
+            status="hold",
+            errors=[reason],
+            dry_run=dry_run,
+            live_signal=signal,
+            execution_result=f"No order placed: {reason}",
+        )
+        self._save_report(state, report)
+        return {"execution_result": report, "live_signal": signal, "status": "completed"}
 
     def _save_report(self, state: GraphState, report: ExecutionReport) -> None:
         self.context.database.save_execution(
