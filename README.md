@@ -57,6 +57,10 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_SYMBOLS` / `MATS_TIMEFRAMES` | `["BTC/USDT","ETH/USDT"]` / `["1h","4h","1d"]` | Defaults for new runs |
 | `MATS_MAX_REVISION_LOOPS` | `2` | Revisions after the first attempt (3 attempts total) |
 | `MATS_MIN_BACKTEST_TRADES` / `MATS_MIN_BACKTEST_NET_PNL` / `MATS_MAX_BACKTEST_DRAWDOWN` | `3` / `0` / `0.25` | Critique thresholds a backtest must clear |
+| `MATS_WALK_FORWARD_SPLIT` / `MATS_REQUIRE_OUT_OF_SAMPLE_EDGE` | `0.7` / `true` | Share of history strategies are chosen on; the rest must also be profitable |
+| `MATS_MIN_COST_EDGE_RATIO` | `2` | Gross profit must be at least this multiple of fees and slippage |
+| `MATS_BACKTEST_WORKERS` | `4` | Processes that measure strategy variants in parallel |
+| `MATS_FORWARD_TEST_TRADES` | `3` | Profitable paper trades after approval before live orders (0 = none) |
 | `MATS_INITIAL_CAPITAL` | `10000` | Capital for dry-run sizing and backtests |
 | `MATS_FEE_RATE_TAKER` / `MATS_SLIPPAGE_PERCENT` | `0.001` / `0.0005` | Costs charged on every backtest fill |
 | `MATS_MAX_RISK_PER_TRADE` / `MATS_MAX_ACCOUNT_EXPOSURE` | `0.01` / `0.25` | Risk agent sizing limits |
@@ -107,19 +111,29 @@ reply is still invalid the error is sent back for one corrected attempt.
    gives a bias on the highest timeframe and entry timing on the lowest.
 3. **Regime** measures trend strength, volatility percentile, autocorrelation, and Hurst
    exponent, and labels the market (for example `trending_normal_vol` or `choppy_low_vol`).
-4. **Strategy Builder** backtests every library template that fits the timeframes and regime,
-   keeps candidates with enough history and at least `MATS_MIN_BACKTEST_TRADES` closed trades,
-   and offers the best five per timeframe to the model, which picks one by candidate ID.
-5. **Backtest** replays the chosen strategy with fees and slippage on every fill.
-6. **Critique** applies fixed gates (net PnL, trade count, drawdown, no pure EMA crossover in
-   chop, no family that recently lost in this regime) plus the model's review. A rejection
-   sends written revision instructions back to the builder.
+4. **Strategy Builder** searches every library template that fits the timeframes and regime:
+   the default parameters plus two alternatives, each with wider stop, target, and time-stop
+   variants. Every variant is judged only on the first `MATS_WALK_FORWARD_SPLIT` (70%) of the
+   history. A template is offered only if its best variant made at least
+   `MATS_MIN_BACKTEST_TRADES` trades, a profit after costs, and gross profit at least
+   `MATS_MIN_COST_EDGE_RATIO` times its fees and slippage. The model picks one of the best
+   five per timeframe by candidate ID. Measurements are reused by later attempts of the run.
+   When nothing qualifies, the run ends as **staying in cash**: no edge, nothing to trade.
+5. **Backtest** replays the chosen strategy with fees and slippage on every fill, over the
+   whole history and separately over the in-sample and held-out (out-of-sample) parts.
+6. **Critique** applies fixed gates (net PnL, trade count, drawdown, cost-edge ratio, profit on
+   both the in-sample and the unseen out-of-sample history, no pure EMA crossover in chop, no
+   family that recently lost in this regime) plus the model's review. A rejection sends
+   written revision instructions back to the builder.
 7. **Risk** sizes an approved strategy from the live signal, stop distance, and limits.
 8. **Execution** places the entry and protective stop (or simulates them in dry-run).
+9. **Forward test**: a live algorithm first paper-trades the strategy on candles that closed
+   after approval. It places live orders only after `MATS_FORWARD_TEST_TRADES` paper trades
+   closed with a net profit; if they lose, the strategy is retired without risking money.
 
 ### Strategy library and timeframes
 
-There are 13 templates across momentum, mean reversion, relative value (pair spread),
+There are 14 templates across momentum (including daily/4h time-series momentum), mean reversion, relative value (pair spread),
 volatility, breakout, carry (funding), regime-gated trend, and multi-timeframe families.
 Strategies trade only **5m, 15m, 1h, 4h, and 1d**:
 
