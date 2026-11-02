@@ -151,8 +151,8 @@ records:
   that loses on either segment or whose cost-edge ratio is too low. These measured gates
   decide: when all pass, the model's review is advisory, its objections are stored as
   `Advisory:` issues and the strategy is approved for the forward test
-  (`MATS_CRITIC_CAN_VETO=true` lets the model's REJECT stand). Current spot backtests open long positions only; bearish signals
-  close an open long, and do not simulate borrowed/derivative shorts. Fees and slippage
+  (`MATS_CRITIC_CAN_VETO=true` lets the model's REJECT stand). Spot backtests open long positions only; bearish signals
+  close an open long. Perpetual strategies may also short (see below). Fees and slippage
   are charged on entry and exit.
 - Template exits include the opposite signal, configured percentage stop, optional
   percentage target, ATR trailing stop, and bar-count time stop. Live position
@@ -187,12 +187,21 @@ with positive risk size; hold/exit/zero-size decisions are recorded as expected
 IDs, status, fill details, and the protective stop ID in `executions` and
 `live_positions`.
 
-The current order path is Bybit spot, not margin or derivatives. `MATS_ALLOW_SHORT`
-defaults to false. Short signals are not opened with the default setting; with
-`MATS_ALLOW_SHORT=true`, short entries can be represented in dry-run simulation, but
-live spot execution still refuses to send them because this path does not borrow or
-create a derivative position. When monitoring a long spot position, an opposite short
-signal is treated as an exit to flat.
+The market travels with the symbol (`framework/tools/markets.py`): `BTC/USDT` is spot and
+`BTC/USDT:USDT` the USDT linear perpetual. The builder stamps each strategy with
+`market` and `short_entries` (perpetual and `MATS_ALLOW_SHORT`, default true); both are in
+the strategy fingerprint for non-spot strategies. Spot strategies are long only: a short
+signal closes the long. Perpetual strategies with `short_entries` reverse: a short signal
+closes a long and opens a short, and vice versa. The backtester keeps a short's notional as
+margin, marks it at `(entry - close) x quantity`, applies the
+`MATS_PERPETUAL_FEE_RATE_*` schedule, and charges each funding settlement held over
+(`TradeRecord.funding`, `BacktestReport.funding_cost`). The data worker fetches funding for
+the whole research window on perpetuals; spot carry strategies read the perpetual's rate.
+Live perpetual orders omit spot-only fields, protective stops are reduce-only conditional
+orders with an explicit trigger direction, and exits are reduce-only and capped at the
+position Bybit reports (`ExecutionTools.position_size`). Perpetual leverage scales the margin
+cap only; spot borrowing and repayment never apply to it. Order lookups pass ccxt's
+`acknowledged` flag (required on Unified accounts) and spot stops use the StopOrder filter.
 Persisted open positions can be checked once with `mats --monitor-open-positions` or
 on each `mats --loop` polling cycle. Exits cancel the recorded protective order before
 sending a market flatten order. Exit events, closed trades, and stopped-strategy
