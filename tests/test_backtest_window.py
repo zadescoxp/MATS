@@ -91,3 +91,51 @@ def test_histories_within_the_live_window_backtest_exactly_as_before(monkeypatch
     assert [trade.entry_time for trade in windowed.trades] == [
         trade.entry_time for trade in unlimited.trades
     ]
+
+
+def test_backtest_step_sees_the_higher_timeframe_and_reference_pair() -> None:
+    from types import SimpleNamespace
+
+    from framework.agents.backtest import BacktestNode
+    from framework.core.state import GraphState
+
+    hourly = _bars(50, timedelta(hours=1))
+    four_hourly = _bars(20, timedelta(hours=4))
+    seen: dict[str, list] = {}
+
+    class RecordingBacktester:
+        def run(self, strategy, candles, *, data=None, initial_capital=None):
+            seen.update(data or {})
+            return BacktestTool(CostAssumptions(), 10_000).run(strategy, candles, data=data)
+
+    database = SimpleNamespace(save_backtest=lambda *_args: None)
+    context = SimpleNamespace(
+        settings=SimpleNamespace(
+            initial_capital=10_000,
+            fee_rate_maker=0.001,
+            fee_rate_taker=0.001,
+            slippage_percent=0.0,
+            slippage_fixed=0.0,
+        ),
+        backtester=RecordingBacktester(),
+        database=database,
+    )
+    state = GraphState(
+        run_id="run",
+        symbol="BTC/USDT",
+        timeframes_to_consider=["1h", "4h"],
+        raw_data={"1h": hourly, "4h": four_hourly},
+        market_context={"pair_symbol": "ETH/USDT", "pair_candles": {"1h": hourly}},
+        strategy=StrategyDefinition(
+            name="pair",
+            description="pair",
+            chosen_timeframe="1h",
+            template_name="stat_arb_spread",
+            entry_rule="stat_arb_spread",
+            parameters={"z_period": 30, "z_entry": 1.5, "pair_symbol": "ETH/USDT"},
+        ),
+    )
+
+    BacktestNode(context)(state)
+
+    assert set(seen) == {"1h", "4h", "pair"}
