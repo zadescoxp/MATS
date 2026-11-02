@@ -132,6 +132,7 @@ export interface DashboardState {
   operations: Operation[];
   active_run_ids: string[];
   connections?: ConnectionsState;
+  account?: AccountSnapshot;
 }
 
 export interface SavedModel {
@@ -160,3 +161,24 @@ export type DashboardTab =
   | "strategy"
   | "positions"
   | "events";
+
+export interface AssetHolding {
+  asset: string;
+  total: number;
+  free: number;
+  locked: number;
+  usd_value: number | null;
+  borrowed: number;
+}
+
+/** The connected Bybit account, refreshed by the API every 30 seconds. */
+export interface AccountSnapshot {
+  connected: boolean;
+  fetched_at?: string;
+  testnet?: boolean;
+  account_type?: string | null;
+  total_equity_usd?: number | null;
+  available_usd?: number | null;
+  assets?: AssetHolding[];
+  error?: string | null;
+}
