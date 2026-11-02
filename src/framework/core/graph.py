@@ -148,6 +148,7 @@ class TradingFramework:
                 "dashboard_batch_id",
                 "max_revision_loops",
                 "leverage",
+                "paper_trades",
             }
         )
         if unknown:
@@ -178,6 +179,13 @@ class TradingFramework:
             or not 1 <= leverage <= 3
         ):
             raise ValueError("leverage must be a number from 1 to 3")
+        paper_trades = options.get("paper_trades")
+        if paper_trades is not None and (
+            isinstance(paper_trades, bool)
+            or not isinstance(paper_trades, int)
+            or not 0 <= paper_trades <= 50
+        ):
+            raise ValueError("paper_trades must be an integer from 0 to 50")
         run_id = run_id or str(uuid.uuid4())
         state = GraphState(
             run_id=run_id,
@@ -186,6 +194,7 @@ class TradingFramework:
             account_equity=options.get("account_equity"),
             max_revision_loops=max_revision_loops,
             leverage=None if leverage is None else float(leverage),
+            paper_trades=paper_trades,
         )
         logger.info(
             "Run queued (timeframes=%s, dry_run=%s, kill_switch=%s).",
