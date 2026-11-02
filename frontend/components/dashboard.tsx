@@ -55,9 +55,19 @@ import { LiveMarketChart } from "@/components/live-market-chart";
 import { PanelResizeHandle, usePanelWidth, useViewportWidth } from "@/components/resizable-panel";
 import { RejectedRunNotice, RunDiagnosisBanner } from "@/components/run-diagnosis";
 import { StructuredBrief } from "@/components/structured-brief";
-import { createStateStream, fetchState, sendAction } from "@/lib/api";
+import { createStateStream, fetchMarkets, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { COIN_SYMBOLS, coinLogo, marketName } from "@/lib/markets";
+import {
+  COIN_SYMBOLS,
+  FALLBACK_MARKETS,
+  coinLogo,
+  compareMarkets,
+  displaySymbol,
+  isPerpetual,
+  marketName,
+  type ListedMarket,
+  type MarketType,
+} from "@/lib/markets";
 import { parseRunRequest } from "@/lib/run-intent";
 import type {
   AgentStep,
@@ -552,6 +562,8 @@ export function Dashboard() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [showStart, setShowStart] = useState(false);
+  // Every Bybit market, loaded the first time the start dialog opens.
+  const [listedMarkets, setListedMarkets] = useState<ListedMarket[] | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("connections");
@@ -733,6 +745,35 @@ export function Dashboard() {
     () => [...new Set([...(data?.settings.symbols ?? []), ...COIN_SYMBOLS, ...runs.map((run) => run.symbol)])],
     [data?.settings.symbols, runs],
   );
+  useEffect(() => {
+    if (!showStart || listedMarkets) return;
+    let cancelled = false;
+    fetchMarkets()
+      .then((markets) => {
+        if (!cancelled) setListedMarkets(markets);
+      })
+      .catch(() => {
+        // The built-in coins stay selectable when Bybit's listing cannot be loaded.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showStart, listedMarkets]);
+  const startMarkets = useMemo(() => {
+    const known = new Map((listedMarkets ?? FALLBACK_MARKETS).map((market) => [market.symbol, market]));
+    // Configured and earlier symbols stay pickable even if the listing lacks them.
+    for (const symbol of runSymbols) {
+      if (known.has(symbol)) continue;
+      const [base = symbol, rest = "USDT"] = symbol.split("/");
+      known.set(symbol, {
+        symbol,
+        base,
+        quote: rest.split(":")[0] ?? rest,
+        type: isPerpetual(symbol) ? "perpetual" : "spot",
+      });
+    }
+    return [...known.values()].sort(compareMarkets);
+  }, [listedMarkets, runSymbols]);
   const liveRuns = runs
     .filter((run) => isLiveRun(run, activeRunIds, entryWatchers))
     .sort((left, right) => right.started_at.localeCompare(left.started_at));
@@ -1126,7 +1167,7 @@ export function Dashboard() {
               >
                 <CoinMark symbol={run.symbol} small />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-foreground">{run.symbol}</span>
+                  <span className="block truncate text-[13px] font-medium text-foreground">{displaySymbol(run.symbol)}</span>
                   <span className={cn("mt-0.5 block truncate text-[11px]", live ? "text-muted" : "text-muted-foreground")}>
                     {runSubtitle(run, entryWatchers)}
                   </span>
@@ -1783,7 +1824,7 @@ export function Dashboard() {
             {rows.map((position) => (
               <li key={position.run_id} className="flex items-center gap-3 py-2 text-xs">
                 <input type="checkbox" checked={selectedPositions.includes(position.run_id)} onChange={() => toggleSelection(position.run_id, selectedPositions, setSelectedPositions)} aria-label={`Select ${position.symbol} position`} />
-                <span className="flex w-28 items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol.split("/")[0]}</span>
+                <span className="flex w-28 items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol.split("/")[0]}{isPerpetual(position.symbol) && <span className="text-[9px] uppercase tracking-wide text-accent">perp</span>}</span>
                 <span className="w-24 capitalize text-muted">{position.side} · {position.amount}</span>
                 <span className="w-28 tabular-nums text-muted">{money(position.entry_price)}</span>
                 <span className="min-w-0 flex-1 truncate text-muted">{textValue(position.strategy.name ?? position.strategy_key)}</span>
@@ -2422,7 +2463,9 @@ export function Dashboard() {
         <StartDialog
           strategyTimeframes={data?.settings.strategy_timeframes ?? []}
           availableQuote={data?.account?.connected ? data.account.assets?.find((asset) => asset.asset === "USDT")?.free ?? 0 : null}
-          symbols={runSymbols}
+          markets={startMarkets}
+          marketsLoaded={listedMarkets !== null}
+          allowShort={data?.settings.allow_short ?? true}
           selectedSymbols={startSymbols}
           setSelectedSymbols={setStartSymbols}
           timeframes={TIMEFRAMES}
@@ -2450,6 +2493,11 @@ export function Dashboard() {
 }
 
 const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
+const MARKET_RESULTS_LIMIT = 120;
+const MARKET_TYPES: Array<{ value: MarketType; label: string; detail: string }> = [
+  { value: "spot", label: "Spot", detail: "Buys the coin; long only" },
+  { value: "perpetual", label: "Perpetual", detail: "USDT contract; long and short" },
+];
 
 /** Warn before a run whose timeframes cannot produce a testable strategy. */
 function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
@@ -2481,7 +2529,9 @@ function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
 function StartDialog({
   strategyTimeframes,
   availableQuote,
-  symbols,
+  markets,
+  marketsLoaded,
+  allowShort,
   selectedSymbols,
   setSelectedSymbols,
   timeframes,
@@ -2506,7 +2556,10 @@ function StartDialog({
   strategyTimeframes: string[];
   /** Free USDT on the connected Bybit account, or null when no account is connected. */
   availableQuote: number | null;
-  symbols: string[];
+  markets: ListedMarket[];
+  /** False while the built-in coins stand in for Bybit's full listing. */
+  marketsLoaded: boolean;
+  allowShort: boolean;
   selectedSymbols: string[];
   setSelectedSymbols: (value: string[]) => void;
   timeframes: string[];
@@ -2529,16 +2582,27 @@ function StartDialog({
   busy: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [marketType, setMarketType] = useState<MarketType>(() =>
+    selectedSymbols.some(isPerpetual) ? "perpetual" : "spot",
+  );
   const needle = query.trim().toLowerCase();
   const timeframeGroups = [
     { label: "Short-term", detail: "Fast market moves", values: ["1m", "5m", "15m"] },
     { label: "Intraday", detail: "Within the trading day", values: ["30m", "1h", "2h", "4h"] },
     { label: "Long-term", detail: "Broader market trends", values: ["6h", "12h", "1d", "1w"] },
   ];
-  const visibleSymbols = symbols.filter((symbol) => {
-    if (!needle) return true;
-    return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
-  });
+  const matchingSymbols = markets
+    .filter((market) => market.type === marketType)
+    .map((market) => market.symbol)
+    .filter((symbol) => !needle || `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle));
+  // Bybit lists over a thousand markets; render the best matches and let search narrow them.
+  const visibleSymbols = matchingSymbols.slice(0, MARKET_RESULTS_LIMIT);
+  const typeCounts = {
+    spot: markets.filter((market) => market.type === "spot").length,
+    perpetual: markets.filter((market) => market.type === "perpetual").length,
+  };
+  const hasPerpetual = selectedSymbols.some(isPerpetual);
+  const hasSpot = selectedSymbols.some((symbol) => !isPerpetual(symbol));
   const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
   const advice = timeframeAdvice(selectedTimeframes, strategyTimeframes);
   const liveOrders = !dryRun && !killSwitch;
@@ -2656,6 +2720,29 @@ function StartDialog({
                   {selectedSymbols.length} selected
                 </Badge>
               </div>
+              <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl border border-white/[0.07] p-1" role="radiogroup" aria-label="Market type">
+                {MARKET_TYPES.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={marketType === option.value}
+                    onClick={() => setMarketType(option.value)}
+                    className={cn(
+                      "rounded-lg px-3 py-2 text-left transition-colors",
+                      marketType === option.value ? "bg-white/[0.07] text-foreground" : "text-muted hover:text-foreground",
+                    )}
+                  >
+                    <span className="flex items-center justify-between gap-2 text-xs font-medium">
+                      {option.label}
+                      <span className="text-[10px] font-normal tabular-nums text-muted-foreground">{typeCounts[option.value]}</span>
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                      {option.value === "perpetual" && !allowShort ? "USDT contract; shorts are off" : option.detail}
+                    </span>
+                  </button>
+                ))}
+              </div>
               <label className="relative block" htmlFor="coin-search">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -2680,6 +2767,7 @@ function StartDialog({
                       >
                         <CoinMark symbol={symbol} small />
                         <span className="max-w-24 truncate">{symbol.split("/")[0]}</span>
+                        {isPerpetual(symbol) && <span className="text-[9px] uppercase tracking-wide text-accent">perp</span>}
                         <X className="h-3 w-3 text-muted" />
                       </button>
                     ))}
@@ -2710,7 +2798,7 @@ function StartDialog({
                         <CoinMark symbol={symbol} small />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-xs font-medium">{marketName(symbol)}</span>
-                          <span className="mt-0.5 block text-[10px] text-muted-foreground">{symbol}</span>
+                          <span className="mt-0.5 block text-[10px] text-muted-foreground">{displaySymbol(symbol)}</span>
                         </span>
                       </label>
                     );
@@ -2718,6 +2806,16 @@ function StartDialog({
                 </div>
                 {!visibleSymbols.length && (
                   <p className="px-1 py-8 text-center text-xs text-muted">No markets match “{query.trim()}”.</p>
+                )}
+                {matchingSymbols.length > visibleSymbols.length && (
+                  <p className="px-1 pb-1 pt-3 text-center text-[11px] text-muted-foreground">
+                    Showing {visibleSymbols.length} of {matchingSymbols.length}. Search to find the rest.
+                  </p>
+                )}
+                {!marketsLoaded && (
+                  <p className="px-1 pb-1 pt-3 text-center text-[11px] text-muted-foreground">
+                    Loading every Bybit market…
+                  </p>
                 )}
               </div>
             </section>
@@ -2874,9 +2972,14 @@ function StartDialog({
                   <span className="min-w-0">
                     <span className="block text-xs font-medium" id="leverage-label">Leverage</span>
                     <span className="mt-1 block text-[11px] leading-4 text-muted">
-                      {leverage > 1
-                        ? `Live long entries may borrow USDT up to ${leverage}x your free balance.`
-                        : "Trades use only the money in your account."}
+                      {leverage === 1
+                        ? "Trades use only the money in your account."
+                        : [
+                            hasSpot && `Spot long entries may borrow USDT up to ${leverage}x your free balance.`,
+                            hasPerpetual && `Perpetual positions may be up to ${leverage}x your free margin.`,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
                     </span>
                   </span>
                   <div className="flex shrink-0 rounded-lg border border-white/[0.07] p-0.5" role="radiogroup" aria-labelledby="leverage-label">
@@ -2899,9 +3002,12 @@ function StartDialog({
                 </div>
                 {leverage > 1 && (
                   <p className="mt-2 text-[11px] leading-5 text-muted">
-                    The loss at each stop stays capped at the same share of equity, and MATS repays the loan after every exit.
-                    Borrowing costs interest, needs spot margin turned on in Bybit, and on a Unified account a liquidation can
-                    sell your other holdings too.
+                    The loss at each stop stays capped at the same share of equity.
+                    {hasSpot &&
+                      " On spot, MATS repays the loan after every exit; borrowing costs interest and needs spot margin turned on in Bybit."}
+                    {hasPerpetual &&
+                      ` On perpetuals nothing is borrowed, but the contract leverage on Bybit must be at least ${leverage}x, and funding is paid or received every 8 hours.`}
+                    {" "}On a Unified account a liquidation can sell your other holdings too.
                   </p>
                 )}
               </div>
