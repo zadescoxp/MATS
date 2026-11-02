@@ -176,8 +176,11 @@ def test_dashboard_resumes_stopped_entry_watcher(tmp_path: Path, monkeypatch) ->
     ],
 )
 def test_entry_watcher_checks_every_interval_without_repeating_same_bar_execution(
-    tmp_path: Path, monkeypatch, previous_bar: str | None,
-    expected_calls: list[str], expected_detail: str,
+    tmp_path: Path,
+    monkeypatch,
+    previous_bar: str | None,
+    expected_calls: list[str],
+    expected_detail: str,
 ) -> None:
     path = tmp_path / "state.db"
     settings = Settings(database_path=path, dry_run=False, kill_switch=False)
@@ -458,9 +461,7 @@ def test_algorithm_blocks_entry_on_news_risk(tmp_path: Path, monkeypatch) -> Non
     assert "Entry blocked by news risk" in check
 
 
-def test_algorithm_manages_open_position_and_passes_news_exit(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_algorithm_manages_open_position_and_passes_news_exit(tmp_path: Path, monkeypatch) -> None:
     from framework.strategies.news_risk import NewsRisk
 
     news = NewsRisk(True, True, "Coin-specific shock headline: BTC custodian hacked")
@@ -590,7 +591,9 @@ def test_start_live_multi_symbol_splits_available_balance(tmp_path: Path, monkey
             pass
 
         def get_balance(self):
-            return SimpleNamespace(free={"USDT": 9000}, currencies={})
+            from framework.schemas.models import AccountBalance
+
+            return AccountBalance(free={"USDT": 9000})
 
     monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
 
@@ -794,3 +797,106 @@ def test_snapshot_summarises_stored_candle_series(tmp_path: Path) -> None:
 
     assert step["output"]["raw_data"] == {"1h": {"count": 24}}
     assert step["input"]["raw_data"] == {"1h": {"count": 24}}
+
+
+def _fake_balance_tools(monkeypatch, free: dict[str, float]):
+    from framework.schemas.models import AccountBalance
+
+    class FakeExecutionTools:
+        def __init__(self, _settings):
+            pass
+
+        def get_balance(self):
+            info = {
+                "result": {
+                    "list": [
+                        {
+                            "accountType": "UNIFIED",
+                            "totalEquity": "1500",
+                            "totalAvailableBalance": "1400",
+                            "coin": [
+                                {"coin": "USDT", "usdValue": "1000", "borrowAmount": "0"},
+                                {"coin": "BTC", "usdValue": "500", "borrowAmount": "0"},
+                            ],
+                        }
+                    ]
+                }
+            }
+            return AccountBalance(free=free, total=free, info=info)
+
+    monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
+
+
+@pytest.mark.parametrize(
+    ("free", "capital", "message"),
+    [
+        ({"USDT": 0.0}, None, "No USDT is available"),
+        ({"USDT": 1000.0}, 5000, "more than the 1,000.00 USDT available"),
+    ],
+)
+def test_live_start_is_refused_when_bybit_cannot_pay_for_it(
+    tmp_path: Path, monkeypatch, free, capital, message
+) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=False,
+        kill_switch=False,
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    _fake_balance_tools(monkeypatch, free)
+
+    payload = {"symbols": ["BTC/USDT"], "dry_run": False}
+    if capital is not None:
+        payload["account_equity"] = capital
+    with pytest.raises(ValueError, match=message):
+        service.start(payload)
+    assert threads == []
+
+
+def test_dry_run_start_does_not_need_a_balance(tmp_path: Path, monkeypatch) -> None:
+    service = DashboardService(Settings(database_path=tmp_path / "state.db", dry_run=True))
+    threads = _capture_threads(monkeypatch)
+    _fake_balance_tools(monkeypatch, {"USDT": 0.0})
+
+    service.start({"symbols": ["BTC/USDT"], "account_equity": 5000})
+
+    assert len(threads) == 1
+
+
+def test_account_snapshot_lists_holdings_by_value(tmp_path: Path, monkeypatch) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    _fake_balance_tools(monkeypatch, {"USDT": 1000.0, "BTC": 0.01, "DOGE": 0.0})
+
+    account = service.refresh_account()["account"]
+
+    assert account["account_type"] == "UNIFIED"
+    assert account["total_equity_usd"] == 1500
+    assert [asset["asset"] for asset in account["assets"]] == ["USDT", "BTC"]
+    assert service.state()["account"] == account
+
+
+def test_account_is_not_connected_without_credentials(tmp_path: Path) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        bybit_api_key=SecretStr(""),
+        bybit_api_secret=SecretStr(""),
+    )
+    service = DashboardService(settings)
+    settings.bybit_api_key = None
+    settings.bybit_api_secret = None
+
+    assert service.refresh_account()["account"] == {"connected": False}
