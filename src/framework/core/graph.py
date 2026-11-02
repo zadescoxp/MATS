@@ -70,7 +70,15 @@ class TradingFramework:
             llm=self.llm,
             market_data=self.market_data,
             backtester=BacktestTool(
-                costs, self.settings.initial_capital, self.settings.walk_forward_split
+                costs,
+                self.settings.initial_capital,
+                self.settings.walk_forward_split,
+                perpetual_costs=costs.model_copy(
+                    update={
+                        "maker_fee_rate": self.settings.perpetual_fee_rate_maker,
+                        "taker_fee_rate": self.settings.perpetual_fee_rate_taker,
+                    }
+                ),
             ),
             execution=self.execution,
             coder_enabled=enable_coder,
