@@ -107,15 +107,15 @@ class CritiqueNode:
         elif proposed.decision == "REJECT" and not self.context.settings.critic_can_veto:
             # Every measured check passed. The model's objection alone has proved unreliable
             # (the same strategy approved on one run, rejected on the next), so it is kept as
-            # a note and the paper-trading forward test judges the edge instead.
+            # a note; live results (edge fade, or optional paper trading) judge the edge.
             logger.info("Critic objected to a strategy that passed every check; approving.")
             proposed = proposed.model_copy(
                 update={
                     "decision": "APPROVE",
                     "issues": [f"Advisory: {issue}" for issue in proposed.issues],
                     "revision_instructions": "",
-                    "rationale": "Every measured check passed, so the strategy goes to the "
-                    "forward test. The model's objection: " + proposed.rationale,
+                    "rationale": "Every measured check passed, so the strategy is approved. "
+                    "The model's objection: " + proposed.rationale,
                 }
             )
         if proposed.decision == "REJECT" and not proposed.revision_instructions.strip():
