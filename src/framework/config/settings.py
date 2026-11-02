@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     edge_fade_min_expectancy: float = 0.0
     edge_fade_min_trades: int = Field(default=3, ge=1)
     allow_short: bool = False
+    # Spot margin: 1 trades only the account's own money. Above 1, long entries may borrow
+    # the quote currency up to this multiple of the free balance (Bybit Unified accounts).
+    spot_leverage: float = Field(default=1.0, ge=1.0, le=3.0)
     model_routes: dict[str, ModelRoute] = Field(default_factory=dict)
     # None keeps ccxt's per-exchange throttle (20ms for Bybit, scaled by endpoint cost).
     # ccxt multiplies this by each endpoint's cost, so 1000 meant ~5s per Bybit request.
