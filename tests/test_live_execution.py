@@ -38,6 +38,8 @@ class Exchange:
         self.lendable = 1_000_000.0
         self.repays: list[dict] = []
         self.repay_ok = True
+        self.cancel_params: list[dict] = []
+        self.fetch_params: list[dict] = []
 
     def fetch_balance(self):
         info = {
@@ -74,10 +76,12 @@ class Exchange:
         self.orders.append(order)
         return order
 
-    def cancel_order(self, order_id, symbol):
+    def cancel_order(self, order_id, symbol, params=None):
+        self.cancel_params.append(params or {})
         return {"id": order_id, "symbol": symbol, "status": "canceled"}
 
     def fetch_order(self, order_id, symbol, params=None):
+        self.fetch_params.append(params or {})
         return next(order for order in self.orders if order["id"] == order_id)
 
 
@@ -125,6 +129,9 @@ def test_monitor_closes_position_records_trade_and_rearms_strategy() -> None:
         decisions = PositionMonitor(context)()
         assert decisions[0]["action"] == "position_closed"
         assert decisions[0]["exchange_order_ids"] == ["exchange-3"]
+        # The spot stop is a conditional order, looked up and canceled in that list.
+        assert execution.exchange.fetch_params[-1] == {"acknowledged": True, "trigger": True}
+        assert execution.exchange.cancel_params[-1] == {"trigger": True}
         assert database.open_positions("BTC/USDT") == []
         trades = database.strategy_trades("run-monitor")
         assert len(trades) == 1
