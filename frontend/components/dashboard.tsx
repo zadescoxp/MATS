@@ -10,6 +10,7 @@ import {
   Circle,
   Gauge,
   History,
+  Info,
   LoaderCircle,
   LockKeyhole,
   Menu,
@@ -580,6 +581,8 @@ export function Dashboard() {
   const [startDryRun, setStartDryRun] = useState(true);
   const [startAttempts, setStartAttempts] = useState(DEFAULT_ATTEMPTS);
   const [startLeverage, setStartLeverage] = useState(1);
+  // Optional paper trading before live orders; off unless the user turns it on.
+  const [startPaperTrading, setStartPaperTrading] = useState(false);
   const [backtestVersion, setBacktestVersion] = useState<number | null>(null);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
@@ -910,6 +913,8 @@ export function Dashboard() {
       dry_run: dryRun,
       max_attempts: attempts,
       leverage: startLeverage,
+      // Always sent, so the toggle decides even when MATS_FORWARD_TEST_TRADES is set.
+      paper_trades: startPaperTrading ? paperTradeCount(data?.settings.forward_test_trades) : 0,
     };
     if (equity.trim()) {
       const value = Number(equity.replace(/,/g, ""));
@@ -999,6 +1004,7 @@ export function Dashboard() {
   function openStartDialog() {
     if (data) setStartDryRun(data.settings.dry_run);
     if (data) setStartLeverage(data.settings.spot_leverage ?? 1);
+    if (data) setStartPaperTrading((data.settings.forward_test_trades ?? 0) > 0);
     setStartStep(0);
     setShowStart(true);
     setRailOpen(false);
@@ -2479,6 +2485,9 @@ export function Dashboard() {
           setAttempts={setStartAttempts}
           leverage={startLeverage}
           setLeverage={setStartLeverage}
+          paperTrading={startPaperTrading}
+          setPaperTrading={setStartPaperTrading}
+          paperTrades={paperTradeCount(data?.settings.forward_test_trades)}
           killSwitch={killSwitchEnabled}
           setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
           step={startStep}
@@ -2494,6 +2503,12 @@ export function Dashboard() {
 
 const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
 const MARKET_RESULTS_LIMIT = 120;
+const DEFAULT_PAPER_TRADES = 3;
+
+/** Paper trades a run needs when the user turns paper trading on. */
+function paperTradeCount(configured: number | undefined): number {
+  return configured && configured > 0 ? configured : DEFAULT_PAPER_TRADES;
+}
 const MARKET_TYPES: Array<{ value: MarketType; label: string; detail: string }> = [
   { value: "spot", label: "Spot", detail: "Buys the coin; long only" },
   { value: "perpetual", label: "Perpetual", detail: "USDT contract; long and short" },
@@ -2545,6 +2560,9 @@ function StartDialog({
   setAttempts,
   leverage,
   setLeverage,
+  paperTrading,
+  setPaperTrading,
+  paperTrades,
   killSwitch,
   setKillSwitch,
   step,
@@ -2573,6 +2591,10 @@ function StartDialog({
   setAttempts: (value: number) => void;
   leverage: number;
   setLeverage: (value: number) => void;
+  paperTrading: boolean;
+  setPaperTrading: (value: boolean) => void;
+  /** Profitable paper trades required before live orders when paper trading is on. */
+  paperTrades: number;
   killSwitch: boolean;
   setKillSwitch: (value: boolean) => void;
   step: number;
@@ -3027,6 +3049,31 @@ function StartDialog({
                     <span className="mt-1 block text-[11px] text-muted">Forces order placement back to dry-run.</span>
                   </span>
                   <Switch checked={killSwitch} label={`Toggle kill switch; currently ${killSwitch ? "on" : "off"}`} onChange={setKillSwitch} />
+                </div>
+                <div className="py-3.5">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="min-w-0">
+                      <span className="block text-xs font-medium">Paper trade first</span>
+                      <span className="mt-1 block text-[11px] text-muted">
+                        {paperTrading
+                          ? `Live orders wait until ${paperTrades} paper trades close at a profit.`
+                          : "Off: approved strategies trade live right away."}
+                      </span>
+                    </span>
+                    <Switch
+                      checked={paperTrading}
+                      label={`Toggle paper trading before live orders; currently ${paperTrading ? "on" : "off"}`}
+                      onChange={setPaperTrading}
+                    />
+                  </div>
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground">
+                    <Info className="mt-px h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>
+                      This might delay live trades, since the strategy first has to finish its paper trades. It might also
+                      affect profits: moves that happen while it is paper trading are never traded live, and a strategy
+                      that loses on paper is retired.
+                    </span>
+                  </p>
                 </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-1.5">
