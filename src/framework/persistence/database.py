@@ -237,6 +237,10 @@ class Database:
                     self.connection.execute(
                         "ALTER TABLE entry_watchers ADD COLUMN last_bar_timestamp TEXT"
                     )
+                if watcher_columns and "forward_test_passed_at" not in watcher_columns:
+                    self.connection.execute(
+                        "ALTER TABLE entry_watchers ADD COLUMN forward_test_passed_at TEXT"
+                    )
         except BaseException:
             self.connection.close()
             raise
@@ -439,6 +443,22 @@ class Database:
                 (run_id, interval_seconds, now, now),
             )
 
+    def forward_test_passed(self, run_id: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT forward_test_passed_at FROM entry_watchers WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return bool(row and row["forward_test_passed_at"])
+
+    def mark_forward_test_passed(self, run_id: str) -> None:
+        now = _now()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """UPDATE entry_watchers SET forward_test_passed_at = ?, updated_at = ?
+                   WHERE run_id = ?""",
+                (now, now, run_id),
+            )
+
     def update_entry_watcher(
         self,
         run_id: str,
@@ -473,7 +493,7 @@ class Database:
     def entry_watchers(self, *, active_only: bool = False) -> list[dict[str, Any]]:
         query = "SELECT * FROM entry_watchers"
         if active_only:
-            query += " WHERE status IN ('watching', 'paused', 'in_position')"
+            query += " WHERE status IN ('watching', 'paused', 'in_position', 'paper')"
         query += " ORDER BY created_at"
         with self._lock:
             rows = self.connection.execute(query).fetchall()
@@ -551,6 +571,16 @@ class Database:
                        definition_json = excluded.definition_json, version = excluded.version""",
                 (strategy_id, run_id, json_dumps(definition), version),
             )
+
+    def run_strategies(self, run_id: str, before_version: int) -> list[dict[str, Any]]:
+        """Strategy definitions a run already tried, oldest first."""
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT definition_json FROM strategies
+                   WHERE run_id = ? AND version < ? ORDER BY version""",
+                (run_id, before_version),
+            ).fetchall()
+        return [json.loads(row["definition_json"]) for row in rows]
 
     def save_backtest(
         self,
