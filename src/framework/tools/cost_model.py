@@ -35,7 +35,7 @@ def reprice_trade_list(
                 update={
                     "fees": fees,
                     "slippage": slippage,
-                    "net_pnl": trade.gross_pnl - fees - slippage,
+                    "net_pnl": trade.gross_pnl - fees - slippage - trade.funding,
                 }
             )
         )
