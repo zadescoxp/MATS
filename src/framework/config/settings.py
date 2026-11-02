@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     max_concurrent_symbols: int = Field(default=2, ge=1, le=20)
     max_backtest_drawdown: float = Field(default=0.25, gt=0, le=1)
     min_backtest_net_pnl: float = Field(default=0, ge=0)
+    # Walk-forward: candidates are chosen on the first part of the history and must also
+    # be profitable on the unseen remainder before the critique can approve them.
+    walk_forward_split: float = Field(default=0.7, ge=0.5, le=0.9)
+    require_out_of_sample_edge: bool = True
+    # Gross profit must be at least this multiple of the fees and slippage paid.
+    min_cost_edge_ratio: float = Field(default=2.0, ge=0)
+    # Processes that measure strategy candidates in parallel; 1 measures in-process.
+    backtest_workers: int = Field(default=4, ge=1, le=32)
+    # Closed paper trades on candles after approval before an algorithm may place live
+    # orders; 0 trades live as soon as it is approved.
+    forward_test_trades: int = Field(default=3, ge=0, le=50)
     initial_capital: float = Field(default=10_000.0, gt=0)
     fee_rate_taker: float = Field(default=0.001, ge=0, lt=1)
     fee_rate_maker: float = Field(default=0.001, ge=0, lt=1)
