@@ -328,7 +328,7 @@ class StrategyBuilderNode:
                 reason: str | None = None
                 for variant in [{}, *template["parameter_variants"]]:
                     parameters = {**template["default_parameters"], **variant}
-                    series = _extra_series(state, timeframe, template_name, parameters)
+                    series = strategy_series(state, timeframe, template_name, parameters)
                     if series is None:
                         reason = "missing_pair_or_funding_data"
                         break
@@ -641,12 +641,13 @@ def _family_fits(template: dict[str, object], regime: dict[str, object]) -> bool
     return True
 
 
-def _extra_series(
+def strategy_series(
     state: GraphState,
     timeframe: str,
     template_name: str,
     parameters: dict[str, object],
 ) -> dict[str, object] | None:
+    """Every series a template reads: all timeframes, plus its reference pair or funding."""
     series: dict[str, object] = dict(state.raw_data)
     if template_name == "stat_arb_spread":
         pair = (state.market_context.get("pair_candles") or {}).get(timeframe)
