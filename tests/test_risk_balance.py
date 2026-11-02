@@ -28,7 +28,15 @@ def _state(account_equity: float | None) -> GraphState:
     )
 
 
-def _node(monkeypatch, free_usdt: float, *, live: bool = True) -> RiskAssessmentNode:
+def _node(
+    monkeypatch,
+    free_usdt: float,
+    *,
+    live: bool = True,
+    margin_on: bool = True,
+    lendable=1e9,
+    exposure: float = 1.0,
+) -> RiskAssessmentNode:
     monkeypatch.setattr(risk_module, "fetch_strategy_ohlcv", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         risk_module,
@@ -37,8 +45,12 @@ def _node(monkeypatch, free_usdt: float, *, live: bool = True) -> RiskAssessment
             action="long", reason="probe", strength=1, price=100.0, stop=98.0
         ),
     )
-    settings = Settings(dry_run=not live, kill_switch=False, max_account_exposure=1.0)
-    execution = SimpleNamespace(get_balance=lambda: AccountBalance(free={"USDT": free_usdt}))
+    settings = Settings(dry_run=not live, kill_switch=False, max_account_exposure=exposure)
+    info = {"result": {"list": [{"coin": [{"coin": "USDT", "availableToBorrow": lendable}]}]}}
+    execution = SimpleNamespace(
+        get_balance=lambda: AccountBalance(free={"USDT": free_usdt}, info=info),
+        spot_margin_enabled=lambda: margin_on,
+    )
     return RiskAssessmentNode(
         SimpleNamespace(settings=settings, execution=execution, market_data=None)
     )
@@ -68,3 +80,37 @@ def test_dry_run_sizing_ignores_the_exchange_balance(monkeypatch, free_usdt) -> 
     ]
     assert plan.approved
     assert plan.position_notional > 10
+
+
+def _leveraged(account_equity: float | None, leverage: float) -> GraphState:
+    return _state(account_equity).model_copy(update={"leverage": leverage})
+
+
+def test_leverage_raises_exposure_but_not_the_loss_at_the_stop(monkeypatch) -> None:
+    # A 25% exposure limit binds first; a 2% stop with a 1% loss budget allows 50% notional.
+    unlevered = _node(monkeypatch, free_usdt=1000, exposure=0.25)(_leveraged(None, 1.0))[
+        "risk_assessment"
+    ]
+    levered = _node(monkeypatch, free_usdt=1000, exposure=0.25)(_leveraged(None, 3.0))[
+        "risk_assessment"
+    ]
+
+    assert unlevered.position_notional == 250
+    assert levered.position_notional == 500  # lifted by leverage, then capped by the stop
+    assert levered.risk_amount <= 1000 * 0.01 + 1e-9  # 1% of equity at the stop, still
+    assert any("Leverage 3x" in note for note in levered.account_constraints)
+
+
+def test_leverage_is_limited_by_what_bybit_will_lend(monkeypatch) -> None:
+    plan = _node(monkeypatch, free_usdt=1000, lendable=200)(_leveraged(None, 3.0))[
+        "risk_assessment"
+    ]
+    assert plan.position_notional <= 1200
+
+
+def test_leverage_is_ignored_when_spot_margin_is_off(monkeypatch) -> None:
+    plan = _node(monkeypatch, free_usdt=1000, margin_on=False)(_leveraged(None, 3.0))[
+        "risk_assessment"
+    ]
+    assert plan.position_notional <= 1000
+    assert any("Spot margin is off" in note for note in plan.account_constraints)
