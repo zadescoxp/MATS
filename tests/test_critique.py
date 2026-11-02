@@ -163,3 +163,100 @@ def test_critique_decision_accepts_common_wordings() -> None:
 
     assert Critique.model_validate({"decision": "approve"}).decision == "APPROVE"
     assert Critique.model_validate({"decision": " Rejected "}).decision == "REJECT"
+
+
+class RejectingLLM:
+    def __init__(self):
+        self.messages = None
+
+    def invoke_with_tools(self, messages, tools, model_config):
+        self.messages = messages
+        return LLMResponse(
+            tool_calls=[
+                ToolCall(
+                    id="critique",
+                    name="submit_critique",
+                    arguments=Critique(
+                        decision="REJECT",
+                        issues=["Dates are after my knowledge cutoff."],
+                        rationale="Looks like look-ahead.",
+                    ).model_dump(mode="json"),
+                )
+            ]
+        )
+
+
+def _passing_review(llm, **settings_update):
+    settings = Settings(
+        database_path=Path(":memory:"),
+        min_backtest_trades=2,
+        min_backtest_net_pnl=0,
+        max_backtest_drawdown=0.2,
+        **settings_update,
+    )
+    database = Database(":memory:")
+    database.create_run("run", "BTC/USDT", {})
+    database.record_family_result(
+        symbol="BTC/USDT",
+        family="trend",
+        template_name="supertrend_atr",
+        regime="trending_normal_vol",
+        net_pnl=631,
+        decision="APPROVE",
+    )
+    strategy = StrategyDefinition(
+        name="test",
+        description="test",
+        template_name="supertrend_atr",
+        chosen_timeframe="1h",
+        entry_rule="supertrend_atr",
+        exit_rule="opposite_signal",
+    )
+    database.save_strategy("run-v0", "run", strategy.model_dump(mode="json"), 0)
+    database.save_backtest("run-v0", "run-v0", {}, [], {})
+    segment = {"net_pnl": 100.0, "trades": 5}
+    report = BacktestReport(
+        initial_capital=10_000,
+        final_equity=10_200,
+        net_pnl=200,
+        net_return_pct=0.02,
+        max_drawdown_pct=0.02,
+        sharpe_ratio=1.5,
+        win_rate=0.5,
+        total_trades=10,
+        total_fees=10,
+        total_slippage=10,
+        equity_curve=[],
+        trades=[],
+        metrics={"cost_edge_ratio": 3.0},
+        walk_forward={"split": 0.7, "in_sample": segment, "out_of_sample": segment},
+    )
+    context = SimpleNamespace(settings=settings, database=database, llm=llm)
+    state = GraphState(
+        run_id="run",
+        symbol="BTC/USDT",
+        timeframes_to_consider=["1h"],
+        strategy=strategy,
+        backtest_report=report,
+        regime={"regime": "trending_normal_vol", "trend_strength": 0.6},
+    )
+    result = CritiqueNode(context)(state)
+    database.close()
+    return result
+
+
+def test_measured_checks_approve_over_the_critic_objection() -> None:
+    llm = RejectingLLM()
+    critique = _passing_review(llm).updates["critique"]
+    assert critique.decision == "APPROVE"
+    assert critique.issues == ["Advisory: Dates are after my knowledge cutoff."]
+    assert critique.revision_instructions == ""
+    # The critic sees past outcomes, not past decisions it could echo.
+    assert '"decision"' not in llm.messages[1]["content"]
+    assert '"net_pnl":631' in llm.messages[1]["content"]
+
+
+def test_critic_can_veto_when_enabled() -> None:
+    result = _passing_review(RejectingLLM(), critic_can_veto=True)
+    assert result.updates["critique"].decision == "REJECT"
+    assert result.updates["revision_count"] == 1
