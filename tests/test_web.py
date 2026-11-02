@@ -946,3 +946,24 @@ def test_leveraged_live_start_is_refused_when_spot_margin_is_off(
     assert threads[0].args[2]["leverage"] == 1.0
     with pytest.raises(ValueError, match="leverage must be"):
         service.start({"symbols": ["BTC/USDT"], "leverage": 5})
+
+
+def test_a_live_run_can_start_while_another_is_active(tmp_path: Path, monkeypatch) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=False,
+        kill_switch=False,
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    _fake_balance_tools(monkeypatch, {"USDT": 1000.0})
+
+    service.start({"symbols": ["BTC/USDT"], "dry_run": False})
+    service.start({"symbols": ["ETH/USDT"], "dry_run": False})
+
+    assert len(threads) == 2
+    assert all(thread.is_alive() for thread in threads)
