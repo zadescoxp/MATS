@@ -34,8 +34,27 @@ class Exchange:
         self.order_count = 0
         self.free = free if free is not None else {"USDT": 100_000.0, "BTC": 10.0}
 
+        self.margin_on = True
+        self.lendable = 1_000_000.0
+        self.repays: list[dict] = []
+        self.repay_ok = True
+
     def fetch_balance(self):
-        return {"free": dict(self.free), "used": {}, "total": dict(self.free), "info": {}}
+        info = {
+            "result": {
+                "list": [{"coin": [{"coin": "USDT", "availableToBorrow": str(self.lendable)}]}]
+            }
+        }
+        return {"free": dict(self.free), "used": {}, "total": dict(self.free), "info": info}
+
+    def privateGetV5SpotMarginTradeState(self):
+        return {"result": {"spotMarginMode": "1" if self.margin_on else "0"}}
+
+    def request(self, path, api, method, params):
+        self.repays.append({"path": path, **params})
+        if not self.repay_ok:
+            return {"retCode": 10001, "retMsg": "Repayment window closed", "result": {}}
+        return {"retCode": 0, "result": {"resultStatus": "SU"}}
 
     def create_order(self, symbol, order_type, side, amount, price, params):
         self.order_count += 1
@@ -378,5 +397,106 @@ def test_position_sold_outside_mats_is_recorded_without_an_order() -> None:
         assert execution.exchange.order_count == orders_before
         assert database.open_positions("BTC/USDT") == []
         assert database.strategy_trades("run-gone")[0]["reason"].startswith("No BTC is held")
+    finally:
+        database.close()
+
+
+def _leveraged_state(run_id: str, candles, leverage: float = 3.0) -> GraphState:
+    state = _approved_state(run_id, candles)
+    return state.model_copy(update={"leverage": leverage})
+
+
+def test_leveraged_entry_borrows_only_the_shortfall_and_records_leverage() -> None:
+    settings, database, market, execution = _setup()
+    execution.exchange.free = {"USDT": 6.0, "BTC": 10.0}  # the plan wants ~12 USDT of BTC
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-lev", "BTC/USDT", {})
+
+        ExecutionNode(context)(_leveraged_state("run-lev", market.candles))
+
+        entry = execution.exchange.orders[0]
+        assert entry["info"].get("isLeverage") == 1
+        assert entry["amount"] * 120 > 6.0  # more than the cash alone could buy
+        assert database.open_positions("BTC/USDT")[0]["leverage"] == 3.0
+    finally:
+        database.close()
+
+
+def test_entry_that_cash_covers_does_not_borrow_even_with_leverage_allowed() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-cash", "BTC/USDT", {})
+
+        ExecutionNode(context)(_leveraged_state("run-cash", market.candles))
+
+        assert "isLeverage" not in execution.exchange.orders[0]["info"]
+        assert database.open_positions("BTC/USDT")[0]["leverage"] == 1.0
+    finally:
+        database.close()
+
+
+def test_leverage_falls_back_to_cash_when_spot_margin_is_off() -> None:
+    settings, database, market, execution = _setup()
+    execution.exchange.free = {"USDT": 6.0, "BTC": 10.0}
+    execution.exchange.margin_on = False
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-nomargin", "BTC/USDT", {})
+
+        ExecutionNode(context)(_leveraged_state("run-nomargin", market.candles))
+
+        entry = execution.exchange.orders[0]
+        assert "isLeverage" not in entry["info"]
+        assert entry["amount"] * 120 < 6.0
+    finally:
+        database.close()
+
+
+def test_leveraged_exit_repays_the_loan_and_retries_a_refused_repay() -> None:
+    settings, database, market, execution = _setup()
+    execution.exchange.free = {"USDT": 6.0, "BTC": 10.0}
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-repay", "BTC/USDT", {})
+        ExecutionNode(context)(_leveraged_state("run-repay", market.candles))
+        execution.exchange.repay_ok = False  # Bybit's hourly repayment blackout
+        entry = market.candles[-1]
+        market.candles = [*market.candles, _bar(entry.timestamp + timedelta(hours=1), 115, low=114)]
+
+        PositionMonitor(context)()
+
+        assert execution.exchange.repays[-1] == {
+            "path": "v5/account/no-convert-repay",
+            "coin": "USDT",
+            "repaymentType": "FLEXIBLE",
+        }
+        assert [row["coin"] for row in database.pending_repays()] == ["USDT"]
+
+        execution.exchange.repay_ok = True
+        PositionMonitor(context).retry_pending_repays()
+
+        assert database.pending_repays() == []
+        events = [
+            row["type"] for row in database.connection.execute("SELECT type FROM system_events")
+        ]
+        assert "repay_pending" in events and "loan_repaid" in events
+    finally:
+        database.close()
+
+
+def test_unleveraged_exit_never_calls_repay() -> None:
+    settings, database, market, execution = _setup()
+    try:
+        context = _context(settings, database, market, execution)
+        database.create_run("run-plain", "BTC/USDT", {})
+        ExecutionNode(context)(_approved_state("run-plain", market.candles))
+        entry = market.candles[-1]
+        market.candles = [*market.candles, _bar(entry.timestamp + timedelta(hours=1), 115, low=114)]
+
+        PositionMonitor(context)()
+
+        assert execution.exchange.repays == []
     finally:
         database.close()
