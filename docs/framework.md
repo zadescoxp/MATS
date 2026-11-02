@@ -148,7 +148,10 @@ records:
   acted on at the next candle open to avoid look-ahead. Reports carry `walk_forward`:
   in-sample and out-of-sample summaries (each starting flat with fresh capital), plus
   `cost_edge_ratio` and `buy_and_hold_return` metrics. The critique rejects a strategy
-  that loses on either segment or whose cost-edge ratio is too low. Current spot backtests open long positions only; bearish signals
+  that loses on either segment or whose cost-edge ratio is too low. These measured gates
+  decide: when all pass, the model's review is advisory, its objections are stored as
+  `Advisory:` issues and the strategy is approved for the forward test
+  (`MATS_CRITIC_CAN_VETO=true` lets the model's REJECT stand). Current spot backtests open long positions only; bearish signals
   close an open long, and do not simulate borrowed/derivative shorts. Fees and slippage
   are charged on entry and exit.
 - Template exits include the opposite signal, configured percentage stop, optional
