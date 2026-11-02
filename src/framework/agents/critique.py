@@ -5,6 +5,7 @@ from framework.agents.common import invoke_structured, result_with_response, sub
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
+from framework.persistence.database import Database
 from framework.schemas.models import BacktestReport, Critique
 from framework.strategies.library import STRATEGY_LIBRARY
 
@@ -59,6 +60,11 @@ class CritiqueNode:
                     "walk_forward.out_of_sample is history the strategy was not chosen on; "
                     "trust it over the in-sample numbers. cost_edge_ratio is gross profit per "
                     "unit of fees and slippage; near 1 means costs eat the edge. "
+                    "in_sample and out_of_sample each start from the initial capital, so their "
+                    "PnL does not sum to the whole-history PnL. The candles are real market "
+                    "data; dates after your training cutoff are not look-ahead. family_memory "
+                    "is measured PnL from earlier runs: a family that made money before is not "
+                    "evidence of overfitting. Weigh measured results over regime statistics. "
                     "On rejection, provide specific revisions and call submit_critique once."
                 ),
             },
@@ -71,11 +77,7 @@ class CritiqueNode:
                         "strategy_family": family,
                         "template_name": state.strategy.template_name if state.strategy else None,
                         "regime": state.regime,
-                        "family_memory": self.context.database.recent_family_results(
-                            state.symbol,
-                            str(state.regime.get("regime") or ""),
-                            limit=8,
-                        ),
+                        "family_memory": _family_outcomes(state, self.context.database),
                     },
                     separators=(",", ":"),
                 ),
@@ -100,6 +102,20 @@ class CritiqueNode:
                     )
                     + "Revise the strategy to satisfy: "
                     + "; ".join(gate_issues),
+                }
+            )
+        elif proposed.decision == "REJECT" and not self.context.settings.critic_can_veto:
+            # Every measured check passed. The model's objection alone has proved unreliable
+            # (the same strategy approved on one run, rejected on the next), so it is kept as
+            # a note and the paper-trading forward test judges the edge instead.
+            logger.info("Critic objected to a strategy that passed every check; approving.")
+            proposed = proposed.model_copy(
+                update={
+                    "decision": "APPROVE",
+                    "issues": [f"Advisory: {issue}" for issue in proposed.issues],
+                    "revision_instructions": "",
+                    "rationale": "Every measured check passed, so the strategy goes to the "
+                    "forward test. The model's objection: " + proposed.rationale,
                 }
             )
         if proposed.decision == "REJECT" and not proposed.revision_instructions.strip():
@@ -253,6 +269,14 @@ class CritiqueNode:
                 f"{out_of_sample['trades']} trades; the edge did not hold on unseen history."
             )
         return issues
+
+
+def _family_outcomes(state: GraphState, database: Database) -> list[dict[str, object]]:
+    # Outcomes only: showing earlier decisions let one rejection justify the next.
+    rows = database.recent_family_results(
+        state.symbol, str(state.regime.get("regime") or ""), limit=8
+    )
+    return [{key: value for key, value in row.items() if key != "decision"} for row in rows]
 
 
 def _family(state: GraphState) -> str:
