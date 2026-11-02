@@ -104,6 +104,8 @@ class DashboardService:
             }
             data["connections"] = self.connections.public(self._environment)
             data["account"] = self._account
+            # One entry per connected venue; Bybit is the only venue today.
+            data["accounts"] = [self._account] if self._account.get("connected") else []
             data["operations"] = list(self._operations.values())
             data["active_run_ids"] = [
                 run_id for run_id, thread in self._threads.items() if thread.is_alive()
@@ -791,7 +793,7 @@ class DashboardService:
 
     def _refresh_account(self) -> None:
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
-            self._account = {"connected": False}
+            self._account = {"connected": False, "venue": "bybit", "venue_name": "Bybit"}
             return
         try:
             balance = self._execution_tools().get_balance()
