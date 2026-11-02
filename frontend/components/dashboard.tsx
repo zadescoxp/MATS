@@ -175,6 +175,7 @@ function statusStyle(status: string): string {
     case "paused":
     case "triggered":
     case "in_position":
+    case "paper":
       return "border-accent/20 bg-accent/10 text-accent";
     default:
       return "border-border bg-foreground/[0.03] text-muted";
@@ -269,7 +270,7 @@ function equityPoints(attempt: StrategyAttempt | null) {
 function isLiveRun(run: Run, activeIds: string[], watchers: EntryWatcher[]): boolean {
   if (run.status === "running" || activeIds.includes(run.run_id)) return true;
   const watcher = watchers.find((item) => item.run_id === run.run_id);
-  return ["watching", "paused", "in_position"].includes(watcher?.status ?? "");
+  return ["watching", "paused", "in_position", "paper"].includes(watcher?.status ?? "");
 }
 
 function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
@@ -280,8 +281,11 @@ function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
   }
   if (watcher?.status === "in_position") return "Trading · position open";
   if (watcher?.status === "watching") return "Trading · waiting for entry";
+  if (watcher?.status === "paper") return "Paper trading · forward test";
   if (watcher?.status === "paused") return "Paused by a safety switch";
-  if (run.diagnosis?.kind === "rejected") return "No strategy approved";
+  if (run.diagnosis?.kind === "rejected") {
+    return run.diagnosis.title.startsWith("Staying in cash") ? "Staying in cash · no edge" : "No strategy approved";
+  }
   if (run.status === "failed") return run.diagnosis?.title ?? "Needs attention";
   if (run.status === "stopped") return "Stopped";
   if (run.status === "completed") return "Completed";
@@ -1425,6 +1429,8 @@ export function Dashboard() {
                 ? `Checking signal, risk, and news every ${selectedEntryWatcher.interval_seconds} seconds.`
                 : selectedEntryWatcher.status === "in_position"
                   ? `Managing the open position every ${selectedEntryWatcher.interval_seconds} seconds.`
+                  : selectedEntryWatcher.status === "paper"
+                    ? "Paper trading on candles after approval. Live orders start once the forward test closes enough paper trades at a profit."
                   : selectedEntryWatcher.status === "paused"
                     ? selectedEntryWatcher.error ?? "Paused while dry-run or the kill switch is enabled."
                     : selectedEntryWatcher.error ?? "No live checks are active."}
@@ -1538,6 +1544,14 @@ export function Dashboard() {
       { label: "Fees", value: money(report.total_fees) },
       { label: "Slippage", value: money(report.total_slippage) },
     ];
+    const reportMetrics = isObject(report.metrics) ? report.metrics : {};
+    const costEdge = reportMetrics.cost_edge_ratio;
+    const walkForward = isObject(report.walk_forward) ? report.walk_forward : null;
+    const segments: Array<[string, string, Record<string, unknown>]> = [];
+    if (walkForward && isObject(walkForward.in_sample)) segments.push(["In-sample", "Chosen on", walkForward.in_sample]);
+    if (walkForward && isObject(walkForward.out_of_sample)) {
+      segments.push(["Out-of-sample", "Never seen when choosing", walkForward.out_of_sample]);
+    }
     return (
       <div className="mx-auto max-w-5xl">
         {backtestAttempts.length > 1 && (
@@ -1610,6 +1624,39 @@ export function Dashboard() {
             </div>
           ))}
         </div>
+        {(segments.length > 0 || typeof costEdge === "number") && (
+          <div className="mt-6">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-sm font-medium">Walk-forward</h3>
+              {typeof costEdge === "number" && (
+                <p className="text-[11px] text-muted-foreground">
+                  Gross profit is <span className={cn("tabular-nums", costEdge >= 2 ? "text-positive" : "text-negative")}>{costEdge.toFixed(2)}x</span> the fees and slippage paid
+                </p>
+              )}
+            </div>
+            {segments.length > 0 && (
+              <div className="mt-3 grid gap-px overflow-hidden rounded-2xl bg-white/[0.06] sm:grid-cols-2">
+                {segments.map(([label, hint, segment]) => {
+                  const pnl = numberValue(segment.net_pnl);
+                  const hold = numberValue(segment.buy_and_hold_return);
+                  return (
+                    <div key={label} className="bg-background px-3 py-3">
+                      <p className="text-[11px] text-muted-foreground">
+                        {label} · {hint} · {textValue(segment.start).slice(0, 10)} to {textValue(segment.end).slice(0, 10)}
+                      </p>
+                      <p className={cn("mt-1 text-sm tabular-nums", pnl > 0 ? "text-positive" : "text-negative")}>
+                        {money(pnl)} <span className="text-muted-foreground">on {numberValue(segment.trades)} trades</span>
+                      </p>
+                      <p className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
+                        Drawdown {(numberValue(segment.max_drawdown_pct) * 100).toFixed(2)}% · Buy and hold {(hold * 100).toFixed(2)}%
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         <div className="mt-8">
           <div className="flex items-baseline justify-between gap-3">
             <h3 className="text-sm font-medium">Price</h3>
