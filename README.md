@@ -194,8 +194,10 @@ Borrowing costs interest until repaid, and on a Unified account a liquidation ca
 other holdings too.
 
 For multi-symbol live batches, a supplied account equity is split evenly across symbols;
-otherwise the available testnet quote balance is fetched once and split. Only one live batch
-runs at a time.
+otherwise the available testnet quote balance is fetched once and split. Several live runs
+and strategy algorithms can run at the same time: they share one balance, so live entries
+take turns checking the free balance and placing their orders, and a later entry buys less,
+or holds, if an earlier one already spent the money.
 
 ### News and sentiment
 
