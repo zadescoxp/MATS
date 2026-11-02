@@ -619,6 +619,7 @@ export function Dashboard() {
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
   const [startAttempts, setStartAttempts] = useState(DEFAULT_ATTEMPTS);
+  const [startLeverage, setStartLeverage] = useState(1);
   const [backtestVersion, setBacktestVersion] = useState<number | null>(null);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
@@ -914,7 +915,13 @@ export function Dashboard() {
     ) {
       return;
     }
-    const payload: Record<string, unknown> = { symbols, timeframes, dry_run: dryRun, max_attempts: attempts };
+    const payload: Record<string, unknown> = {
+      symbols,
+      timeframes,
+      dry_run: dryRun,
+      max_attempts: attempts,
+      leverage: startLeverage,
+    };
     if (equity.trim()) {
       const value = Number(equity.replace(/,/g, ""));
       if (!Number.isFinite(value) || value <= 0) {
@@ -1002,6 +1009,7 @@ export function Dashboard() {
 
   function openStartDialog() {
     if (data) setStartDryRun(data.settings.dry_run);
+    if (data) setStartLeverage(data.settings.spot_leverage ?? 1);
     setStartStep(0);
     setShowStart(true);
     setRailOpen(false);
@@ -2411,6 +2419,8 @@ export function Dashboard() {
           setDryRun={setStartDryRun}
           attempts={startAttempts}
           setAttempts={setStartAttempts}
+          leverage={startLeverage}
+          setLeverage={setStartLeverage}
           killSwitch={killSwitchEnabled}
           setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
           step={startStep}
@@ -2468,6 +2478,8 @@ function StartDialog({
   setDryRun,
   attempts,
   setAttempts,
+  leverage,
+  setLeverage,
   killSwitch,
   setKillSwitch,
   step,
@@ -2491,6 +2503,8 @@ function StartDialog({
   setDryRun: (value: boolean) => void;
   attempts: number;
   setAttempts: (value: number) => void;
+  leverage: number;
+  setLeverage: (value: number) => void;
   killSwitch: boolean;
   setKillSwitch: (value: boolean) => void;
   step: number;
@@ -2839,6 +2853,42 @@ function StartDialog({
                     +
                   </button>
                 </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-white/[0.07] bg-background/35 px-4 py-3.5">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium" id="leverage-label">Leverage</span>
+                    <span className="mt-1 block text-[11px] leading-4 text-muted">
+                      {leverage > 1
+                        ? `Live long entries may borrow USDT up to ${leverage}x your free balance.`
+                        : "Trades use only the money in your account."}
+                    </span>
+                  </span>
+                  <div className="flex shrink-0 rounded-lg border border-white/[0.07] p-0.5" role="radiogroup" aria-labelledby="leverage-label">
+                    {[1, 2, 3].map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={leverage === value}
+                        onClick={() => setLeverage(value)}
+                        className={cn(
+                          "h-7 w-10 rounded-md text-xs tabular-nums transition-colors",
+                          leverage === value ? "bg-foreground text-background" : "text-muted hover:text-foreground",
+                        )}
+                      >
+                        {value}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {leverage > 1 && (
+                  <p className="mt-2 text-[11px] leading-5 text-muted">
+                    The loss at each stop stays capped at the same share of equity, and MATS repays the loan after every exit.
+                    Borrowing costs interest, needs spot margin turned on in Bybit, and on a Unified account a liquidation can
+                    sell your other holdings too.
+                  </p>
+                )}
               </div>
               <div className="mt-3 divide-y divide-white/[0.06] rounded-2xl border border-white/[0.07] bg-background/35 px-4">
                 <div className="flex items-center justify-between gap-4 py-3.5">
