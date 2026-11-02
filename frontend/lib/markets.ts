@@ -66,8 +66,55 @@ export const COIN_SYMBOLS = MARKETS.map((market) => market.symbol);
 
 const NAMES = new Map(MARKETS.map((market) => [market.symbol, market.name]));
 
+/** Spot buys and holds the coin; a perpetual is the USDT-settled contract that can short. */
+export type MarketType = "spot" | "perpetual";
+
+/** A Bybit market from `/api/markets`. Perpetual symbols end in `:SETTLE`, e.g. `BTC/USDT:USDT`. */
+export interface ListedMarket {
+  symbol: string;
+  base: string;
+  quote: string;
+  type: MarketType;
+}
+
+export function isPerpetual(symbol: string): boolean {
+  return symbol.includes(":");
+}
+
+export function spotSymbol(symbol: string): string {
+  return symbol.split(":")[0] ?? symbol;
+}
+
+export function perpetualSymbol(symbol: string): string {
+  const spot = spotSymbol(symbol);
+  return `${spot}:${spot.split("/")[1] ?? "USDT"}`;
+}
+
+/** `BTC/USDT` for spot, `BTC/USDT perp` for the perpetual. */
+export function displaySymbol(symbol: string): string {
+  return isPerpetual(symbol) ? `${spotSymbol(symbol)} perp` : symbol;
+}
+
+/** Well-known coins first, in the order MARKETS lists them; then alphabetical. */
+const POPULARITY = new Map(MARKETS.map((market, index) => [market.symbol, index]));
+
+export function compareMarkets(left: ListedMarket, right: ListedMarket): number {
+  const leftRank = POPULARITY.get(spotSymbol(left.symbol)) ?? Number.MAX_SAFE_INTEGER;
+  const rightRank = POPULARITY.get(spotSymbol(right.symbol)) ?? Number.MAX_SAFE_INTEGER;
+  return leftRank - rightRank || left.symbol.localeCompare(right.symbol);
+}
+
+/** The built-in coins on both markets, used until Bybit's listing has loaded. */
+export const FALLBACK_MARKETS: ListedMarket[] = MARKETS.flatMap((market) => {
+  const [base = market.symbol, quote = "USDT"] = market.symbol.split("/");
+  return [
+    { symbol: market.symbol, base, quote, type: "spot" as const },
+    { symbol: perpetualSymbol(market.symbol), base, quote, type: "perpetual" as const },
+  ];
+});
+
 export function marketName(symbol: string): string {
-  return NAMES.get(symbol) ?? symbol.split("/")[0] ?? symbol;
+  return NAMES.get(spotSymbol(symbol)) ?? symbol.split("/")[0] ?? symbol;
 }
 
 export function marketAliases(): Record<string, string> {
