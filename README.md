@@ -59,6 +59,7 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_MIN_BACKTEST_TRADES` / `MATS_MIN_BACKTEST_NET_PNL` / `MATS_MAX_BACKTEST_DRAWDOWN` | `3` / `0` / `0.25` | Critique thresholds a backtest must clear |
 | `MATS_WALK_FORWARD_SPLIT` / `MATS_REQUIRE_OUT_OF_SAMPLE_EDGE` | `0.7` / `true` | Share of history strategies are chosen on; the rest must also be profitable |
 | `MATS_MIN_COST_EDGE_RATIO` | `2` | Gross profit must be at least this multiple of fees and slippage |
+| `MATS_CRITIC_CAN_VETO` | `false` | Let the model's critique reject a strategy that passed every measured check |
 | `MATS_BACKTEST_WORKERS` | `4` | Processes that measure strategy variants in parallel |
 | `MATS_FORWARD_TEST_TRADES` | `3` | Profitable paper trades after approval before live orders (0 = none) |
 | `MATS_INITIAL_CAPITAL` | `10000` | Capital for dry-run sizing and backtests |
@@ -123,8 +124,10 @@ reply is still invalid the error is sent back for one corrected attempt.
    whole history and separately over the in-sample and held-out (out-of-sample) parts.
 6. **Critique** applies fixed gates (net PnL, trade count, drawdown, cost-edge ratio, profit on
    both the in-sample and the unseen out-of-sample history, no pure EMA crossover in chop, no
-   family that recently lost in this regime) plus the model's review. A rejection sends
-   written revision instructions back to the builder.
+   family that recently lost in this regime). A failed gate sends written revision
+   instructions back to the builder. The model's review is advisory: when every gate passes
+   the strategy is approved and the model's objections are kept as notes, unless
+   `MATS_CRITIC_CAN_VETO=true`. The forward test below is the check on the measured edge.
 7. **Risk** sizes an approved strategy from the live signal, stop distance, and limits.
 8. **Execution** places the entry and protective stop (or simulates them in dry-run).
 9. **Forward test**: a live algorithm first paper-trades the strategy on candles that closed
