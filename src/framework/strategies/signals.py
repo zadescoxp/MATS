@@ -35,9 +35,9 @@ def evaluate_live_signal(
     )
     timeframe = strategy.chosen_timeframe
     candles = latest_ohlcv_dict.get(timeframe)
-    if not candles:
+    if candles is None or len(candles) == 0:
         raise ValueError(f"No OHLCV data for strategy timeframe {timeframe!r}")
-    frame = _frame(candles)
+    frame = candle_frame(candles)
     if len(frame) < 2:
         raise ValueError("Live signal evaluation requires at least two candles")
     close = frame["close"]
@@ -208,6 +208,21 @@ def evaluate_live_signal(
             reason = "Lower-timeframe RSI reverted inside a bearish higher-timeframe bias."
         elif higher == "neutral":
             reason = "Higher-timeframe bias is neutral, so the hybrid stays flat."
+    elif strategy.template_name == "time_series_momentum":
+        lookback = int(params.get("lookback", 20))
+        trend = sma(close, int(params.get("trend_period", 50)))
+        change = close / close.shift(lookback) - 1
+        rising = (change > 0) & (close > trend)
+        long_signal = bool(rising.iloc[-1]) and not bool(rising.iloc[-2])
+        short_signal = (
+            _finite(change.iloc[-2])
+            and _finite(change.iloc[-1])
+            and change.iloc[-2] >= 0 > change.iloc[-1]
+        )
+        if long_signal:
+            reason = f"{lookback}-bar return turned positive above the trend average."
+        elif short_signal:
+            reason = f"{lookback}-bar return turned negative."
 
     if strategy.exit_rule == "trailing_atr" and current_atr is None:
         current_atr = _last_finite(atr(frame, int(params.get("atr_period", 14))))
@@ -231,7 +246,16 @@ def evaluate_live_signal(
     )
 
 
-def _frame(candles: Sequence[OHLCVBar | Mapping[str, Any]]) -> pd.DataFrame:
+def candle_frame(
+    candles: Sequence[OHLCVBar | Mapping[str, Any]] | pd.DataFrame,
+) -> pd.DataFrame:
+    """Validated float OHLCV frame.
+
+    A frame this function already built is returned as is, so a backtest can build each
+    series once and hand every bar a slice of it instead of rebuilding 500 rows per bar.
+    """
+    if isinstance(candles, pd.DataFrame):
+        return candles
     rows = [
         candle.model_dump(mode="python") if isinstance(candle, OHLCVBar) else dict(candle)
         for candle in candles
@@ -255,9 +279,9 @@ def _higher_timeframe_bias(
 ) -> str:
     timeframe = str(strategy.parameters.get("higher_timeframe", "4h"))
     candles = data.get(timeframe)
-    if not candles:
+    if candles is None or len(candles) == 0:
         return "neutral"
-    frame = _frame(candles)
+    frame = candle_frame(candles)
     fast_period = int(strategy.parameters.get("bias_fast_period", 20))
     slow_period = int(strategy.parameters.get("bias_slow_period", 50))
     if len(frame) < slow_period:
@@ -423,9 +447,9 @@ def _stat_arb(
     params: Mapping[str, Any],
 ) -> tuple[bool, bool, str]:
     pair = data.get("pair")
-    if not pair:
+    if pair is None or len(pair) == 0:
         return False, False, "Pair series is unavailable, so relative value stays flat."
-    pair_frame = _frame(pair)
+    pair_frame = candle_frame(pair)
     ratio = _aligned_ratio(frame, pair_frame)
     if ratio is None or len(ratio) < 5:
         return False, False, "Pair series does not overlap enough to score the ratio."
