@@ -28,6 +28,8 @@ class GraphState(BaseModel):
     critique: Critique | None = None
     revision_count: int = Field(default=0, ge=0)
     max_revision_loops: int | None = Field(default=None, ge=0, le=20)
+    # Per-run spot leverage; None uses MATS_SPOT_LEVERAGE.
+    leverage: float | None = Field(default=None, ge=1.0, le=3.0)
     risk_assessment: RiskAssessment | None = None
     live_signal: LiveSignal | None = None
     generated_code: str | None = None
