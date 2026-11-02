@@ -14,16 +14,27 @@ from framework.schemas.models import (
     StrategyDefinition,
     TradeRecord,
 )
-from framework.strategies.signals import LIVE_SIGNAL_BARS, evaluate_live_signal
+from framework.strategies.signals import LIVE_SIGNAL_BARS, candle_frame, evaluate_live_signal
 from framework.tools.cost_model import CostAssumptions, reprice_trade_list
+
+# Each walk-forward segment needs this many bars, or the report has no walk-forward split.
+MIN_SEGMENT_BARS = 20
 
 
 class BacktestTool:
-    def __init__(self, costs: CostAssumptions, initial_capital: float = 10_000):
+    def __init__(
+        self,
+        costs: CostAssumptions,
+        initial_capital: float = 10_000,
+        walk_forward_split: float = 0.7,
+    ):
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
+        if not 0 < walk_forward_split < 1:
+            raise ValueError("walk_forward_split must be between 0 and 1")
         self.costs = costs
         self.initial_capital = initial_capital
+        self.walk_forward_split = walk_forward_split
 
     def run(
         self,
@@ -32,46 +43,70 @@ class BacktestTool:
         *,
         data: dict[str, Sequence[OHLCVBar | Mapping[str, Any]]] | None = None,
         initial_capital: float | None = None,
+        signals: list[LiveSignal] | None = None,
     ) -> BacktestReport:
-        capital = self.initial_capital if initial_capital is None else initial_capital
-        if (
-            isinstance(capital, bool)
-            or not isinstance(capital, int | float)
-            or not math.isfinite(capital)
-            or capital <= 0
-        ):
-            raise ValueError("initial_capital must be positive")
+        """Backtest the whole history, plus an in-sample / out-of-sample split of it.
+
+        Both segments reuse the signals of the full pass, so every bar still sees exactly
+        the trailing window live trading would; each segment starts flat with fresh capital.
+        """
+        capital = self._capital(initial_capital)
+        candles = [_normalize_candle(candle) for candle in candles]
+        if signals is None:
+            signals = self.signals(strategy, candles, data=data)
+        report = self.simulate(strategy, candles, signals, capital)
+        split = self.split_index(len(candles))
+        if split is None:
+            return report
+        in_sample = self.simulate(strategy, candles[:split], signals[:split], capital)
+        out_of_sample = self.simulate(strategy, candles[split:], signals[split:], capital)
+        return report.model_copy(
+            update={
+                "walk_forward": {
+                    "split": self.walk_forward_split,
+                    "in_sample": segment_summary(in_sample, candles[:split]),
+                    "out_of_sample": segment_summary(out_of_sample, candles[split:]),
+                }
+            }
+        )
+
+    def split_index(self, bars: int) -> int | None:
+        split = int(bars * self.walk_forward_split)
+        if split < MIN_SEGMENT_BARS or bars - split < MIN_SEGMENT_BARS:
+            return None
+        return split
+
+    def signals(
+        self,
+        strategy: StrategyDefinition,
+        candles: Sequence[OHLCVBar | Mapping[str, Any]],
+        *,
+        data: dict[str, Sequence[OHLCVBar | Mapping[str, Any]]] | None = None,
+    ) -> list[LiveSignal]:
+        """The live signal each bar would have produced, from its trailing window only."""
         candles = [_normalize_candle(candle) for candle in candles]
         if len(candles) < 2:
             raise ValueError("Backtesting requires at least two candles")
-        frame = pd.DataFrame(
-            [
-                {
-                    "timestamp": candle.timestamp,
-                    "open": candle.open,
-                    "high": candle.high,
-                    "low": candle.low,
-                    "close": candle.close,
-                    "volume": candle.volume,
-                }
-                for candle in candles
-            ]
-        )
-        if not frame["timestamp"].is_monotonic_increasing:
+        if any(
+            later.timestamp < earlier.timestamp
+            for earlier, later in zip(candles, candles[1:], strict=False)
+        ):
             raise ValueError("Candles must be time-ordered")
-
-        all_candles = {
-            timeframe: sorted(
+        others: dict[str, Any] = {}
+        timestamps: dict[str, list[datetime]] = {}
+        for timeframe, series in (data or {}).items():
+            if timeframe == strategy.chosen_timeframe:
+                continue
+            ordered = sorted(
                 (_normalize_candle(candle) for candle in series),
                 key=lambda candle: candle.timestamp,
             )
-            for timeframe, series in (data or {strategy.chosen_timeframe: candles}).items()
-            if timeframe != strategy.chosen_timeframe
-        }
-        timestamps = {
-            timeframe: [candle.timestamp for candle in series]
-            for timeframe, series in all_candles.items()
-        }
+            timestamps[timeframe] = [candle.timestamp for candle in ordered]
+            # Funding rows are read item by item, so only price series become frames.
+            others[timeframe] = (
+                ordered if timeframe == "funding" or not ordered else candle_frame(ordered)
+            )
+        primary = candle_frame(candles)
         signals = [
             LiveSignal(
                 action="hold",
@@ -85,49 +120,65 @@ class BacktestTool:
             as_of = candles[index].timestamp
             # Each bar sees what live trading would: the trailing window of every series,
             # with no candle from after this bar.
-            available_data = {}
-            for timeframe, series in all_candles.items():
+            available_data: dict[str, Any] = {}
+            for timeframe, series in others.items():
                 end = bisect_right(timestamps[timeframe], as_of)
                 available_data[timeframe] = series[max(0, end - window) : end]
             start = max(0, index + 1 - window)
-            available_data[strategy.chosen_timeframe] = candles[start : index + 1]
+            available_data[strategy.chosen_timeframe] = primary.iloc[start : index + 1]
             signals.append(evaluate_live_signal(strategy, available_data))
+        return signals
+
+    def simulate(
+        self,
+        strategy: StrategyDefinition,
+        candles: Sequence[OHLCVBar | Mapping[str, Any]],
+        signals: Sequence[LiveSignal],
+        initial_capital: float | None = None,
+    ) -> BacktestReport:
+        """Trade precomputed signals; a signal on bar i acts at the open of bar i + 1."""
+        capital = self._capital(initial_capital)
+        candles = [_normalize_candle(candle) for candle in candles]
+        if len(candles) < 2:
+            raise ValueError("Backtesting requires at least two candles")
+        if len(signals) != len(candles):
+            raise ValueError("Every candle needs exactly one signal")
         cash = capital
         position: dict[str, Any] | None = None
         trades: list[TradeRecord] = []
         equity_curve: list[dict[str, Any]] = []
 
-        for index, bar in frame.iterrows():
+        for index, bar in enumerate(candles):
             if position is not None:
                 reason, exit_price = self._exit_in_bar(position, bar)
                 if reason is None and index > 0 and signals[index - 1].action == "short":
-                    reason, exit_price = "opposite_signal", float(bar["open"])
+                    reason, exit_price = "opposite_signal", bar.open
                 bars_held = index - position["entry_index"]
                 if (
                     reason is None
                     and strategy.time_stop_bars
                     and bars_held >= strategy.time_stop_bars
                 ):
-                    reason, exit_price = "time_stop", float(bar["open"])
+                    reason, exit_price = "time_stop", bar.open
                 if reason is None and strategy.exit_rule == "trailing_atr":
-                    position["peak_price"] = max(position["peak_price"], float(bar["high"]))
+                    position["peak_price"] = max(position["peak_price"], bar.high)
                     trailing_stop = (
                         signals[index].stop
                         if signals[index].stop is not None
                         else position["stop_price"]
                     )
                     position["stop_price"] = max(position["stop_price"], trailing_stop)
-                    if float(bar["low"]) <= position["stop_price"]:
+                    if bar.low <= position["stop_price"]:
                         reason, exit_price = "trailing_atr", position["stop_price"]
                 if reason:
                     cash, trade = self._close_position(
-                        cash, position, float(exit_price), bar["timestamp"], reason
+                        cash, position, float(exit_price), bar.timestamp, reason
                     )
                     trades.append(trade)
                     position = None
 
             if position is None and index > 0 and signals[index - 1].action == "long" and cash > 0:
-                market_price = float(bar["open"])
+                market_price = bar.open
                 max_notional = min(
                     cash / (1 + self.costs.fee_rate + self.costs.slippage_percent),
                     cash * strategy.position_fraction,
@@ -141,7 +192,7 @@ class BacktestTool:
                 if quantity > 0 and cash >= max_notional + entry_fee + entry_slippage:
                     cash -= max_notional + entry_fee + entry_slippage
                     position = {
-                        "entry_time": bar["timestamp"],
+                        "entry_time": bar.timestamp,
                         "entry_price": market_price,
                         "entry_notional": max_notional,
                         "entry_fee": entry_fee,
@@ -159,18 +210,18 @@ class BacktestTool:
                     reason, exit_price = self._exit_in_bar(position, bar)
                     if reason:
                         cash, trade = self._close_position(
-                            cash, position, float(exit_price), bar["timestamp"], reason
+                            cash, position, float(exit_price), bar.timestamp, reason
                         )
                         trades.append(trade)
                         position = None
 
-            marked_equity = cash + (position["quantity"] * float(bar["close"]) if position else 0)
-            equity_curve.append({"timestamp": _iso(bar["timestamp"]), "equity": marked_equity})
+            marked_equity = cash + (position["quantity"] * bar.close if position else 0)
+            equity_curve.append({"timestamp": _iso(bar.timestamp), "equity": marked_equity})
 
         if position is not None:
-            last = frame.iloc[-1]
+            last = candles[-1]
             cash, trade = self._close_position(
-                cash, position, float(last["close"]), last["timestamp"], "end_of_data"
+                cash, position, last.close, last.timestamp, "end_of_data"
             )
             trades.append(trade)
             equity_curve[-1]["equity"] = cash
@@ -218,22 +269,41 @@ class BacktestTool:
                 "average_trade_net_pnl": (
                     float(np.mean([trade.net_pnl for trade in repriced])) if repriced else 0.0
                 ),
-                "bars": len(frame),
+                "average_trade_gross_pnl": (
+                    float(np.mean([trade.gross_pnl for trade in repriced])) if repriced else 0.0
+                ),
+                "average_trade_cost": (
+                    (total_fees + total_slippage) / len(repriced) if repriced else 0.0
+                ),
+                "cost_edge_ratio": cost_edge_ratio(repriced),
+                "buy_and_hold_return": candles[-1].close / candles[0].open - 1,
+                "bars": len(candles),
             },
         )
 
+    def _capital(self, initial_capital: float | None) -> float:
+        capital = self.initial_capital if initial_capital is None else initial_capital
+        if (
+            isinstance(capital, bool)
+            or not isinstance(capital, int | float)
+            or not math.isfinite(capital)
+            or capital <= 0
+        ):
+            raise ValueError("initial_capital must be positive")
+        return capital
+
     def _exit_in_bar(
-        self, position: dict[str, Any], bar: pd.Series
+        self, position: dict[str, Any], bar: OHLCVBar
     ) -> tuple[str | None, float | None]:
         stop = position["stop_price"]
         take_profit = position["take_profit_price"]
-        if float(bar["open"]) <= stop:
-            return "stop_loss_gap", float(bar["open"])
-        if take_profit is not None and float(bar["open"]) >= take_profit:
-            return "take_profit_gap", float(bar["open"])
-        if float(bar["low"]) <= stop:
+        if bar.open <= stop:
+            return "stop_loss_gap", bar.open
+        if take_profit is not None and bar.open >= take_profit:
+            return "take_profit_gap", bar.open
+        if bar.low <= stop:
             return "stop_loss", stop
-        if take_profit is not None and float(bar["high"]) >= take_profit:
+        if take_profit is not None and bar.high >= take_profit:
             return "take_profit", take_profit
         return None, None
 
@@ -268,6 +338,30 @@ class BacktestTool:
         )
         cash += exit_notional - exit_fee - exit_slippage
         return cash, trade
+
+
+def cost_edge_ratio(trades: Sequence[TradeRecord]) -> float | None:
+    """Gross profit earned per unit of fees and slippage paid; None without costs."""
+    costs = sum(trade.fees + trade.slippage for trade in trades)
+    if not trades or costs <= 0:
+        return None
+    return sum(trade.gross_pnl for trade in trades) / costs
+
+
+def segment_summary(report: BacktestReport, candles: Sequence[OHLCVBar]) -> dict[str, Any]:
+    return {
+        "start": _iso(candles[0].timestamp),
+        "end": _iso(candles[-1].timestamp),
+        "bars": len(candles),
+        "trades": report.total_trades,
+        "net_pnl": report.net_pnl,
+        "net_return_pct": report.net_return_pct,
+        "max_drawdown_pct": report.max_drawdown_pct,
+        "win_rate": report.win_rate,
+        "profit_factor": report.metrics.get("profit_factor"),
+        "cost_edge_ratio": report.metrics.get("cost_edge_ratio"),
+        "buy_and_hold_return": report.metrics.get("buy_and_hold_return"),
+    }
 
 
 def _annualization(timeframe: str) -> float:
