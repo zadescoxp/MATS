@@ -157,9 +157,12 @@ console runs it as a continuous strategy algorithm, checking every 60 seconds:
 
 ### Balances
 
-With Bybit keys configured, the console shows the account's holdings (free, locked, USD
-value, and any borrowing) in the Positions tab, refreshed every 30 seconds. Live trading only
-uses money the account actually holds:
+With Bybit keys configured, click your name at the bottom of the sidebar (or Settings →
+**Balances & assets**) to see each connected venue with its logo, where the numbers come from,
+total equity, the balance available to trade, and every holding (free, locked, borrowed, USD
+value, and share of the account). Balances refresh every 30 seconds, and a summary also sits
+at the top of the Positions tab. Bybit is the only venue today; the view is organised by venue
+so others can be added. Live trading only uses money the account actually holds:
 
 - A live run will not start without any of the quote currency (USDT), or when the capital you
   enter is more than what is free.
