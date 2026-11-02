@@ -132,6 +132,12 @@ CREATE TABLE IF NOT EXISTS strategy_family_memory (
 );
 CREATE INDEX IF NOT EXISTS idx_family_memory_lookup
     ON strategy_family_memory(symbol, regime, created_at);
+CREATE TABLE IF NOT EXISTS pending_repays (
+    coin TEXT PRIMARY KEY,
+    run_id TEXT,
+    reason TEXT NOT NULL,
+    since TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS strategy_trades (
     trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -214,6 +220,10 @@ class Database:
                     row["name"]
                     for row in self.connection.execute("PRAGMA table_info(live_positions)")
                 }
+                if position_columns and "leverage" not in position_columns:
+                    self.connection.execute(
+                        "ALTER TABLE live_positions ADD COLUMN leverage REAL NOT NULL DEFAULT 1"
+                    )
                 if "last_bar_timestamp" not in position_columns:
                     self.connection.execute(
                         """ALTER TABLE live_positions
@@ -226,6 +236,10 @@ class Database:
                 if watcher_columns and "last_bar_timestamp" not in watcher_columns:
                     self.connection.execute(
                         "ALTER TABLE entry_watchers ADD COLUMN last_bar_timestamp TEXT"
+                    )
+                if watcher_columns and "forward_test_passed_at" not in watcher_columns:
+                    self.connection.execute(
+                        "ALTER TABLE entry_watchers ADD COLUMN forward_test_passed_at TEXT"
                     )
         except BaseException:
             self.connection.close()
@@ -429,6 +443,22 @@ class Database:
                 (run_id, interval_seconds, now, now),
             )
 
+    def forward_test_passed(self, run_id: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT forward_test_passed_at FROM entry_watchers WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return bool(row and row["forward_test_passed_at"])
+
+    def mark_forward_test_passed(self, run_id: str) -> None:
+        now = _now()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """UPDATE entry_watchers SET forward_test_passed_at = ?, updated_at = ?
+                   WHERE run_id = ?""",
+                (now, now, run_id),
+            )
+
     def update_entry_watcher(
         self,
         run_id: str,
@@ -463,7 +493,7 @@ class Database:
     def entry_watchers(self, *, active_only: bool = False) -> list[dict[str, Any]]:
         query = "SELECT * FROM entry_watchers"
         if active_only:
-            query += " WHERE status IN ('watching', 'paused', 'in_position')"
+            query += " WHERE status IN ('watching', 'paused', 'in_position', 'paper')"
         query += " ORDER BY created_at"
         with self._lock:
             rows = self.connection.execute(query).fetchall()
@@ -542,6 +572,16 @@ class Database:
                 (strategy_id, run_id, json_dumps(definition), version),
             )
 
+    def run_strategies(self, run_id: str, before_version: int) -> list[dict[str, Any]]:
+        """Strategy definitions a run already tried, oldest first."""
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT definition_json FROM strategies
+                   WHERE run_id = ? AND version < ? ORDER BY version""",
+                (run_id, before_version),
+            ).fetchall()
+        return [json.loads(row["definition_json"]) for row in rows]
+
     def save_backtest(
         self,
         backtest_id: str,
@@ -615,6 +655,7 @@ class Database:
         entry_order_id: str | None,
         protective_order_id: str | None,
         entry_bar_timestamp: str,
+        leverage: float = 1.0,
     ) -> None:
         now = _now()
         event = {
@@ -630,8 +671,8 @@ class Database:
                 """INSERT INTO live_positions
                    (run_id, symbol, strategy_key, strategy_json, side, amount, entry_price,
                     stop_price, take_profit_price, entry_order_id, protective_order_id, status,
-                    events_json, opened_at, last_bar_timestamp, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+                    events_json, opened_at, last_bar_timestamp, updated_at, leverage)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
                    ON CONFLICT(run_id) DO UPDATE SET
                        symbol = excluded.symbol, strategy_key = excluded.strategy_key,
                        strategy_json = excluded.strategy_json, side = excluded.side,
@@ -643,7 +684,7 @@ class Database:
                        status = 'open', stop_reason = NULL, bars_held = 0, net_pnl = NULL,
                        events_json = excluded.events_json, opened_at = excluded.opened_at,
                        last_bar_timestamp = excluded.last_bar_timestamp,
-                       updated_at = excluded.updated_at""",
+                       updated_at = excluded.updated_at, leverage = excluded.leverage""",
                 (
                     run_id,
                     symbol,
@@ -660,8 +701,26 @@ class Database:
                     now,
                     entry_bar_timestamp,
                     now,
+                    leverage,
                 ),
             )
+
+    def add_pending_repay(self, coin: str, run_id: str | None, reason: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO pending_repays (coin, run_id, reason, since) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(coin) DO UPDATE SET reason = excluded.reason""",
+                (coin, run_id, reason, _now()),
+            )
+
+    def pending_repays(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.connection.execute("SELECT * FROM pending_repays").fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_pending_repay(self, coin: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute("DELETE FROM pending_repays WHERE coin = ?", (coin,))
 
     def open_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
         with self._lock:

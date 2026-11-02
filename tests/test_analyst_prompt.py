@@ -75,3 +75,21 @@ def test_analyst_submission_accepts_bias_synonyms_and_missing_descriptions() -> 
         AnalystSubmission.model_validate(
             {"higher_timeframe_bias": "long-horizon", "lower_timeframe_timing": "neutral"}
         )
+
+
+def test_funding_history_reaches_the_prompt_as_json_rates() -> None:
+    bar = OHLCVBar(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        open=1.0001,
+        high=1.0001,
+        low=1.0001,
+        close=1.0001,
+        volume=0,
+    )
+    # Candle objects (older checkpoints) and JSON rows (the data worker) both serialize.
+    for funding in ([bar], [bar.model_dump(mode="json")]):
+        context = prompt_market_context({"funding_history": funding}, {})
+        json.dumps(context)
+        assert context["recent_funding"] == [
+            {"timestamp": "2026-01-01T00:00:00+00:00", "funding_rate": 0.0001}
+        ]

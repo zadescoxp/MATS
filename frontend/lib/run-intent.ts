@@ -1,4 +1,4 @@
-import { COIN_SYMBOLS, marketAliases } from "@/lib/markets";
+import { COIN_SYMBOLS, marketAliases, perpetualSymbol } from "@/lib/markets";
 
 const BASES = COIN_SYMBOLS.map((symbol) => symbol.split("/")[0]);
 const ALIASES = Object.entries(marketAliases()).sort((left, right) => right[0].length - left[0].length);
@@ -31,7 +31,17 @@ function addSymbol(found: string[], base: string, quote = "USDT") {
   if (!found.includes(symbol)) found.push(symbol);
 }
 
+// "perp", "futures", or "go short" asks for the perpetual market, which can short.
+// A bare "short" is left alone: "short-term" is about timeframes, not direction.
+const PERPETUAL_WORDS =
+  /\b(?:perps?|perpetuals?|futures?|shorting|short[\s-]+selling|go(?:ing)?\s+short|short\s+positions?)\b/i;
+
 function readSymbols(text: string): string[] {
+  const symbols = readSpotSymbols(text);
+  return PERPETUAL_WORDS.test(text) ? symbols.map(perpetualSymbol) : symbols;
+}
+
+function readSpotSymbols(text: string): string[] {
   const found: string[] = [];
   let masked = text;
   for (const match of text.matchAll(/\b([A-Za-z]{2,10})\s*\/\s*(USDT|USD|USDC)\b/gi)) {

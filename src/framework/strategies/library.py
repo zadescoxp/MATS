@@ -15,6 +15,8 @@ def _template(**fields: Any) -> dict[str, Any]:
     fields.setdefault("pure_momentum", False)
     fields.setdefault("cost_sensitivity", "medium")
     fields.setdefault("typical_holding_period", "hours to a few days")
+    # Alternative entry parameters the builder also measures; each overrides the defaults.
+    fields.setdefault("parameter_variants", [])
     return fields
 
 
@@ -39,6 +41,10 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
         default_exit_rule="opposite_signal",
         default_parameters={"fast_period": 12, "slow_period": 26},
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": None},
+        parameter_variants=[
+            {"fast_period": 20, "slow_period": 50},
+            {"fast_period": 50, "slow_period": 200},
+        ],
         supported_timeframes=list(_INTRADAY),
     ),
     "rsi_mean_reversion": _template(
@@ -64,6 +70,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "overbought": 70,
             "trend_period": 50,
         },
+        parameter_variants=[{"oversold": 25, "overbought": 75}, {"trend_period": 100}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "mean_reversion": _template(
@@ -96,6 +103,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "rsi_extreme": 10,
         },
         default_risk={"stop_loss_pct": 0.015, "take_profit_pct": 0.02},
+        parameter_variants=[{"z_entry": 2.0, "rsi_extreme": 5}, {"z_period": 50}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "stat_arb_spread": _template(
@@ -127,6 +135,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
         default_exit_rule="fixed_risk_reward",
         default_parameters={"z_period": 30, "z_entry": 1.5, "pair_symbol": "ETH/USDT"},
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": 0.03},
+        parameter_variants=[{"z_entry": 2.0}, {"z_period": 60}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "supertrend_atr": _template(
@@ -155,6 +164,10 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "maximum_atr_pct": 0.08,
         },
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": None},
+        parameter_variants=[
+            {"atr_period": 14, "supertrend_multiplier": 4.0},
+            {"supertrend_multiplier": 2.0},
+        ],
         supported_timeframes=list(_INTRADAY),
     ),
     "macd_htf_bias": _template(
@@ -183,6 +196,10 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "bias_fast_period": 20,
             "bias_slow_period": 50,
         },
+        parameter_variants=[
+            {"macd_fast": 24, "macd_slow": 52, "macd_signal": 18},
+            {"bias_fast_period": 50, "bias_slow_period": 200},
+        ],
         supported_timeframes=["5m", "15m", "1h"],
     ),
     "bollinger_squeeze": _template(
@@ -213,6 +230,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "bollinger_deviations": 2.0,
             "squeeze_width_pct": 0.08,
         },
+        parameter_variants=[{"squeeze_width_pct": 0.05}, {"bollinger_period": 40}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "breakout_confirmed": _template(
@@ -242,6 +260,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "atr_expansion": 1.05,
         },
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": 0.04},
+        parameter_variants=[{"channel_period": 55}, {"volume_multiple": 2.0}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "volatility_fade": _template(
@@ -266,6 +285,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
         default_exit_rule="fixed_risk_reward",
         default_parameters={"bollinger_period": 20, "bollinger_deviations": 2.0},
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": 0.03},
+        parameter_variants=[{"bollinger_deviations": 2.5}, {"bollinger_period": 40}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "carry_funding": _template(
@@ -291,6 +311,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
         default_time_stop_bars=24,
         default_parameters={"funding_threshold": 0.0001},
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": None},
+        parameter_variants=[{"funding_threshold": 0.0003}],
         supported_timeframes=["15m", "1h", "4h", "1d"],
     ),
     "regime_gated_trend": _template(
@@ -320,6 +341,7 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "adx_minimum": 25,
         },
         default_risk={"stop_loss_pct": 0.02, "take_profit_pct": None},
+        parameter_variants=[{"fast_period": 20, "slow_period": 50}, {"adx_minimum": 30}],
         supported_timeframes=list(_INTRADAY),
     ),
     "htf_trend_ltf_timing": _template(
@@ -349,6 +371,10 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "bias_fast_period": 20,
             "bias_slow_period": 50,
         },
+        parameter_variants=[
+            {"fast_period": 21, "slow_period": 55},
+            {"bias_fast_period": 50, "bias_slow_period": 200},
+        ],
         supported_timeframes=["5m", "15m", "1h"],
     ),
     "multi_timeframe_hybrid": _template(
@@ -385,7 +411,33 @@ STRATEGY_LIBRARY: dict[str, dict[str, Any]] = {
             "bias_fast_period": 20,
             "bias_slow_period": 50,
         },
+        parameter_variants=[{"oversold": 30, "overbought": 70}, {"rsi_period": 7}],
         supported_timeframes=["5m", "15m", "1h"],
+    ),
+    "time_series_momentum": _template(
+        name="Time-series momentum",
+        family="momentum",
+        thesis=(
+            "Crypto returns over weeks are positively autocorrelated: a coin that rose over "
+            "the lookback tends to keep rising. Few, long trades keep costs small."
+        ),
+        entry="Lookback return turns positive while close is above the trend average.",
+        exit="Lookback return turns negative, or a wide stop.",
+        regime_filter="Close must be above the trend SMA; flat in a downtrend.",
+        cost_sensitivity="low",
+        typical_holding_period="weeks",
+        suitable_regimes=["trending_low_vol", "trending_normal_vol", "trending_high_vol"],
+        description="Hold while the lookback return is positive and price is above its trend.",
+        required_indicators=["Rate of change", "SMA"],
+        entry_conditions={
+            "long": "lookback return above zero and close above trend SMA, newly true",
+            "short": "lookback return crosses below zero",
+        },
+        default_exit_rule="opposite_signal",
+        default_parameters={"lookback": 20, "trend_period": 50},
+        default_risk={"stop_loss_pct": 0.08, "take_profit_pct": None},
+        parameter_variants=[{"lookback": 60, "trend_period": 100}, {"lookback": 10}],
+        supported_timeframes=["4h", "1d"],
     ),
 }
 
@@ -462,6 +514,12 @@ def strategy_fingerprint(strategy: StrategyDefinition) -> str:
             "take_profit_pct": strategy.take_profit_pct,
             "time_stop_bars": strategy.time_stop_bars,
             "trailing_atr_multiple": strategy.trailing_atr_multiple,
+            # Spot and perpetual, long-only and long/short, trade differently.
+            **(
+                {"market": strategy.market, "short_entries": strategy.short_entries}
+                if strategy.market != "spot"
+                else {}
+            ),
         },
         separators=(",", ":"),
         sort_keys=True,

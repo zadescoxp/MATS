@@ -138,3 +138,72 @@ def test_market_order_is_sized_in_base_units_and_closed_fill_counts_as_filled() 
     assert exchange.created_params[0]["marketUnit"] == "baseCoin"
     assert result.status == "filled"
     assert result.filled == 0.0999
+
+
+def test_borrowing_order_is_sent_as_a_spot_margin_order() -> None:
+    settings = Settings(
+        bybit_api_key=SecretStr("test-key"),
+        bybit_api_secret=SecretStr("test-secret"),
+        bybit_testnet=True,
+    )
+    exchange = ClosedFillExchange()
+    tools = ExecutionTools(settings, exchange=exchange)
+
+    tools.place_order("BTC/USDT", "buy", 0.1, dry_run=False, idempotency_key="a", borrow=True)
+    tools.place_order("BTC/USDT", "buy", 0.1, dry_run=False, idempotency_key="b")
+
+    assert exchange.created_params[0]["isLeverage"] == 1
+    assert "isLeverage" not in exchange.created_params[1]
+
+
+class BybitReplyExchange:
+    """Bybit answers order creation with IDs only; ccxt leaves status None."""
+
+    def __init__(self) -> None:
+        self.orders: dict[str, dict] = {}
+        self.fetch_params: list[dict] = []
+
+    def create_order(self, symbol, order_type, side, amount, price, params):
+        order_id = f"order-{len(self.orders) + 1}"
+        trigger = "triggerPrice" in params
+        self.orders[order_id] = {
+            "id": order_id,
+            "symbol": symbol,
+            "side": side,
+            "status": "open" if trigger else "closed",
+            "amount": amount,
+            "filled": 0 if trigger else amount,
+            "remaining": 0,
+            "average": 100,
+        }
+        return {"id": order_id, "symbol": symbol, "status": None, "filled": None, "amount": None}
+
+    def fetch_order(self, order_id, symbol, params=None):
+        self.fetch_params.append(params or {})
+        return self.orders[order_id]
+
+    def cancel_order(self, order_id, symbol, params=None):
+        self.orders[order_id]["status"] = "canceled"
+        return {"id": order_id, "symbol": symbol, "status": None}
+
+
+def test_order_replies_without_a_status_are_looked_up() -> None:
+    settings = Settings(
+        bybit_api_key=SecretStr("test-key"),
+        bybit_api_secret=SecretStr("test-secret"),
+        bybit_testnet=True,
+        execution_poll_interval_seconds=0.01,
+    )
+    exchange = BybitReplyExchange()
+    tools = ExecutionTools(settings, exchange=exchange, sleep=lambda _seconds: None)
+
+    entry = tools.place_order("BTC/USDT:USDT", "sell", 0.001, dry_run=False, idempotency_key="e")
+    stop = tools.place_protective_stop(
+        "BTC/USDT:USDT", 0.001, 105, dry_run=False, idempotency_key="s", side="buy"
+    )
+
+    assert entry.status == "filled" and entry.filled == 0.001
+    assert entry.orders[0].status == "unknown"  # the bare create reply
+    assert stop.status == "open" and stop.orders[0].id == "order-2"
+    assert tools.cancel_order("order-2", "BTC/USDT:USDT", trigger=True).status == "canceled"
+    assert all(params.get("acknowledged") for params in exchange.fetch_params)

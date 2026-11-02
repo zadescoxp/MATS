@@ -26,12 +26,16 @@ from framework.core.state import GraphState
 from framework.persistence.candle_series import is_series_ref
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
+from framework.strategies.forward_test import forward_test
 from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.news_risk import NewsRisk, assess_news_risk
+from framework.tools.account import account_snapshot
 from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import news_sentiment
 from framework.tools.execution import ExecutionTools
+from framework.tools.market_data import MarketDataTools
+from framework.tools.markets import MarketListing, is_perpetual, quote_currency
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 _ALLOWED_TIMEFRAMES = {
@@ -48,8 +52,10 @@ _ALLOWED_TIMEFRAMES = {
     "1d",
     "1w",
 }
-_SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
+# Spot pairs (BTC/USDT) and linear perpetuals settled in their quote coin (BTC/USDT:USDT).
+_SYMBOL = re.compile(r"^[A-Z0-9]{1,30}/([A-Z0-9]{2,10})(:\1)?$")
 _ENTRY_WATCH_INTERVAL_SECONDS = 60
+_ACCOUNT_REFRESH_SECONDS = 30
 # Timeframes at least one strategy template can trade; the console warns about the rest.
 _STRATEGY_TIMEFRAMES = sorted(
     {
@@ -79,6 +85,9 @@ class DashboardService:
         self._stop_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._operations: dict[str, dict[str, str]] = {}
+        self._market_listing = MarketListing(lambda: MarketDataTools._make_exchange(self.settings))
+        self._account: dict[str, Any] = {"connected": False}
+        self._account_tools: tuple[str, ExecutionTools] | None = None
         self._restore_entry_watchers()
         logger.info(
             "Dashboard service ready (database=%s, dry_run=%s, kill_switch=%s).",
@@ -96,16 +105,28 @@ class DashboardService:
                 "symbols": self.settings.symbols,
                 "timeframes": self.settings.timeframes,
                 "strategy_timeframes": _STRATEGY_TIMEFRAMES,
+                "spot_leverage": self.settings.spot_leverage,
+                "allow_short": self.settings.allow_short,
+                "forward_test_trades": self.settings.forward_test_trades,
             }
             data["connections"] = self.connections.public(self._environment)
+            data["account"] = self._account
+            # One entry per connected venue; Bybit is the only venue today.
+            data["accounts"] = [self._account] if self._account.get("connected") else []
             data["operations"] = list(self._operations.values())
             data["active_run_ids"] = [
                 run_id for run_id, thread in self._threads.items() if thread.is_alive()
             ]
         return data
 
+    def markets(self) -> dict[str, Any]:
+        return {"markets": self._market_listing.markets()}
+
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
         symbols = _symbols(payload.get("symbols"), self.settings.symbols)
+        unknown = [symbol for symbol in symbols if self._market_listing.known(symbol) is False]
+        if unknown:
+            raise ValueError(f"Not a Bybit spot or perpetual market: {', '.join(unknown)}.")
         timeframes = _timeframes(payload.get("timeframes"), self.settings.timeframes)
         account_equity = payload.get("account_equity")
         if account_equity is not None and (
@@ -121,6 +142,20 @@ class DashboardService:
         model_id = payload.get("model_id")
         if model_id is not None and not isinstance(model_id, str):
             raise ValueError("model_id must be a string.")
+        leverage = payload.get("leverage")
+        if leverage is not None and (
+            isinstance(leverage, bool)
+            or not isinstance(leverage, int | float)
+            or not 1 <= leverage <= 3
+        ):
+            raise ValueError("leverage must be a number from 1 to 3.")
+        paper_trades = payload.get("paper_trades")
+        if paper_trades is not None and (
+            isinstance(paper_trades, bool)
+            or not isinstance(paper_trades, int)
+            or not 0 <= paper_trades <= 50
+        ):
+            raise ValueError("paper_trades must be an integer from 0 to 50.")
         max_attempts = payload.get("max_attempts")
         if max_attempts is not None and (
             isinstance(max_attempts, bool)
@@ -136,13 +171,17 @@ class DashboardService:
                 self.settings.dry_run if dry_run_override is None else dry_run_override
             )
             if not effective_dry_run and not self.settings.kill_switch:
-                active = [
-                    run_id
-                    for run_id, event in self._stop_events.items()
-                    if not event.is_set() and self._run_is_active(run_id)
-                ]
-                if active:
-                    raise ValueError("A live run is already active.")
+                self._check_live_funds(symbols, account_equity)
+                spot_symbols = [symbol for symbol in symbols if not is_perpetual(symbol)]
+                if (
+                    spot_symbols
+                    and (leverage or self.settings.spot_leverage) > 1
+                    and not self._execution_tools().spot_margin_enabled()
+                ):
+                    raise ValueError(
+                        "Leverage needs spot margin, which is off on the Bybit account. Turn "
+                        "it on in Bybit (it asks you to pass a short quiz) or start at 1x."
+                    )
 
             equity_by_symbol: dict[str, float] = {}
             if len(symbols) > 1 and account_equity is not None:
@@ -162,6 +201,10 @@ class DashboardService:
                 }
                 if max_attempts is not None:
                     config["max_revision_loops"] = max_attempts - 1
+                if leverage is not None:
+                    config["leverage"] = float(leverage)
+                if paper_trades is not None:
+                    config["paper_trades"] = paper_trades
                 if symbol in equity_by_symbol:
                     config["account_equity"] = equity_by_symbol[symbol]
                 elif account_equity is not None:
@@ -261,7 +304,6 @@ class DashboardService:
         run_id: str | None,
         *,
         account_equity: float | None = None,
-        allow_parallel_live: bool = False,
         extra_attempts: int | None = None,
     ) -> dict[str, str]:
         database = Database(self.settings.database_path)
@@ -305,16 +347,6 @@ class DashboardService:
             with self._lock:
                 if self._run_is_active(selected_id):
                     raise ValueError(f"Run {selected_id} is already active.")
-                active_live_run = (
-                    not self.settings.dry_run
-                    and not self.settings.kill_switch
-                    and any(
-                        run_id != selected_id and thread.is_alive()
-                        for run_id, thread in self._threads.items()
-                    )
-                )
-                if active_live_run and not allow_parallel_live:
-                    raise ValueError("A live run is already active.")
                 stop_event = threading.Event()
                 self._stop_events[selected_id] = stop_event
                 thread = threading.Thread(
@@ -370,12 +402,11 @@ class DashboardService:
                     if isinstance(run["config"].get("account_equity"), int | float)
                     else None,
                 ),
-                allow_parallel_live=True,
             )
             for run in candidates
         ]
         for watcher_id in watcher_ids:
-            self.resume(watcher_id, allow_parallel_live=True)
+            self.resume(watcher_id)
         return {
             "run_ids": [item["run_id"] for item in resumed] + watcher_ids,
             "message": f"Resume requested for {len(resumed) + len(watcher_ids)} run(s).",
@@ -627,6 +658,7 @@ class DashboardService:
                     database.log_event(run_id, "algorithm_retired", stop_reason)
                     return
                 try:
+                    PositionMonitor(worker.context).retry_pending_repays()
                     news_risk = assess_news_risk(_live_sentiment(state.symbol))
                     position = next(
                         (item for item in database.open_positions() if item["run_id"] == run_id),
@@ -704,8 +736,11 @@ class DashboardService:
             and state.risk_assessment is not None
             and state.risk_assessment.approved
         )
+        forward_ok = self._forward_test_ok(worker, database, run_id, state, is_new_bar)
         if not is_new_bar:
             execution_detail = "No new candle; entry execution is held to prevent duplicate orders."
+        elif not forward_ok:
+            execution_detail = "Paper trading until the forward test passes; no live order."
         elif actionable and news_risk.block_entry:
             execution_detail = f"Entry blocked by news risk: {news_risk.reason}"
         else:
@@ -722,6 +757,7 @@ class DashboardService:
         if (
             is_new_bar
             and actionable
+            and forward_ok
             and not news_risk.block_entry
             and not self.settings.dry_run
             and not self.settings.kill_switch
@@ -731,7 +767,7 @@ class DashboardService:
         entered = any(position["run_id"] == run_id for position in database.open_positions())
         database.update_entry_watcher(
             run_id,
-            status="in_position" if entered else "watching",
+            status="in_position" if entered else "watching" if forward_ok else "paper",
             signal=signal.model_dump(mode="json"),
             last_bar=bar_key,
             error=None,
@@ -744,15 +780,117 @@ class DashboardService:
             )
         return state
 
+    def _forward_test_ok(
+        self, worker: Any, database: Any, run_id: str, state: GraphState, is_new_bar: bool
+    ) -> bool:
+        """Whether this algorithm may trade live: its paper trades since approval paid off."""
+        # Runs saved before paper trading became a per-run option have no paper_trades.
+        per_run = getattr(state, "paper_trades", None)
+        required = per_run if per_run is not None else self.settings.forward_test_trades
+        if required == 0 or database.forward_test_passed(run_id):
+            return True
+        strategy = state.strategy
+        research = state.raw_data.get(strategy.chosen_timeframe) if strategy else None
+        if strategy is None or not research or not is_new_bar:
+            return False
+        result = forward_test(
+            worker.context.backtester,
+            worker.context.market_data,
+            state.symbol,
+            strategy,
+            research[-1].timestamp,
+            required,
+            (
+                state.account_equity
+                if state.account_equity is not None
+                else self.settings.initial_capital
+            ),
+        )
+        if result.verdict == "passed":
+            database.mark_forward_test_passed(run_id)
+            database.log_event(run_id, "forward_test_passed", result.detail)
+            return True
+        if result.verdict == "failed":
+            database.mark_strategy_stopped(
+                state.symbol, strategy_fingerprint(strategy), run_id, result.detail
+            )
+            database.update_run_status(run_id, "stopped")
+        database.log_event(run_id, "forward_test", result.detail)
+        return False
+
     def _run_is_active(self, run_id: str) -> bool:
         thread = self._threads.get(run_id)
         return bool(thread and thread.is_alive())
 
+    def start_account_refresh(self) -> None:
+        """Keep the Bybit balance snapshot fresh; started by the server, not by tests."""
+        threading.Thread(
+            target=self._account_loop, args=(), name="mats-account", daemon=True
+        ).start()
+
+    def refresh_account(self) -> dict[str, Any]:
+        self._refresh_account()
+        return {"account": self._account}
+
+    def _account_loop(self) -> None:
+        while True:
+            self._refresh_account()
+            time.sleep(_ACCOUNT_REFRESH_SECONDS)
+
+    def _refresh_account(self) -> None:
+        if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
+            self._account = {"connected": False, "venue": "bybit", "venue_name": "Bybit"}
+            return
+        try:
+            balance = self._execution_tools().get_balance()
+            snapshot = account_snapshot(balance, testnet=self.settings.bybit_testnet)
+            self._account = snapshot.model_dump(mode="json")
+        except Exception as exc:
+            logger.warning("Bybit account snapshot failed: %s", exc)
+            self._account = {**self._account, "connected": True, "error": str(exc)}
+
+    def _execution_tools(self) -> ExecutionTools:
+        """One client per set of credentials, so balance refreshes reuse loaded markets."""
+        key = self.settings.bybit_api_key.get_secret_value() if self.settings.bybit_api_key else ""
+        fingerprint = hashlib.sha256(f"{key}:{self.settings.bybit_testnet}".encode()).hexdigest()
+        if self._account_tools is None or self._account_tools[0] != fingerprint:
+            self._account_tools = (fingerprint, ExecutionTools(self.settings))
+        return self._account_tools[1]
+
+    def _check_live_funds(self, symbols: list[str], account_equity: Any) -> None:
+        """Refuse a live start the Bybit account cannot pay for."""
+        tools = self._execution_tools()
+        balance = tools.get_balance()
+        # Testnet lists fewer markets than mainnet, where research candles come from.
+        listed = getattr(getattr(tools, "exchange", None), "markets", None)
+        if isinstance(listed, dict) and listed:
+            missing = [symbol for symbol in symbols if symbol not in listed]
+            if missing:
+                raise ValueError(
+                    f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not listed "
+                    "on Bybit testnet, so no live order could be placed. Start a dry run or "
+                    "pick another market."
+                )
+        quotes = {quote_currency(symbol) for symbol in symbols}
+        for quote in sorted(quotes):
+            free = balance.available(quote)
+            if free <= 0:
+                raise ValueError(
+                    f"No {quote} is available on the Bybit account, so no live order "
+                    f"could be placed. Deposit {quote} or start a dry run."
+                )
+            if account_equity is not None and float(account_equity) > free:
+                raise ValueError(
+                    f"Capital {float(account_equity):,.2f} is more than the {free:,.2f} {quote} "
+                    "available on Bybit. Lower the capital or leave it blank to use the "
+                    "available balance."
+                )
+
     def _allocate_live_equity(self, symbols: list[str]) -> dict[str, float]:
-        balance = ExecutionTools(self.settings).get_balance()
+        balance = self._execution_tools().get_balance()
         symbols_by_quote: dict[str, list[str]] = {}
         for symbol in symbols:
-            quote = symbol.split("/")[-1]
+            quote = quote_currency(symbol)
             symbols_by_quote.setdefault(quote, []).append(symbol)
         allocations: dict[str, float] = {}
         for quote, quote_symbols in symbols_by_quote.items():
@@ -1015,7 +1153,10 @@ def _symbols(value: Any, defaults: list[str]) -> list[str]:
         or not symbols
         or any(not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol) for symbol in symbols)
     ):
-        raise ValueError("symbols must be a non-empty list of pairs like BTC/USDT.")
+        raise ValueError(
+            "symbols must be a non-empty list of Bybit markets like BTC/USDT (spot) or "
+            "BTC/USDT:USDT (perpetual)."
+        )
     if len(set(symbols)) != len(symbols):
         raise ValueError("symbols must be unique.")
     return symbols
@@ -1066,6 +1207,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response(HTTPStatus.OK, self.service.state())
             elif route == "/api/events":
                 self._events()
+            elif route == "/api/markets":
+                self._json_response(HTTPStatus.OK, self.service.markets())
             else:
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "Not found."})
         except ValueError as exc:
@@ -1135,6 +1278,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not isinstance(run_ids, list) or any(not isinstance(item, str) for item in run_ids):
                 raise ValueError("run_ids must be a list of strings.")
             return self.service.flatten(run_ids, payload.get("confirmed"))
+        if action == "refresh_account":
+            return self.service.refresh_account()
         if action == "toggle":
             return self.service.toggle(
                 _required_string(payload, "name"), payload.get("enabled"), payload.get("confirmed")
@@ -1235,6 +1380,7 @@ def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     service = DashboardService(settings)
+    service.start_account_refresh()
 
     class BoundDashboardHandler(DashboardHandler):
         def __init__(self, *args: Any, **kwargs: Any):

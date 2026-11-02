@@ -128,10 +128,19 @@ export interface DashboardState {
     timeframes: string[];
     /** Timeframes at least one strategy template can trade. */
     strategy_timeframes?: string[];
+    /** Default spot leverage (1 = no borrowing). */
+    spot_leverage?: number;
+    /** Whether perpetual strategies may open shorts. */
+    allow_short?: boolean;
+    /** Paper trades required before live orders; 0 (the default) means paper trading is off. */
+    forward_test_trades?: number;
   };
   operations: Operation[];
   active_run_ids: string[];
   connections?: ConnectionsState;
+  account?: AccountSnapshot;
+  /** One snapshot per connected venue. */
+  accounts?: AccountSnapshot[];
 }
 
 export interface SavedModel {
@@ -160,3 +169,29 @@ export type DashboardTab =
   | "strategy"
   | "positions"
   | "events";
+
+export interface AssetHolding {
+  asset: string;
+  total: number;
+  free: number;
+  locked: number;
+  usd_value: number | null;
+  borrowed: number;
+}
+
+/** The connected Bybit account, refreshed by the API every 30 seconds. */
+export interface AccountSnapshot {
+  connected: boolean;
+  /** Venue id, e.g. "bybit", and its display name. */
+  venue?: string;
+  venue_name?: string;
+  /** Where the numbers come from, e.g. "Bybit API · Unified account wallet balance". */
+  source?: string;
+  fetched_at?: string;
+  testnet?: boolean;
+  account_type?: string | null;
+  total_equity_usd?: number | null;
+  available_usd?: number | null;
+  assets?: AssetHolding[];
+  error?: string | null;
+}

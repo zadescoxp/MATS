@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
 
+from framework.tools.markets import base_currency, quote_currency, same_market, spot_symbol
+
 _USER_AGENT = "MATS research context feed"
 logger = logging.getLogger(__name__)
 _SOURCE_TIMEOUT_SECONDS = 4.0
@@ -146,7 +148,16 @@ def is_shock(title: str) -> bool:
 
 
 def reference_pair(symbol: str) -> str | None:
-    return PAIR_REFERENCES.get(symbol.upper())
+    """The market a pair strategy trades against, on the same market type as ``symbol``.
+
+    Coins without a listed reference are paired with Bitcoin in the same quote currency.
+    """
+    spot = spot_symbol(symbol.upper())
+    reference = PAIR_REFERENCES.get(spot)
+    if reference is None and "/" in spot:
+        base, quote = base_currency(spot), quote_currency(spot)
+        reference = f"{'ETH' if base == 'BTC' else 'BTC'}/{quote}"
+    return same_market(reference, symbol) if reference else None
 
 
 def classify_horizon(title: str, source: str) -> str:

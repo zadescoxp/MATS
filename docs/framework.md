@@ -116,8 +116,8 @@ records:
   evaluator shared by backtests, risk assessment, execution, and the position monitor.
   It returns `action`, `reason`, `strength`, `price`, `stop`, and `strategy_over`.
 - The hard-coded, structured strategy library in `framework.strategies.library`
-  contains 13 templates in eight families: EMA crossover, Supertrend with an ATR filter,
-  and MACD with higher-timeframe bias (momentum); RSI pullback and z-score mean
+  contains 14 templates in eight families: EMA crossover, Supertrend with an ATR filter,
+  MACD with higher-timeframe bias, and 4h/1d time-series momentum (momentum); RSI pullback and z-score mean
   reversion; a pair-spread statistical arbitrage (relative value); Bollinger squeeze and
   volatility fade (volatility); confirmed breakout; funding carry; regime-gated trend;
   and two multi-timeframe templates (higher-timeframe trend with lower-timeframe timing,
@@ -126,6 +126,14 @@ records:
   higher timeframe in the same run. Each saved strategy JSON includes its
   `template_name` and exact parameter values. The model picks one measured candidate by
   `candidate_id`; arbitrary generated strategy code is never executed.
+- Strategy search (`framework.strategies.search`): each template also lists
+  `parameter_variants`. The builder signals each entry variant once and simulates its stop,
+  target, and time-stop variants on those signals, ranking them on the in-sample part of
+  the history only (`MATS_WALK_FORWARD_SPLIT`, default 70%). Templates measure in parallel
+  processes (`MATS_BACKTEST_WORKERS`), and the measurements are cached for the later
+  attempts of the same run. Only variants with an in-sample profit and a cost-edge ratio
+  (gross profit / fees and slippage) of at least `MATS_MIN_COST_EDGE_RATIO` are offered;
+  when none are, the run ends `rejected` with a "Staying in cash" diagnosis.
 - Library defaults use a 2% protective stop. EMA crossover exits on the opposite
   crossover; RSI pullback and Bollinger breakout use a 4% target; Supertrend trails at
   3 ATR; MACD-with-bias has a 48-bar time stop; and higher/lower-timeframe timing has
@@ -137,8 +145,14 @@ records:
   the last `LIVE_SIGNAL_BARS` (500) candles of every series, as live trading fetches, and
   never a candle from after that bar. This keeps backtests linear in history length and
   makes a backtested signal the one live trading would have produced. A crossover is
-  acted on at the next candle open to avoid look-ahead. Current spot backtests open long positions only; bearish signals
-  close an open long, and do not simulate borrowed/derivative shorts. Fees and slippage
+  acted on at the next candle open to avoid look-ahead. Reports carry `walk_forward`:
+  in-sample and out-of-sample summaries (each starting flat with fresh capital), plus
+  `cost_edge_ratio` and `buy_and_hold_return` metrics. The critique rejects a strategy
+  that loses on either segment or whose cost-edge ratio is too low. These measured gates
+  decide: when all pass, the model's review is advisory, its objections are stored as
+  `Advisory:` issues and the strategy is approved
+  (`MATS_CRITIC_CAN_VETO=true` lets the model's REJECT stand). Spot backtests open long positions only; bearish signals
+  close an open long. Perpetual strategies may also short (see below). Fees and slippage
   are charged on entry and exit.
 - Template exits include the opposite signal, configured percentage stop, optional
   percentage target, ATR trailing stop, and bar-count time stop. Live position
@@ -173,12 +187,21 @@ with positive risk size; hold/exit/zero-size decisions are recorded as expected
 IDs, status, fill details, and the protective stop ID in `executions` and
 `live_positions`.
 
-The current order path is Bybit spot, not margin or derivatives. `MATS_ALLOW_SHORT`
-defaults to false. Short signals are not opened with the default setting; with
-`MATS_ALLOW_SHORT=true`, short entries can be represented in dry-run simulation, but
-live spot execution still refuses to send them because this path does not borrow or
-create a derivative position. When monitoring a long spot position, an opposite short
-signal is treated as an exit to flat.
+The market travels with the symbol (`framework/tools/markets.py`): `BTC/USDT` is spot and
+`BTC/USDT:USDT` the USDT linear perpetual. The builder stamps each strategy with
+`market` and `short_entries` (perpetual and `MATS_ALLOW_SHORT`, default true); both are in
+the strategy fingerprint for non-spot strategies. Spot strategies are long only: a short
+signal closes the long. Perpetual strategies with `short_entries` reverse: a short signal
+closes a long and opens a short, and vice versa. The backtester keeps a short's notional as
+margin, marks it at `(entry - close) x quantity`, applies the
+`MATS_PERPETUAL_FEE_RATE_*` schedule, and charges each funding settlement held over
+(`TradeRecord.funding`, `BacktestReport.funding_cost`). The data worker fetches funding for
+the whole research window on perpetuals; spot carry strategies read the perpetual's rate.
+Live perpetual orders omit spot-only fields, protective stops are reduce-only conditional
+orders with an explicit trigger direction, and exits are reduce-only and capped at the
+position Bybit reports (`ExecutionTools.position_size`). Perpetual leverage scales the margin
+cap only; spot borrowing and repayment never apply to it. Order lookups pass ccxt's
+`acknowledged` flag (required on Unified accounts) and spot stops use the StopOrder filter.
 Persisted open positions can be checked once with `mats --monitor-open-positions` or
 on each `mats --loop` polling cycle. Exits cancel the recorded protective order before
 sending a market flatten order. Exit events, closed trades, and stopped-strategy
@@ -225,6 +248,20 @@ strategy model submits a `StrategyChoice` naming a measured candidate.
 5. Add unit tests using fake market/model/exchange clients. Check checkpoint recovery
    and ensure that a completed step is not called again.
 
+## Balances and leverage
+
+Live sizing reads the Bybit account through `ExecutionTools.get_balance`
+(`AccountBalance.available`, `framework.tools.account`). Risk sizing caps run capital to
+the free quote balance, `ExecutionNode` re-checks affordability before each entry and
+sizes the protective stop to the coin actually received, and `PositionMonitor` sells only
+what is held. With `leverage` above 1 (run config or `MATS_SPOT_LEVERAGE`, at most 3) and
+spot margin on, buying power adds up to (leverage - 1) times the free balance, limited by
+Bybit's `availableToBorrow`; the order is sent with `isLeverage=1` only when cash does not
+cover it, and the position records its leverage. Closing a leveraged position calls
+`ExecutionTools.repay_borrowed` (`POST /v5/account/no-convert-repay`); refused repays go
+to `pending_repays` and are retried by every monitor and algorithm check. MATS never
+changes account settings such as margin mode or auto-repay.
+
 ## Operational safety
 
 `MATS_DRY_RUN=true` and `MATS_KILL_SWITCH=true` are safe defaults. A live testnet
@@ -242,6 +279,17 @@ ends `rejected` can be resumed with extra attempts (`resume(run_id, extra_attemp
 symbol gets a separate persisted run.
 
 ## Live strategy algorithm
+
+Paper trading is optional and off by default. A run turns it on with the `paper_trades`
+run option (the start dialog's *Paper trade first* toggle, which always sends it) or
+`MATS_FORWARD_TEST_TRADES` for runs that do not set it. It delays live entries and can cost
+profits, since moves during the paper phase are never traded live. When it is on, before an
+algorithm's first live order it is forward tested
+(`framework.strategies.forward_test`): on each new closed candle the strategy is replayed
+over the candles that closed after its research history ended, the watcher shows status
+`paper`, and no order is placed. Once the required paper trades have closed
+with a net profit the run is marked as passed and trades live from then on; if they closed
+at a loss the strategy is retired. With paper trading off it trades live at once.
 
 When a dashboard run with dry-run off ends with an approved strategy,
 `DashboardService` starts an algorithm for it (`entry_watchers` row, 60-second loop):

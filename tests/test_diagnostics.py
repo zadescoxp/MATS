@@ -98,3 +98,24 @@ def test_completed_hold_mentions_kill_switch_simulation() -> None:
 
 def test_running_run_has_no_diagnosis() -> None:
     assert diagnose_run(_run("running")) is None
+
+
+def test_no_edge_after_costs_reads_as_staying_in_cash() -> None:
+    reason = "Staying in cash: no strategy showed an edge after fees and slippage. 1h: ..."
+    run = _run("rejected", steps=[{"status": "completed", "output": {"errors": [reason]}}])
+
+    diagnosis = diagnose_run(run)
+
+    assert diagnosis["kind"] == "rejected"
+    assert diagnosis["title"] == "Staying in cash: no edge after costs"
+    assert diagnosis["detail"] == reason
+
+
+def test_paper_trading_watcher_shows_forward_test_progress() -> None:
+    progress = "Forward test: 1 of 3 paper trades closed over 12 new 1h candles, net +4.00."
+    run = _run("completed", events=[{"type": "forward_test", "message": progress}])
+
+    diagnosis = diagnose_run(run, {"status": "paper"})
+
+    assert diagnosis["kind"] == "paper"
+    assert diagnosis["detail"] == progress

@@ -5,6 +5,7 @@ from framework.core.context import AgentContext
 from framework.schemas.models import OrderSnapshot, StrategyDefinition
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
+from framework.tools.markets import base_currency, is_perpetual, quote_currency
 
 
 class PositionMonitor:
@@ -20,6 +21,7 @@ class PositionMonitor:
         *,
         external_exits: dict[str, tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
+        self.retry_pending_repays()
         positions = self.context.database.open_positions()
         if run_ids is not None:
             selected = {position["run_id"]: position for position in positions}
@@ -136,7 +138,7 @@ class PositionMonitor:
         protective_order_id = position.get("protective_order_id")
         if protective_order_id:
             protective_order = self.context.execution.get_order(
-                protective_order_id, position["symbol"]
+                protective_order_id, position["symbol"], trigger=True
             )
             if protective_order.status in {"closed", "filled"}:
                 exit_price = _fill_price([protective_order], signal.price)
@@ -173,7 +175,7 @@ class PositionMonitor:
             try:
                 if protective_order.status not in {"canceled", "rejected"}:
                     canceled = self.context.execution.cancel_order(
-                        protective_order_id, position["symbol"]
+                        protective_order_id, position["symbol"], trigger=True
                     )
                 else:
                     canceled = protective_order
@@ -191,13 +193,51 @@ class PositionMonitor:
                 )
 
         exit_side = "sell" if position["side"] == "long" else "buy"
+        exit_amount = float(position["amount"])
+        perpetual = is_perpetual(position["symbol"])
+        if position["side"] == "long" or perpetual:
+            # Close only what the account holds: fees, liquidation, or a manual close can
+            # leave less, and a perpetual exit must never open the opposite position.
+            base = base_currency(position["symbol"])
+            if perpetual:
+                held = self.context.execution.position_size(position["symbol"])
+                holding = f"{position['symbol']} position"
+            else:
+                held = self.context.execution.get_balance().available(base)
+                holding = base
+            if held <= 0:
+                reason = (
+                    f"No {holding} is held on Bybit any more; the position was closed outside MATS."
+                )
+                direction = 1 if position["side"] == "long" else -1
+                net_pnl = (signal.price - float(position["entry_price"])) * exit_amount * direction
+                self._finish_trade(
+                    position,
+                    event_type="closed_outside_mats",
+                    reason=reason,
+                    bars_held=bars_held,
+                    net_pnl=net_pnl,
+                    exit_price=signal.price,
+                    amount=exit_amount,
+                    last_bar_timestamp=latest_bar_timestamp,
+                    stop_strategy=stop_strategy,
+                )
+                self.context.database.log_event(position["run_id"], "closed_outside_mats", reason)
+                return {
+                    "run_id": position["run_id"],
+                    "symbol": position["symbol"],
+                    "action": "closed_outside_mats",
+                    "reason": reason,
+                }
+            exit_amount = min(exit_amount, held)
         result = self.context.execution.place_order(
             position["symbol"],
             exit_side,
-            float(position["amount"]),
+            exit_amount,
             "market",
             dry_run=False,
             idempotency_key=(f"{position['run_id']}:position-exit:{position['bars_held']}"),
+            reduce_only=perpetual,
         )
         self.context.database.save_execution(
             f"{position['run_id']}-exit-{bars_held}",
@@ -223,7 +263,8 @@ class PositionMonitor:
             else float(position["entry_price"]) - exit_price
         )
         net_pnl = pnl_per_unit * quantity_closed
-        residual = max(float(position["amount"]) - quantity_closed, 0.0)
+        # Measured against what was sold: coin taken as fees was never held.
+        residual = max(exit_amount - quantity_closed, 0.0)
         if residual == 0:
             self._finish_trade(
                 position,
@@ -296,6 +337,34 @@ class PositionMonitor:
                 position["symbol"], position["strategy_key"], position["run_id"], reason
             )
             database.update_run_status(position["run_id"], "stopped")
+        # Only leveraged spot positions borrowed; perpetual margin is never a loan.
+        if float(position.get("leverage") or 1) > 1 and not is_perpetual(position["symbol"]):
+            self._repay(quote_currency(position["symbol"]), position["run_id"])
+
+    def retry_pending_repays(self) -> None:
+        """Retry loans that could not be repaid at exit (e.g. Bybit's hourly blackout)."""
+        for pending in self.context.database.pending_repays():
+            self._repay(pending["coin"], pending["run_id"])
+
+    def _repay(self, coin: str, run_id: str | None) -> None:
+        database = self.context.database
+        if self.context.settings.dry_run:
+            return
+        try:
+            repaid = self.context.execution.repay_borrowed(coin)
+            error = None if repaid else "Bybit did not accept the repayment."
+        except Exception as exc:
+            repaid, error = False, str(exc)
+        if repaid:
+            database.clear_pending_repay(coin)
+            database.log_event(run_id, "loan_repaid", f"Repaid the borrowed {coin}.")
+        else:
+            database.add_pending_repay(coin, run_id, error or "Repayment failed.")
+            database.log_event(
+                run_id,
+                "repay_pending",
+                f"Could not repay borrowed {coin} yet ({error}); retrying on the next check.",
+            )
 
 
 def strategy_model(definition: dict[str, Any]) -> StrategyDefinition:

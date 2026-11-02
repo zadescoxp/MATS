@@ -158,6 +158,7 @@ class StrategyDefinition(BaseModel):
         "regime_gated_trend",
         "htf_trend_ltf_timing",
         "multi_timeframe_hybrid",
+        "time_series_momentum",
     ] = "ema_crossover"
     entry_rule: Literal[
         "ema_crossover",
@@ -173,6 +174,7 @@ class StrategyDefinition(BaseModel):
         "regime_gated_trend",
         "htf_trend_ltf_timing",
         "multi_timeframe_hybrid",
+        "time_series_momentum",
     ] = "ema_crossover"
     exit_rule: Literal[
         "ema_crossover", "opposite_signal", "fixed_risk_reward", "trailing_atr", "time_stop"
@@ -189,6 +191,10 @@ class StrategyDefinition(BaseModel):
         default_factory=list
     )
     revision_notes: list[str] = Field(default_factory=list)
+    # Spot strategies only buy and sell what they hold. Perpetual strategies trade the
+    # linear contract and, with short_entries, open shorts on bearish signals too.
+    market: Literal["spot", "perpetual"] = "spot"
+    short_entries: bool = False
 
     @model_validator(mode="after")
     def validate_periods(self) -> "StrategyDefinition":
@@ -196,6 +202,8 @@ class StrategyDefinition(BaseModel):
             raise ValueError(
                 "template_name and entry_rule must identify the same supported template"
             )
+        if self.short_entries and self.market != "perpetual":
+            raise ValueError("Only perpetual strategies can open short positions")
         if self.fast_period >= self.slow_period:
             raise ValueError("fast_period must be less than slow_period")
         return self
@@ -223,6 +231,9 @@ class TradeRecord(BaseModel):
     slippage: float = Field(ge=0)
     net_pnl: float
     exit_reason: str
+    side: Literal["long", "short"] = "long"
+    # Perpetual funding paid while the trade was open (negative when it was received).
+    funding: float = 0.0
 
 
 class BacktestReport(BaseModel):
@@ -240,6 +251,8 @@ class BacktestReport(BaseModel):
     equity_curve: list[dict[str, Any]]
     trades: list[TradeRecord]
     metrics: dict[str, float | int | None]
+    # In-sample and out-of-sample summaries of the same backtest; None on short histories.
+    walk_forward: dict[str, Any] | None = None
 
 
 class Critique(BaseModel):
@@ -334,6 +347,18 @@ class AccountBalance(BaseModel):
     used: dict[str, float | None] = Field(default_factory=dict)
     total: dict[str, float | None] = Field(default_factory=dict)
     currencies: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Bybit's own account payload (account type, equity, per-coin USD value, borrowing).
+    info: dict[str, Any] = Field(default_factory=dict)
+
+    def available(self, currency: str) -> float:
+        """Free amount of a currency, or 0 when the account holds none."""
+        value = self.free.get(currency)
+        if value is None:
+            value = self.currencies.get(currency, {}).get("free")
+        try:
+            return max(float(value or 0), 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
 
 def json_safe(value: Any) -> Any:

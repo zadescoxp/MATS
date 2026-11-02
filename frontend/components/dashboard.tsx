@@ -10,6 +10,7 @@ import {
   Circle,
   Gauge,
   History,
+  Info,
   LoaderCircle,
   LockKeyhole,
   Menu,
@@ -19,6 +20,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Wallet,
   Square,
   X,
 } from "lucide-react";
@@ -45,16 +47,28 @@ import {
 import { PersonaAvatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AccountPanel } from "@/components/account-panel";
 import { BacktestChart } from "@/components/backtest-chart";
+import { BalancesSection } from "@/components/balances-section";
 import { ConnectionsPanel } from "@/components/connections-panel";
 import { Input } from "@/components/ui/input";
 import { LiveMarketChart } from "@/components/live-market-chart";
 import { PanelResizeHandle, usePanelWidth, useViewportWidth } from "@/components/resizable-panel";
 import { RejectedRunNotice, RunDiagnosisBanner } from "@/components/run-diagnosis";
 import { StructuredBrief } from "@/components/structured-brief";
-import { createStateStream, fetchState, sendAction } from "@/lib/api";
+import { createStateStream, fetchMarkets, fetchState, sendAction } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { COIN_SYMBOLS, marketName } from "@/lib/markets";
+import {
+  COIN_SYMBOLS,
+  FALLBACK_MARKETS,
+  coinLogo,
+  compareMarkets,
+  displaySymbol,
+  isPerpetual,
+  marketName,
+  type ListedMarket,
+  type MarketType,
+} from "@/lib/markets";
 import { parseRunRequest } from "@/lib/run-intent";
 import type {
   AgentStep,
@@ -98,7 +112,7 @@ const CHART_TOOLTIP = {
 };
 
 type Notice = { kind: "success" | "error" | "info"; message: string };
-type SettingsSection = "connections" | "usage";
+type SettingsSection = "balances" | "connections" | "usage";
 type RailTab = "running" | "history";
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -172,6 +186,7 @@ function statusStyle(status: string): string {
     case "paused":
     case "triggered":
     case "in_position":
+    case "paper":
       return "border-accent/20 bg-accent/10 text-accent";
     default:
       return "border-border bg-foreground/[0.03] text-muted";
@@ -266,7 +281,7 @@ function equityPoints(attempt: StrategyAttempt | null) {
 function isLiveRun(run: Run, activeIds: string[], watchers: EntryWatcher[]): boolean {
   if (run.status === "running" || activeIds.includes(run.run_id)) return true;
   const watcher = watchers.find((item) => item.run_id === run.run_id);
-  return ["watching", "paused", "in_position"].includes(watcher?.status ?? "");
+  return ["watching", "paused", "in_position", "paper"].includes(watcher?.status ?? "");
 }
 
 function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
@@ -277,8 +292,11 @@ function runSubtitle(run: Run, watchers: EntryWatcher[]): string {
   }
   if (watcher?.status === "in_position") return "Trading · position open";
   if (watcher?.status === "watching") return "Trading · waiting for entry";
+  if (watcher?.status === "paper") return "Paper trading · forward test";
   if (watcher?.status === "paused") return "Paused by a safety switch";
-  if (run.diagnosis?.kind === "rejected") return "No strategy approved";
+  if (run.diagnosis?.kind === "rejected") {
+    return run.diagnosis.title.startsWith("Staying in cash") ? "Staying in cash · no edge" : "No strategy approved";
+  }
   if (run.status === "failed") return run.diagnosis?.title ?? "Needs attention";
   if (run.status === "stopped") return "Stopped";
   if (run.status === "completed") return "Completed";
@@ -347,65 +365,7 @@ function StatusBadge({ status }: { status: string }) {
 function CoinMark({ symbol, small = false }: { symbol: string; small?: boolean }) {
   const base = symbol.split("/")[0]?.toUpperCase() ?? "";
   const size = small ? 28 : 34;
-  const logos: Record<string, string> = {
-    BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.png",
-    ETH: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
-    SOL: "https://cryptologos.cc/logos/solana-sol-logo.png",
-    BNB: "https://cryptologos.cc/logos/bnb-bnb-logo.png",
-    XRP: "https://cryptologos.cc/logos/xrp-xrp-logo.png",
-    DOGE: "https://cryptologos.cc/logos/dogecoin-doge-logo.png",
-    ADA: "https://cryptologos.cc/logos/cardano-ada-logo.png",
-    AVAX: "https://cryptologos.cc/logos/avalanche-avax-logo.png",
-    LINK: "https://cryptologos.cc/logos/chainlink-link-logo.png",
-    DOT: "https://cryptologos.cc/logos/polkadot-new-dot-logo.png",
-    TRX: "https://cryptologos.cc/logos/tron-trx-logo.png",
-    TON: "https://cryptologos.cc/logos/toncoin-ton-logo.png",
-    LTC: "https://cryptologos.cc/logos/litecoin-ltc-logo.png",
-    BCH: "https://cryptologos.cc/logos/bitcoin-cash-bch-logo.png",
-    ATOM: "https://cryptologos.cc/logos/cosmos-atom-logo.png",
-    NEAR: "https://cryptologos.cc/logos/near-protocol-near-logo.png",
-    APT: "https://cryptologos.cc/logos/aptos-apt-logo.png",
-    SUI: "https://cryptologos.cc/logos/sui-sui-logo.png",
-    SEI: "https://cryptologos.cc/logos/sei-sei-logo.png",
-    INJ: "https://cryptologos.cc/logos/injective-inj-logo.png",
-    TIA: "https://cryptologos.cc/logos/celestia-tia-logo.png",
-    FIL: "https://cryptologos.cc/logos/filecoin-fil-logo.png",
-    ICP: "https://cryptologos.cc/logos/internet-computer-icp-logo.png",
-    HBAR: "https://cryptologos.cc/logos/hedera-hbar-logo.png",
-    ETC: "https://cryptologos.cc/logos/ethereum-classic-etc-logo.png",
-    UNI: "https://cryptologos.cc/logos/uniswap-uni-logo.png",
-    AAVE: "https://cryptologos.cc/logos/aave-aave-logo.png",
-    MKR: "https://cryptologos.cc/logos/maker-mkr-logo.png",
-    LDO: "https://cryptologos.cc/logos/lido-dao-ldo-logo.png",
-    ARB: "https://cryptologos.cc/logos/arbitrum-arb-logo.png",
-    OP: "https://cryptologos.cc/logos/optimism-ethereum-op-logo.png",
-    STX: "https://cryptologos.cc/logos/stacks-stx-logo.png",
-    RUNE: "https://cryptologos.cc/logos/thorchain-rune-logo.png",
-    GRT: "https://cryptologos.cc/logos/the-graph-grt-logo.png",
-    IMX: "https://cryptologos.cc/logos/immutable-x-imx-logo.png",
-    SAND: "https://cryptologos.cc/logos/the-sandbox-sand-logo.png",
-    MANA: "https://cryptologos.cc/logos/decentraland-mana-logo.png",
-    PEPE: "https://cryptologos.cc/logos/pepe-pepe-logo.png",
-    SHIB: "https://cryptologos.cc/logos/shiba-inu-shib-logo.png",
-    BONK: "https://cryptologos.cc/logos/bonk1-bonk-logo.png",
-    WIF: "https://cryptologos.cc/logos/dogwifhat-wif-logo.png",
-    FLOKI: "https://cryptologos.cc/logos/floki-inu-floki-logo.png",
-    JUP: "https://cryptologos.cc/logos/jupiter-jup-logo.png",
-    PYTH: "https://cryptologos.cc/logos/pyth-network-pyth-logo.png",
-    ONDO: "https://cryptologos.cc/logos/ondo-ondo-logo.png",
-    ENA: "https://cryptologos.cc/logos/ethena-ena-logo.png",
-    TAO: "https://cryptologos.cc/logos/bittensor-tao-logo.png",
-    PENDLE: "https://cryptologos.cc/logos/pendle-pendle-logo.png",
-    CRV: "https://cryptologos.cc/logos/curve-dao-token-crv-logo.png",
-    POL: "https://cryptologos.cc/logos/polygon-matic-logo.png",
-    ALGO: "https://cryptologos.cc/logos/algorand-algo-logo.png",
-    XLM: "https://cryptologos.cc/logos/stellar-xlm-logo.png",
-    KAS: "https://cryptologos.cc/logos/kaspa-kas-logo.png",
-    ORDI: "https://cryptologos.cc/logos/ordi-ordi-logo.png",
-    WLD: "https://coin-images.coingecko.com/coins/images/31069/small/worldcoin.jpeg?1696529903",
-    FET: "https://coin-images.coingecko.com/coins/images/5681/small/ASI.png?1719827289",
-  };
-  const logo = logos[base];
+  const logo = coinLogo(base);
   const [failedLogo, setFailedLogo] = useState<string | null>(null);
   return (
     <span
@@ -603,6 +563,8 @@ export function Dashboard() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [showStart, setShowStart] = useState(false);
+  // Every Bybit market, loaded the first time the start dialog opens.
+  const [listedMarkets, setListedMarkets] = useState<ListedMarket[] | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("connections");
@@ -618,6 +580,9 @@ export function Dashboard() {
   const [accountEquity, setAccountEquity] = useState("");
   const [startDryRun, setStartDryRun] = useState(true);
   const [startAttempts, setStartAttempts] = useState(DEFAULT_ATTEMPTS);
+  const [startLeverage, setStartLeverage] = useState(1);
+  // Optional paper trading before live orders; off unless the user turns it on.
+  const [startPaperTrading, setStartPaperTrading] = useState(false);
   const [backtestVersion, setBacktestVersion] = useState<number | null>(null);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
@@ -783,6 +748,35 @@ export function Dashboard() {
     () => [...new Set([...(data?.settings.symbols ?? []), ...COIN_SYMBOLS, ...runs.map((run) => run.symbol)])],
     [data?.settings.symbols, runs],
   );
+  useEffect(() => {
+    if (!showStart || listedMarkets) return;
+    let cancelled = false;
+    fetchMarkets()
+      .then((markets) => {
+        if (!cancelled) setListedMarkets(markets);
+      })
+      .catch(() => {
+        // The built-in coins stay selectable when Bybit's listing cannot be loaded.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showStart, listedMarkets]);
+  const startMarkets = useMemo(() => {
+    const known = new Map((listedMarkets ?? FALLBACK_MARKETS).map((market) => [market.symbol, market]));
+    // Configured and earlier symbols stay pickable even if the listing lacks them.
+    for (const symbol of runSymbols) {
+      if (known.has(symbol)) continue;
+      const [base = symbol, rest = "USDT"] = symbol.split("/");
+      known.set(symbol, {
+        symbol,
+        base,
+        quote: rest.split(":")[0] ?? rest,
+        type: isPerpetual(symbol) ? "perpetual" : "spot",
+      });
+    }
+    return [...known.values()].sort(compareMarkets);
+  }, [listedMarkets, runSymbols]);
   const liveRuns = runs
     .filter((run) => isLiveRun(run, activeRunIds, entryWatchers))
     .sort((left, right) => right.started_at.localeCompare(left.started_at));
@@ -913,7 +907,15 @@ export function Dashboard() {
     ) {
       return;
     }
-    const payload: Record<string, unknown> = { symbols, timeframes, dry_run: dryRun, max_attempts: attempts };
+    const payload: Record<string, unknown> = {
+      symbols,
+      timeframes,
+      dry_run: dryRun,
+      max_attempts: attempts,
+      leverage: startLeverage,
+      // Always sent, so the toggle decides even when MATS_FORWARD_TEST_TRADES is set.
+      paper_trades: startPaperTrading ? paperTradeCount(data?.settings.forward_test_trades) : 0,
+    };
     if (equity.trim()) {
       const value = Number(equity.replace(/,/g, ""));
       if (!Number.isFinite(value) || value <= 0) {
@@ -1001,6 +1003,8 @@ export function Dashboard() {
 
   function openStartDialog() {
     if (data) setStartDryRun(data.settings.dry_run);
+    if (data) setStartLeverage(data.settings.spot_leverage ?? 1);
+    if (data) setStartPaperTrading((data.settings.forward_test_trades ?? 0) > 0);
     setStartStep(0);
     setShowStart(true);
     setRailOpen(false);
@@ -1169,7 +1173,7 @@ export function Dashboard() {
               >
                 <CoinMark symbol={run.symbol} small />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-foreground">{run.symbol}</span>
+                  <span className="block truncate text-[13px] font-medium text-foreground">{displaySymbol(run.symbol)}</span>
                   <span className={cn("mt-0.5 block truncate text-[11px]", live ? "text-muted" : "text-muted-foreground")}>
                     {runSubtitle(run, entryWatchers)}
                   </span>
@@ -1197,9 +1201,10 @@ export function Dashboard() {
           <button
             type="button"
             onClick={() => {
-              setSettingsSection("connections");
+              setSettingsSection("balances");
               setSettingsOpen(true);
             }}
+            aria-label="Open balances and settings"
             className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-card"
           >
             <span className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-sky-400 via-violet-400 to-orange-300 text-xs font-semibold text-zinc-950">
@@ -1207,7 +1212,11 @@ export function Dashboard() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] font-medium">Zade</span>
-              <span className="block text-[11px] text-muted-foreground">Workspace</span>
+              <span className="block truncate text-[11px] tabular-nums text-muted-foreground">
+                {data?.account?.connected && data.account.total_equity_usd != null
+                  ? `${data.account.total_equity_usd.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 })} · ${data.account.venue_name ?? "Bybit"}${data.account.testnet ? " testnet" : ""}`
+                  : "Workspace"}
+              </span>
             </span>
             <Menu className="h-4 w-4 text-muted-foreground" />
           </button>
@@ -1467,6 +1476,8 @@ export function Dashboard() {
                 ? `Checking signal, risk, and news every ${selectedEntryWatcher.interval_seconds} seconds.`
                 : selectedEntryWatcher.status === "in_position"
                   ? `Managing the open position every ${selectedEntryWatcher.interval_seconds} seconds.`
+                  : selectedEntryWatcher.status === "paper"
+                    ? "Paper trading on candles after approval. Live orders start once the forward test closes enough paper trades at a profit."
                   : selectedEntryWatcher.status === "paused"
                     ? selectedEntryWatcher.error ?? "Paused while dry-run or the kill switch is enabled."
                     : selectedEntryWatcher.error ?? "No live checks are active."}
@@ -1580,6 +1591,14 @@ export function Dashboard() {
       { label: "Fees", value: money(report.total_fees) },
       { label: "Slippage", value: money(report.total_slippage) },
     ];
+    const reportMetrics = isObject(report.metrics) ? report.metrics : {};
+    const costEdge = reportMetrics.cost_edge_ratio;
+    const walkForward = isObject(report.walk_forward) ? report.walk_forward : null;
+    const segments: Array<[string, string, Record<string, unknown>]> = [];
+    if (walkForward && isObject(walkForward.in_sample)) segments.push(["In-sample", "Chosen on", walkForward.in_sample]);
+    if (walkForward && isObject(walkForward.out_of_sample)) {
+      segments.push(["Out-of-sample", "Never seen when choosing", walkForward.out_of_sample]);
+    }
     return (
       <div className="mx-auto max-w-5xl">
         {backtestAttempts.length > 1 && (
@@ -1652,6 +1671,39 @@ export function Dashboard() {
             </div>
           ))}
         </div>
+        {(segments.length > 0 || typeof costEdge === "number") && (
+          <div className="mt-6">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-sm font-medium">Walk-forward</h3>
+              {typeof costEdge === "number" && (
+                <p className="text-[11px] text-muted-foreground">
+                  Gross profit is <span className={cn("tabular-nums", costEdge >= 2 ? "text-positive" : "text-negative")}>{costEdge.toFixed(2)}x</span> the fees and slippage paid
+                </p>
+              )}
+            </div>
+            {segments.length > 0 && (
+              <div className="mt-3 grid gap-px overflow-hidden rounded-2xl bg-white/[0.06] sm:grid-cols-2">
+                {segments.map(([label, hint, segment]) => {
+                  const pnl = numberValue(segment.net_pnl);
+                  const hold = numberValue(segment.buy_and_hold_return);
+                  return (
+                    <div key={label} className="bg-background px-3 py-3">
+                      <p className="text-[11px] text-muted-foreground">
+                        {label} · {hint} · {textValue(segment.start).slice(0, 10)} to {textValue(segment.end).slice(0, 10)}
+                      </p>
+                      <p className={cn("mt-1 text-sm tabular-nums", pnl > 0 ? "text-positive" : "text-negative")}>
+                        {money(pnl)} <span className="text-muted-foreground">on {numberValue(segment.trades)} trades</span>
+                      </p>
+                      <p className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
+                        Drawdown {(numberValue(segment.max_drawdown_pct) * 100).toFixed(2)}% · Buy and hold {(hold * 100).toFixed(2)}%
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         <div className="mt-8">
           <div className="flex items-baseline justify-between gap-3">
             <h3 className="text-sm font-medium">Price</h3>
@@ -1732,6 +1784,17 @@ export function Dashboard() {
     const allSelected = rows.length > 0 && rows.every((position) => selectedPositions.includes(position.run_id));
     return (
       <div className="mx-auto max-w-3xl">
+        <div className="mb-6">
+          <AccountPanel
+            account={data?.account}
+            busy={busyAction === "refresh_account"}
+            onRefresh={() => act("refresh_account", {}, "Balances refreshed.")}
+            onOpenDetails={() => {
+              setSettingsSection("balances");
+              setSettingsOpen(true);
+            }}
+          />
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-muted">{openPositions.length} open</p>
           <div className="flex flex-wrap items-center gap-2">
@@ -1767,7 +1830,7 @@ export function Dashboard() {
             {rows.map((position) => (
               <li key={position.run_id} className="flex items-center gap-3 py-2 text-xs">
                 <input type="checkbox" checked={selectedPositions.includes(position.run_id)} onChange={() => toggleSelection(position.run_id, selectedPositions, setSelectedPositions)} aria-label={`Select ${position.symbol} position`} />
-                <span className="flex w-28 items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol.split("/")[0]}</span>
+                <span className="flex w-28 items-center gap-2 text-foreground"><CoinMark symbol={position.symbol} small />{position.symbol.split("/")[0]}{isPerpetual(position.symbol) && <span className="text-[9px] uppercase tracking-wide text-accent">perp</span>}</span>
                 <span className="w-24 capitalize text-muted">{position.side} · {position.amount}</span>
                 <span className="w-28 tabular-nums text-muted">{money(position.entry_price)}</span>
                 <span className="min-w-0 flex-1 truncate text-muted">{textValue(position.strategy.name ?? position.strategy_key)}</span>
@@ -1873,6 +1936,14 @@ export function Dashboard() {
             <nav className="mt-6 space-y-1" aria-label="Settings sections">
               <button
                 type="button"
+                onClick={() => setSettingsSection("balances")}
+                className={cn("flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors", settingsSection === "balances" ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5")}
+              >
+                <Wallet className="h-4 w-4" />
+                Balances & assets
+              </button>
+              <button
+                type="button"
                 onClick={() => setSettingsSection("connections")}
                 className={cn("flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors", settingsSection === "connections" ? "bg-white/10 text-foreground" : "text-muted hover:bg-white/5")}
               >
@@ -1898,7 +1969,14 @@ export function Dashboard() {
             >
               <X className="h-4 w-4" />
             </button>
-            {settingsSection === "connections" ? (
+            {settingsSection === "balances" ? (
+              <BalancesSection
+                accounts={data?.accounts ?? []}
+                busy={busyAction === "refresh_account"}
+                onRefresh={() => act("refresh_account", {}, "Balances refreshed.")}
+                onOpenConnections={() => setSettingsSection("connections")}
+              />
+            ) : settingsSection === "connections" ? (
               <div className="max-w-lg">
                 <h2 className="text-lg font-semibold tracking-tight">Connections</h2>
                 <p className="mt-1 text-xs leading-5 text-muted">
@@ -2390,7 +2468,10 @@ export function Dashboard() {
       {showStart && (
         <StartDialog
           strategyTimeframes={data?.settings.strategy_timeframes ?? []}
-          symbols={runSymbols}
+          availableQuote={data?.account?.connected ? data.account.assets?.find((asset) => asset.asset === "USDT")?.free ?? 0 : null}
+          markets={startMarkets}
+          marketsLoaded={listedMarkets !== null}
+          allowShort={data?.settings.allow_short ?? true}
           selectedSymbols={startSymbols}
           setSelectedSymbols={setStartSymbols}
           timeframes={TIMEFRAMES}
@@ -2402,6 +2483,11 @@ export function Dashboard() {
           setDryRun={setStartDryRun}
           attempts={startAttempts}
           setAttempts={setStartAttempts}
+          leverage={startLeverage}
+          setLeverage={setStartLeverage}
+          paperTrading={startPaperTrading}
+          setPaperTrading={setStartPaperTrading}
+          paperTrades={paperTradeCount(data?.settings.forward_test_trades)}
           killSwitch={killSwitchEnabled}
           setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
           step={startStep}
@@ -2416,6 +2502,17 @@ export function Dashboard() {
 }
 
 const START_STEPS = ["Coins", "Timeframe", "Capital"] as const;
+const MARKET_RESULTS_LIMIT = 120;
+const DEFAULT_PAPER_TRADES = 3;
+
+/** Paper trades a run needs when the user turns paper trading on. */
+function paperTradeCount(configured: number | undefined): number {
+  return configured && configured > 0 ? configured : DEFAULT_PAPER_TRADES;
+}
+const MARKET_TYPES: Array<{ value: MarketType; label: string; detail: string }> = [
+  { value: "spot", label: "Spot", detail: "Buys the coin; long only" },
+  { value: "perpetual", label: "Perpetual", detail: "USDT contract; long and short" },
+];
 
 /** Warn before a run whose timeframes cannot produce a testable strategy. */
 function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
@@ -2446,7 +2543,10 @@ function timeframeAdvice(selected: string[], strategyTimeframes: string[]) {
 
 function StartDialog({
   strategyTimeframes,
-  symbols,
+  availableQuote,
+  markets,
+  marketsLoaded,
+  allowShort,
   selectedSymbols,
   setSelectedSymbols,
   timeframes,
@@ -2458,6 +2558,11 @@ function StartDialog({
   setDryRun,
   attempts,
   setAttempts,
+  leverage,
+  setLeverage,
+  paperTrading,
+  setPaperTrading,
+  paperTrades,
   killSwitch,
   setKillSwitch,
   step,
@@ -2467,7 +2572,12 @@ function StartDialog({
   busy,
 }: {
   strategyTimeframes: string[];
-  symbols: string[];
+  /** Free USDT on the connected Bybit account, or null when no account is connected. */
+  availableQuote: number | null;
+  markets: ListedMarket[];
+  /** False while the built-in coins stand in for Bybit's full listing. */
+  marketsLoaded: boolean;
+  allowShort: boolean;
   selectedSymbols: string[];
   setSelectedSymbols: (value: string[]) => void;
   timeframes: string[];
@@ -2479,6 +2589,12 @@ function StartDialog({
   setDryRun: (value: boolean) => void;
   attempts: number;
   setAttempts: (value: number) => void;
+  leverage: number;
+  setLeverage: (value: number) => void;
+  paperTrading: boolean;
+  setPaperTrading: (value: boolean) => void;
+  /** Profitable paper trades required before live orders when paper trading is on. */
+  paperTrades: number;
   killSwitch: boolean;
   setKillSwitch: (value: boolean) => void;
   step: number;
@@ -2488,18 +2604,30 @@ function StartDialog({
   busy: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [marketType, setMarketType] = useState<MarketType>(() =>
+    selectedSymbols.some(isPerpetual) ? "perpetual" : "spot",
+  );
   const needle = query.trim().toLowerCase();
   const timeframeGroups = [
     { label: "Short-term", detail: "Fast market moves", values: ["1m", "5m", "15m"] },
     { label: "Intraday", detail: "Within the trading day", values: ["30m", "1h", "2h", "4h"] },
     { label: "Long-term", detail: "Broader market trends", values: ["6h", "12h", "1d", "1w"] },
   ];
-  const visibleSymbols = symbols.filter((symbol) => {
-    if (!needle) return true;
-    return `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle);
-  });
+  const matchingSymbols = markets
+    .filter((market) => market.type === marketType)
+    .map((market) => market.symbol)
+    .filter((symbol) => !needle || `${marketName(symbol)} ${symbol}`.toLowerCase().includes(needle));
+  // Bybit lists over a thousand markets; render the best matches and let search narrow them.
+  const visibleSymbols = matchingSymbols.slice(0, MARKET_RESULTS_LIMIT);
+  const typeCounts = {
+    spot: markets.filter((market) => market.type === "spot").length,
+    perpetual: markets.filter((market) => market.type === "perpetual").length,
+  };
+  const hasPerpetual = selectedSymbols.some(isPerpetual);
+  const hasSpot = selectedSymbols.some((symbol) => !isPerpetual(symbol));
   const canContinue = step === 0 ? selectedSymbols.length > 0 : step === 1 ? selectedTimeframes.length > 0 : true;
   const advice = timeframeAdvice(selectedTimeframes, strategyTimeframes);
+  const liveOrders = !dryRun && !killSwitch;
 
   function continueStep() {
     if (!canContinue) return;
@@ -2614,6 +2742,29 @@ function StartDialog({
                   {selectedSymbols.length} selected
                 </Badge>
               </div>
+              <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl border border-white/[0.07] p-1" role="radiogroup" aria-label="Market type">
+                {MARKET_TYPES.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={marketType === option.value}
+                    onClick={() => setMarketType(option.value)}
+                    className={cn(
+                      "rounded-lg px-3 py-2 text-left transition-colors",
+                      marketType === option.value ? "bg-white/[0.07] text-foreground" : "text-muted hover:text-foreground",
+                    )}
+                  >
+                    <span className="flex items-center justify-between gap-2 text-xs font-medium">
+                      {option.label}
+                      <span className="text-[10px] font-normal tabular-nums text-muted-foreground">{typeCounts[option.value]}</span>
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                      {option.value === "perpetual" && !allowShort ? "USDT contract; shorts are off" : option.detail}
+                    </span>
+                  </button>
+                ))}
+              </div>
               <label className="relative block" htmlFor="coin-search">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -2638,6 +2789,7 @@ function StartDialog({
                       >
                         <CoinMark symbol={symbol} small />
                         <span className="max-w-24 truncate">{symbol.split("/")[0]}</span>
+                        {isPerpetual(symbol) && <span className="text-[9px] uppercase tracking-wide text-accent">perp</span>}
                         <X className="h-3 w-3 text-muted" />
                       </button>
                     ))}
@@ -2668,7 +2820,7 @@ function StartDialog({
                         <CoinMark symbol={symbol} small />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-xs font-medium">{marketName(symbol)}</span>
-                          <span className="mt-0.5 block text-[10px] text-muted-foreground">{symbol}</span>
+                          <span className="mt-0.5 block text-[10px] text-muted-foreground">{displaySymbol(symbol)}</span>
                         </span>
                       </label>
                     );
@@ -2676,6 +2828,16 @@ function StartDialog({
                 </div>
                 {!visibleSymbols.length && (
                   <p className="px-1 py-8 text-center text-xs text-muted">No markets match “{query.trim()}”.</p>
+                )}
+                {matchingSymbols.length > visibleSymbols.length && (
+                  <p className="px-1 pb-1 pt-3 text-center text-[11px] text-muted-foreground">
+                    Showing {visibleSymbols.length} of {matchingSymbols.length}. Search to find the rest.
+                  </p>
+                )}
+                {!marketsLoaded && (
+                  <p className="px-1 pb-1 pt-3 text-center text-[11px] text-muted-foreground">
+                    Loading every Bybit market…
+                  </p>
                 )}
               </div>
             </section>
@@ -2787,6 +2949,16 @@ function StartDialog({
                 <p className="mt-2 text-[11px] leading-5 text-muted">
                   Split evenly across selected markets. Leave blank to use the available testnet quote balance for live runs.
                 </p>
+                {availableQuote !== null && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Available on Bybit: <span className="tabular-nums text-foreground/85">{availableQuote.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT</span>
+                  </p>
+                )}
+                {liveOrders && availableQuote !== null && Number(accountEquity) > availableQuote && (
+                  <p role="alert" className="mt-2 text-[11px] leading-5 text-negative">
+                    This is more than the USDT available on Bybit. A live run will refuse to start; lower the capital or leave it blank.
+                  </p>
+                )}
               </div>
               <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl border border-white/[0.07] bg-background/35 px-4 py-3.5">
                 <span className="min-w-0">
@@ -2817,6 +2989,50 @@ function StartDialog({
                   </button>
                 </div>
               </div>
+              <div className="mt-3 rounded-2xl border border-white/[0.07] bg-background/35 px-4 py-3.5">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium" id="leverage-label">Leverage</span>
+                    <span className="mt-1 block text-[11px] leading-4 text-muted">
+                      {leverage === 1
+                        ? "Trades use only the money in your account."
+                        : [
+                            hasSpot && `Spot long entries may borrow USDT up to ${leverage}x your free balance.`,
+                            hasPerpetual && `Perpetual positions may be up to ${leverage}x your free margin.`,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                    </span>
+                  </span>
+                  <div className="flex shrink-0 rounded-lg border border-white/[0.07] p-0.5" role="radiogroup" aria-labelledby="leverage-label">
+                    {[1, 2, 3].map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={leverage === value}
+                        onClick={() => setLeverage(value)}
+                        className={cn(
+                          "h-7 w-10 rounded-md text-xs tabular-nums transition-colors",
+                          leverage === value ? "bg-foreground text-background" : "text-muted hover:text-foreground",
+                        )}
+                      >
+                        {value}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {leverage > 1 && (
+                  <p className="mt-2 text-[11px] leading-5 text-muted">
+                    The loss at each stop stays capped at the same share of equity.
+                    {hasSpot &&
+                      " On spot, MATS repays the loan after every exit; borrowing costs interest and needs spot margin turned on in Bybit."}
+                    {hasPerpetual &&
+                      ` On perpetuals nothing is borrowed, but the contract leverage on Bybit must be at least ${leverage}x, and funding is paid or received every 8 hours.`}
+                    {" "}On a Unified account a liquidation can sell your other holdings too.
+                  </p>
+                )}
+              </div>
               <div className="mt-3 divide-y divide-white/[0.06] rounded-2xl border border-white/[0.07] bg-background/35 px-4">
                 <div className="flex items-center justify-between gap-4 py-3.5">
                   <span className="min-w-0">
@@ -2833,6 +3049,31 @@ function StartDialog({
                     <span className="mt-1 block text-[11px] text-muted">Forces order placement back to dry-run.</span>
                   </span>
                   <Switch checked={killSwitch} label={`Toggle kill switch; currently ${killSwitch ? "on" : "off"}`} onChange={setKillSwitch} />
+                </div>
+                <div className="py-3.5">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="min-w-0">
+                      <span className="block text-xs font-medium">Paper trade first</span>
+                      <span className="mt-1 block text-[11px] text-muted">
+                        {paperTrading
+                          ? `Live orders wait until ${paperTrades} paper trades close at a profit.`
+                          : "Off: approved strategies trade live right away."}
+                      </span>
+                    </span>
+                    <Switch
+                      checked={paperTrading}
+                      label={`Toggle paper trading before live orders; currently ${paperTrading ? "on" : "off"}`}
+                      onChange={setPaperTrading}
+                    />
+                  </div>
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground">
+                    <Info className="mt-px h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>
+                      This might delay live trades, since the strategy first has to finish its paper trades. It might also
+                      affect profits: moves that happen while it is paper trading are never traded live, and a strategy
+                      that loses on paper is retired.
+                    </span>
+                  </p>
                 </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-1.5">

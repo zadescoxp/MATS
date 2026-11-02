@@ -184,7 +184,14 @@ class MarketDataTools:
         )
         return snapshot
 
-    def fetch_funding_history(self, symbol: str, limit: int = 200) -> list[OHLCVBar]:
+    def fetch_funding_history(
+        self, symbol: str, limit: int = 200, *, since: int | None = None
+    ) -> list[OHLCVBar]:
+        """Funding settlements as bars whose close is 1 + rate.
+
+        With ``since`` (ms) every settlement from then on is fetched, across as many
+        requests as that takes; otherwise the latest ``limit`` settlements.
+        """
         if limit <= 0:
             raise ValueError("limit must be positive")
         if not hasattr(self.exchange, "fetch_funding_rate_history"):
@@ -192,7 +199,12 @@ class MarketDataTools:
             return []
         try:
             started_at = perf_counter()
-            rows = self.exchange.fetch_funding_rate_history(symbol, limit=limit)
+            if since is None:
+                rows = self.exchange.fetch_funding_rate_history(symbol, limit=limit)
+            else:
+                rows = self.exchange.fetch_funding_rate_history(
+                    symbol, since=since, params={"paginate": True}
+                )
         except Exception:
             logger.warning(
                 "Funding-history request failed; continuing without funding data.",
@@ -219,6 +231,8 @@ class MarketDataTools:
                     volume=0,
                 )
             )
+        candles = list({candle.timestamp: candle for candle in candles}.values())
+        candles.sort(key=lambda candle: candle.timestamp)
         logger.info(
             "Fetched %d funding records in %.2fs.",
             len(candles),

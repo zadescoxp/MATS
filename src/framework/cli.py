@@ -9,7 +9,10 @@ def main() -> None:
         "--symbol",
         action="append",
         dest="symbols",
-        help="Spot symbol, e.g. BTC/USDT. Repeat for concurrent multi-symbol research.",
+        help=(
+            "Bybit market: BTC/USDT (spot) or BTC/USDT:USDT (perpetual). Repeat for "
+            "concurrent multi-symbol research."
+        ),
     )
     parser.add_argument(
         "--all",

@@ -24,8 +24,12 @@ Critique APPROVE → Risk → [optional Coder] → Execution → live strategy a
   but orders can only go to Bybit testnet; mainnet orders are rejected in code.
 - **No trade without approval.** Risk sizing and execution are unreachable until the
   critique approves a backtest that clears the net-of-cost thresholds.
-- **Spot, long only.** Short signals are never sent to the exchange. With
-  `MATS_ALLOW_SHORT=true` they can be simulated in dry-run.
+- **Spot or perpetual, per market.** Pick any Bybit spot pair (`BTC/USDT`) or USDT linear
+  perpetual (`BTC/USDT:USDT`); see [Markets](#markets). Spot only goes long. Perpetual
+  strategies also short, with reduce-only exits and stops so an exit can never flip sides.
+- **No borrowing unless you opt in.** Leverage is 1x by default; see [Leverage](#leverage).
+- **Only your real balance is traded.** Live orders are sized against what the Bybit account
+  actually holds; see [Balances](#balances).
 - **Every live entry gets a protective stop.** If the stop cannot be confirmed, the
   position is flattened immediately.
 - **Credentials stay in the Python process.** API keys are never sent to the browser.
@@ -54,13 +58,21 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_SYMBOLS` / `MATS_TIMEFRAMES` | `["BTC/USDT","ETH/USDT"]` / `["1h","4h","1d"]` | Defaults for new runs |
 | `MATS_MAX_REVISION_LOOPS` | `2` | Revisions after the first attempt (3 attempts total) |
 | `MATS_MIN_BACKTEST_TRADES` / `MATS_MIN_BACKTEST_NET_PNL` / `MATS_MAX_BACKTEST_DRAWDOWN` | `3` / `0` / `0.25` | Critique thresholds a backtest must clear |
+| `MATS_WALK_FORWARD_SPLIT` / `MATS_REQUIRE_OUT_OF_SAMPLE_EDGE` | `0.7` / `true` | Share of history strategies are chosen on; the rest must also be profitable |
+| `MATS_MIN_COST_EDGE_RATIO` | `2` | Gross profit must be at least this multiple of fees and slippage |
+| `MATS_CRITIC_CAN_VETO` | `false` | Let the model's critique reject a strategy that passed every measured check |
+| `MATS_BACKTEST_WORKERS` | `4` | Processes that measure strategy variants in parallel |
+| `MATS_FORWARD_TEST_TRADES` | `0` | Optional paper trading: profitable paper trades required before live orders (0 = off; runs can turn it on in the start dialog) |
 | `MATS_INITIAL_CAPITAL` | `10000` | Capital for dry-run sizing and backtests |
 | `MATS_FEE_RATE_TAKER` / `MATS_SLIPPAGE_PERCENT` | `0.001` / `0.0005` | Costs charged on every backtest fill |
 | `MATS_MAX_RISK_PER_TRADE` / `MATS_MAX_ACCOUNT_EXPOSURE` | `0.01` / `0.25` | Risk agent sizing limits |
+| `MATS_SPOT_LEVERAGE` | `1` | Leverage, 1 to 3: spot borrows for long entries; perpetuals size up to this multiple of free margin |
+| `MATS_ALLOW_SHORT` | `true` | Perpetual strategies may open shorts (spot never shorts) |
+| `MATS_PERPETUAL_FEE_RATE_TAKER` / `_MAKER` | `0.00055` / `0.0002` | Perpetual fees used in backtests |
 | `MATS_EDGE_FADE_LOOKBACK` / `MATS_EDGE_FADE_MIN_TRADES` / `MATS_EDGE_FADE_MIN_EXPECTANCY` | `10` / `3` / `0` | When a live strategy is retired |
 | `MATS_DATABASE_PATH` | `./data/state.db` | Runs, steps, checkpoints, positions |
 | `MATS_CANDLE_CACHE_PATH` | `./data/candles.db` | Local candle cache |
-| `MATS_MIN_HISTORY_DAYS` / `MATS_MAX_HISTORY_BARS` | `30` / `5000` | Research history depth per timeframe |
+| `MATS_MIN_HISTORY_DAYS` / `MATS_MAX_HISTORY_BARS` | `180` / `10000` | Research history depth per timeframe |
 | `MATS_LOG_LEVEL` | `INFO` | `DEBUG` adds diagnostic detail |
 
 See [`.env.example`](./.env.example) for the full list.
@@ -93,9 +105,9 @@ reply is still invalid the error is sent back for one corrected attempt.
 
 ## How a run works
 
-1. **Data Worker** downloads at least `MATS_MIN_HISTORY_DAYS` (30) days of candles per
-   timeframe, never fewer than 500 and at most `MATS_MAX_HISTORY_BARS` (5000): about 17
-   days of 5m, 30 days of 15m and 1h, and 500 candles of 4h or 1d. Only missing candles
+1. **Data Worker** downloads at least `MATS_MIN_HISTORY_DAYS` (180) days of candles per
+   timeframe, never fewer than 500 and at most `MATS_MAX_HISTORY_BARS` (10000): about 35
+   days of 5m, 104 days of 15m, 180 days of 1h and 4h, and 500 candles of 1d. Only missing candles
    are downloaded (see [Market data](#market-data-and-the-candle-cache)). It also fetches
    the ticker, a reference pair at the same depth (for example ETH for BTC), funding
    history, and news and sentiment.
@@ -103,19 +115,33 @@ reply is still invalid the error is sent back for one corrected attempt.
    gives a bias on the highest timeframe and entry timing on the lowest.
 3. **Regime** measures trend strength, volatility percentile, autocorrelation, and Hurst
    exponent, and labels the market (for example `trending_normal_vol` or `choppy_low_vol`).
-4. **Strategy Builder** backtests every library template that fits the timeframes and regime,
-   keeps candidates with enough history and at least `MATS_MIN_BACKTEST_TRADES` closed trades,
-   and offers the best five per timeframe to the model, which picks one by candidate ID.
-5. **Backtest** replays the chosen strategy with fees and slippage on every fill.
-6. **Critique** applies fixed gates (net PnL, trade count, drawdown, no pure EMA crossover in
-   chop, no family that recently lost in this regime) plus the model's review. A rejection
-   sends written revision instructions back to the builder.
+4. **Strategy Builder** searches every library template that fits the timeframes and regime:
+   the default parameters plus two alternatives, each with wider stop, target, and time-stop
+   variants. Every variant is judged only on the first `MATS_WALK_FORWARD_SPLIT` (70%) of the
+   history. A template is offered only if its best variant made at least
+   `MATS_MIN_BACKTEST_TRADES` trades, a profit after costs, and gross profit at least
+   `MATS_MIN_COST_EDGE_RATIO` times its fees and slippage. The model picks one of the best
+   five per timeframe by candidate ID. Measurements are reused by later attempts of the run.
+   When nothing qualifies, the run ends as **staying in cash**: no edge, nothing to trade.
+5. **Backtest** replays the chosen strategy with fees and slippage on every fill, over the
+   whole history and separately over the in-sample and held-out (out-of-sample) parts.
+6. **Critique** applies fixed gates (net PnL, trade count, drawdown, cost-edge ratio, profit on
+   both the in-sample and the unseen out-of-sample history, no pure EMA crossover in chop, no
+   family that recently lost in this regime). A failed gate sends written revision
+   instructions back to the builder. The model's review is advisory: when every gate passes
+   the strategy is approved and the model's objections are kept as notes, unless
+   `MATS_CRITIC_CAN_VETO=true`.
 7. **Risk** sizes an approved strategy from the live signal, stop distance, and limits.
 8. **Execution** places the entry and protective stop (or simulates them in dry-run).
+9. **Paper trading (optional, off by default)**: turn on *Paper trade first* in the start
+   dialog (or set `MATS_FORWARD_TEST_TRADES`) and a live algorithm first paper-trades the
+   strategy on candles that close after approval. It places live orders only after that many
+   paper trades close with a net profit, and is retired if they lose. This delays live trades
+   and can cost profits: moves during the paper phase are never traded live.
 
 ### Strategy library and timeframes
 
-There are 13 templates across momentum, mean reversion, relative value (pair spread),
+There are 14 templates across momentum (including daily/4h time-series momentum), mean reversion, relative value (pair spread),
 volatility, breakout, carry (funding), regime-gated trend, and multi-timeframe families.
 Strategies trade only **5m, 15m, 1h, 4h, and 1d**:
 
@@ -151,9 +177,68 @@ console runs it as a continuous strategy algorithm, checking every 60 seconds:
 - **Stopping:** stopping one run stops only that run. **Stop all** stops every run and turns
   the kill switch on. Algorithms are restored after an API restart.
 
+### Balances
+
+With Bybit keys configured, click your name at the bottom of the sidebar (or Settings →
+**Balances & assets**) to see each connected venue with its logo, where the numbers come from,
+total equity, the balance available to trade, and every holding (free, locked, borrowed, USD
+value, and share of the account). Balances refresh every 30 seconds, and a summary also sits
+at the top of the Positions tab. Bybit is the only venue today; the view is organised by venue
+so others can be added. Live trading only uses money the account actually holds:
+
+- A live run will not start without any of the quote currency (USDT), or when the capital you
+  enter is more than what is free.
+- Risk sizing uses the free balance; larger run capital is capped to it, with a note.
+- Each entry re-checks the free balance (including fees and slippage) and buys less, or holds,
+  if the account cannot pay for the full order.
+- Protective stops and exits sell only the coin actually held; Bybit takes spot buy fees in the
+  coin. A position sold outside MATS is recorded as closed without sending an order.
+
+Dry runs are simulated and do not need a balance.
+
+### Markets
+
+The start dialog lists every active Bybit spot pair and USDT/USDC linear perpetual (over
+1,300 markets), loaded from `GET /api/markets` and refreshed hourly. Choose Spot or
+Perpetual, then search. On the CLI, pass `--symbol BTC/USDT` for spot or
+`--symbol BTC/USDT:USDT` for the perpetual.
+
+- **Spot** buys the coin and sells what it holds. A bearish signal closes the long and the
+  strategy waits in cash.
+- **Perpetual** trades the linear contract. With `MATS_ALLOW_SHORT=true` (the default) a
+  bearish signal opens a short, so a falling market is tradable too. Backtests charge
+  perpetual fees and every 8-hour funding payment over the whole history (longs pay positive
+  funding, shorts receive it). Live entries carry a reduce-only protective stop; exits are
+  reduce-only and sized from the open position on Bybit. MATS never changes the contract
+  leverage or position mode on Bybit: use one-way mode, and set the contract leverage at
+  least as high as the run's leverage.
+- Research candles come from mainnet, which lists more markets than testnet. A live start
+  is refused for a market testnet does not list.
+
+### Leverage
+
+Bybit Unified accounts can trade spot on margin: an order flagged `isLeverage` borrows the
+shortfall in the quote currency. MATS leaves this off (1x) unless you choose 2x or 3x per run
+in the start dialog, or set `MATS_SPOT_LEVERAGE`:
+
+- Only long entries borrow, and only when the free balance cannot pay for the order.
+- Leverage raises the exposure limits, but the loss at each stop is still capped at
+  `MATS_MAX_RISK_PER_TRADE` of equity, so a stop-limited trade never gets bigger.
+- Borrowing is limited to (leverage - 1) times the free balance and to what Bybit will lend.
+- After every leveraged exit, MATS repays the loan from the free balance with Bybit's
+  no-conversion repay. Bybit refuses repayments from minute 04:00 to 05:30 of each hour, so a
+  refused repay is remembered and retried on every later check.
+- Spot margin must already be on in Bybit (it asks for a short quiz). MATS never changes that
+  or any other account setting; a leveraged live run is refused while it is off.
+
+Borrowing costs interest until repaid, and on a Unified account a liquidation can sell your
+other holdings too.
+
 For multi-symbol live batches, a supplied account equity is split evenly across symbols;
-otherwise the available testnet quote balance is fetched once and split. Only one live batch
-runs at a time.
+otherwise the available testnet quote balance is fetched once and split. Several live runs
+and strategy algorithms can run at the same time: they share one balance, so live entries
+take turns checking the free balance and placing their orders, and a later entry buys less,
+or holds, if an earlier one already spent the money.
 
 ### News and sentiment
 
@@ -283,7 +368,9 @@ and raw exchange payloads are never logged.
 
 - **Run time:** deeper history makes the strategy builder slower on short timeframes
   (about 20 to 40 seconds per timeframe per attempt on this machine).
-- **Spot only:** no margin, borrowing, or derivatives; shorts are simulation-only.
+- **Perpetuals:** USDT/USDC linear contracts only (no inverse or dated futures), one-way
+  position mode, and the contract leverage is whatever is set on Bybit. Live perpetual
+  orders were round-tripped on testnet (short, reduce-only stop, cancel, reduce-only close).
 - **Testnet only:** mainnet execution is deliberately disabled.
 
 ## Tests and checks

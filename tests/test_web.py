@@ -176,11 +176,14 @@ def test_dashboard_resumes_stopped_entry_watcher(tmp_path: Path, monkeypatch) ->
     ],
 )
 def test_entry_watcher_checks_every_interval_without_repeating_same_bar_execution(
-    tmp_path: Path, monkeypatch, previous_bar: str | None,
-    expected_calls: list[str], expected_detail: str,
+    tmp_path: Path,
+    monkeypatch,
+    previous_bar: str | None,
+    expected_calls: list[str],
+    expected_detail: str,
 ) -> None:
     path = tmp_path / "state.db"
-    settings = Settings(database_path=path, dry_run=False, kill_switch=False)
+    settings = Settings(database_path=path, dry_run=False, kill_switch=False, forward_test_trades=0)
     service = DashboardService(settings)
     database = Database(path)
     database.create_run("run-watch", "BTC/USDT", {})
@@ -230,6 +233,9 @@ def test_entry_watcher_checks_every_interval_without_repeating_same_bar_executio
 
         def edge_fade_reason(self, _key):
             return None
+
+        def retry_pending_repays(self):
+            pass
 
     class FakeWorker:
         def __init__(self, **_kwargs):
@@ -401,6 +407,9 @@ def _algorithm_harness(monkeypatch, *, open_position: bool, news):
         def edge_fade_reason(self, _key):
             return None
 
+        def retry_pending_repays(self):
+            pass
+
         def monitor_positions(self, run_ids, *, external_exits=None):
             calls.append(f"monitor:{sorted((external_exits or {}).values())}")
             return [{"run_id": run_ids[0], "action": "hold", "reason": "Holding."}]
@@ -448,7 +457,12 @@ def test_algorithm_blocks_entry_on_news_risk(tmp_path: Path, monkeypatch) -> Non
         monkeypatch, open_position=False, news=news
     )
     service = DashboardService(
-        Settings(database_path=tmp_path / "state.db", dry_run=False, kill_switch=False)
+        Settings(
+            database_path=tmp_path / "state.db",
+            dry_run=False,
+            kill_switch=False,
+            forward_test_trades=0,
+        )
     )
 
     service._watch_entries("run-algo", stop_event, 60)
@@ -458,9 +472,7 @@ def test_algorithm_blocks_entry_on_news_risk(tmp_path: Path, monkeypatch) -> Non
     assert "Entry blocked by news risk" in check
 
 
-def test_algorithm_manages_open_position_and_passes_news_exit(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_algorithm_manages_open_position_and_passes_news_exit(tmp_path: Path, monkeypatch) -> None:
     from framework.strategies.news_risk import NewsRisk
 
     news = NewsRisk(True, True, "Coin-specific shock headline: BTC custodian hacked")
@@ -590,7 +602,9 @@ def test_start_live_multi_symbol_splits_available_balance(tmp_path: Path, monkey
             pass
 
         def get_balance(self):
-            return SimpleNamespace(free={"USDT": 9000}, currencies={})
+            from framework.schemas.models import AccountBalance
+
+            return AccountBalance(free={"USDT": 9000})
 
     monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
 
@@ -794,3 +808,301 @@ def test_snapshot_summarises_stored_candle_series(tmp_path: Path) -> None:
 
     assert step["output"]["raw_data"] == {"1h": {"count": 24}}
     assert step["input"]["raw_data"] == {"1h": {"count": 24}}
+
+
+def _fake_balance_tools(monkeypatch, free: dict[str, float]):
+    from framework.schemas.models import AccountBalance
+
+    class FakeExecutionTools:
+        def __init__(self, _settings):
+            pass
+
+        def get_balance(self):
+            info = {
+                "result": {
+                    "list": [
+                        {
+                            "accountType": "UNIFIED",
+                            "totalEquity": "1500",
+                            "totalAvailableBalance": "1400",
+                            "coin": [
+                                {"coin": "USDT", "usdValue": "1000", "borrowAmount": "0"},
+                                {"coin": "BTC", "usdValue": "500", "borrowAmount": "0"},
+                            ],
+                        }
+                    ]
+                }
+            }
+            return AccountBalance(free=free, total=free, info=info)
+
+    monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
+
+
+@pytest.mark.parametrize(
+    ("free", "capital", "message"),
+    [
+        ({"USDT": 0.0}, None, "No USDT is available"),
+        ({"USDT": 1000.0}, 5000, "more than the 1,000.00 USDT available"),
+    ],
+)
+def test_live_start_is_refused_when_bybit_cannot_pay_for_it(
+    tmp_path: Path, monkeypatch, free, capital, message
+) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=False,
+        kill_switch=False,
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    _fake_balance_tools(monkeypatch, free)
+
+    payload = {"symbols": ["BTC/USDT"], "dry_run": False}
+    if capital is not None:
+        payload["account_equity"] = capital
+    with pytest.raises(ValueError, match=message):
+        service.start(payload)
+    assert threads == []
+
+
+def test_dry_run_start_does_not_need_a_balance(tmp_path: Path, monkeypatch) -> None:
+    service = DashboardService(Settings(database_path=tmp_path / "state.db", dry_run=True))
+    threads = _capture_threads(monkeypatch)
+    _fake_balance_tools(monkeypatch, {"USDT": 0.0})
+
+    service.start({"symbols": ["BTC/USDT"], "account_equity": 5000})
+
+    assert len(threads) == 1
+
+
+def test_account_snapshot_lists_holdings_by_value(tmp_path: Path, monkeypatch) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    _fake_balance_tools(monkeypatch, {"USDT": 1000.0, "BTC": 0.01, "DOGE": 0.0})
+
+    account = service.refresh_account()["account"]
+
+    assert account["account_type"] == "UNIFIED"
+    assert account["total_equity_usd"] == 1500
+    assert [asset["asset"] for asset in account["assets"]] == ["USDT", "BTC"]
+    assert account["venue"] == "bybit" and account["venue_name"] == "Bybit"
+    assert service.state()["account"] == account
+    assert service.state()["accounts"] == [account]
+
+
+def test_account_is_not_connected_without_credentials(tmp_path: Path) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        bybit_api_key=SecretStr(""),
+        bybit_api_secret=SecretStr(""),
+    )
+    service = DashboardService(settings)
+    settings.bybit_api_key = None
+    settings.bybit_api_secret = None
+
+    assert service.refresh_account()["account"]["connected"] is False
+    assert service.state()["accounts"] == []
+
+
+def test_leveraged_live_start_is_refused_when_spot_margin_is_off(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pydantic import SecretStr
+
+    from framework.schemas.models import AccountBalance
+
+    class FakeExecutionTools:
+        def __init__(self, _settings):
+            pass
+
+        def get_balance(self):
+            return AccountBalance(free={"USDT": 1000.0})
+
+        def spot_margin_enabled(self):
+            return False
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=False,
+        kill_switch=False,
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    monkeypatch.setattr("framework.web.ExecutionTools", FakeExecutionTools)
+
+    with pytest.raises(ValueError, match="spot margin, which is off"):
+        service.start({"symbols": ["BTC/USDT"], "dry_run": False, "leverage": 2})
+    service.start({"symbols": ["BTC/USDT"], "dry_run": False, "leverage": 1})
+
+    assert threads[0].args[2]["leverage"] == 1.0
+    with pytest.raises(ValueError, match="leverage must be"):
+        service.start({"symbols": ["BTC/USDT"], "leverage": 5})
+
+
+def test_a_live_run_can_start_while_another_is_active(tmp_path: Path, monkeypatch) -> None:
+    from pydantic import SecretStr
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        dry_run=False,
+        kill_switch=False,
+        bybit_api_key=SecretStr("key"),
+        bybit_api_secret=SecretStr("secret"),
+    )
+    service = DashboardService(settings)
+    threads = _capture_threads(monkeypatch)
+    _fake_balance_tools(monkeypatch, {"USDT": 1000.0})
+
+    service.start({"symbols": ["BTC/USDT"], "dry_run": False})
+    service.start({"symbols": ["ETH/USDT"], "dry_run": False})
+
+    assert len(threads) == 2
+    assert all(thread.is_alive() for thread in threads)
+
+
+def test_forward_test_gates_live_orders_until_paper_trades_pay(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from framework.schemas.models import OHLCVBar, StrategyDefinition
+    from framework.strategies.forward_test import ForwardTest
+
+    path = tmp_path / "state.db"
+    # Built first, so it has no watcher to restore in a background thread.
+    service = DashboardService(Settings(database_path=path, forward_test_trades=3))
+    database = Database(path)
+    database.create_run("run-paper", "BTC/USDT", {})
+    database.start_entry_watcher("run-paper", 60)
+    verdicts = iter(
+        [
+            ForwardTest("pending", 1, 5.0, 10, "Forward test: 1 of 3 paper trades closed."),
+            ForwardTest("passed", 3, 25.0, 30, "Forward test passed: 3 of 3 closed."),
+        ]
+    )
+    monkeypatch.setattr("framework.web.forward_test", lambda *_args, **_kwargs: next(verdicts))
+    approved = datetime(2026, 11, 1, tzinfo=UTC)
+    state = SimpleNamespace(
+        symbol="BTC/USDT",
+        strategy=StrategyDefinition(name="s", description="s", chosen_timeframe="1h"),
+        raw_data={"1h": [OHLCVBar(timestamp=approved, open=1, high=1, low=1, close=1, volume=1)]},
+        account_equity=None,
+    )
+    worker = SimpleNamespace(context=SimpleNamespace(backtester=None, market_data=None))
+
+    try:
+        assert not service._forward_test_ok(worker, database, "run-paper", state, False)
+        assert not service._forward_test_ok(worker, database, "run-paper", state, True)
+        assert service._forward_test_ok(worker, database, "run-paper", state, True)
+        # Remembered: no more paper trading, even on a candle that is not new.
+        assert service._forward_test_ok(worker, database, "run-paper", state, False)
+        assert database.forward_test_passed("run-paper")
+        assert [row["run_id"] for row in database.entry_watchers(active_only=True)] == ["run-paper"]
+    finally:
+        database.close()
+
+
+def test_failed_forward_test_retires_the_strategy(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from framework.schemas.models import OHLCVBar, StrategyDefinition
+    from framework.strategies.forward_test import ForwardTest
+    from framework.strategies.library import strategy_fingerprint
+
+    path = tmp_path / "state.db"
+    # Built first, so it has no watcher to restore in a background thread.
+    service = DashboardService(Settings(database_path=path, forward_test_trades=3))
+    database = Database(path)
+    database.create_run("run-paper", "BTC/USDT", {})
+    database.start_entry_watcher("run-paper", 60)
+    detail = "Forward test failed: 3 of 3 paper trades closed, net -12.00 after costs."
+    monkeypatch.setattr(
+        "framework.web.forward_test",
+        lambda *_args, **_kwargs: ForwardTest("failed", 3, -12.0, 40, detail),
+    )
+    strategy = StrategyDefinition(name="s", description="s", chosen_timeframe="1h")
+    bar = OHLCVBar(
+        timestamp=datetime(2026, 11, 1, tzinfo=UTC), open=1, high=1, low=1, close=1, volume=1
+    )
+    state = SimpleNamespace(
+        symbol="BTC/USDT", strategy=strategy, raw_data={"1h": [bar]}, account_equity=None
+    )
+    worker = SimpleNamespace(context=SimpleNamespace(backtester=None, market_data=None))
+
+    try:
+        assert not service._forward_test_ok(worker, database, "run-paper", state, True)
+        assert database.strategy_stop_reason("BTC/USDT", strategy_fingerprint(strategy)) == detail
+        assert not database.forward_test_passed("run-paper")
+    finally:
+        database.close()
+
+
+def test_paper_trading_is_off_by_default_and_chosen_per_run(tmp_path: Path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from framework.schemas.models import OHLCVBar, StrategyDefinition
+    from framework.strategies.forward_test import ForwardTest
+
+    assert Settings(_env_file=None).forward_test_trades == 0
+
+    path = tmp_path / "state.db"
+    service = DashboardService(Settings(database_path=path, forward_test_trades=0))
+    database = Database(path)
+    database.create_run("run-choice", "BTC/USDT", {})
+    database.start_entry_watcher("run-choice", 60)
+    required: list[int] = []
+
+    def paper(*args, **_kwargs):
+        required.append(args[5])
+        return ForwardTest("pending", 0, 0.0, 1, "Forward test: 0 paper trades closed.")
+
+    monkeypatch.setattr("framework.web.forward_test", paper)
+    approved = datetime(2026, 11, 1, tzinfo=UTC)
+    worker = SimpleNamespace(context=SimpleNamespace(backtester=None, market_data=None))
+
+    candle = OHLCVBar(timestamp=approved, open=1, high=1, low=1, close=1, volume=1)
+
+    def state(paper_trades):
+        return SimpleNamespace(
+            symbol="BTC/USDT",
+            strategy=StrategyDefinition(name="s", description="s", chosen_timeframe="1h"),
+            raw_data={"1h": [candle]},
+            account_equity=None,
+            paper_trades=paper_trades,
+        )
+
+    try:
+        # Off by default: the algorithm may trade live at once, with no paper trading.
+        assert service._forward_test_ok(worker, database, "run-choice", state(None), True)
+        assert service._forward_test_ok(worker, database, "run-choice", state(0), True)
+        assert required == []
+        # A run that turned it on waits for its own number of paper trades.
+        assert not service._forward_test_ok(worker, database, "run-choice", state(2), True)
+        assert required == [2]
+    finally:
+        database.close()
+
+
+def test_start_passes_the_paper_trading_choice_to_each_run(tmp_path: Path, monkeypatch) -> None:
+    service = DashboardService(Settings(database_path=tmp_path / "state.db"))
+    threads = _capture_threads(monkeypatch)
+
+    service.start({"symbols": ["BTC/USDT", "ETH/USDT"], "paper_trades": 3})
+    service.start({"symbols": ["SOL/USDT"]})
+
+    assert [thread.args[2].get("paper_trades") for thread in threads] == [3, 3, None]
+    for bad in (-1, 51, True, 2.5):
+        with pytest.raises(ValueError, match="paper_trades"):
+            service.start({"symbols": ["BTC/USDT"], "paper_trades": bad})

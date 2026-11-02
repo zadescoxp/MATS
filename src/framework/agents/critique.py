@@ -5,7 +5,8 @@ from framework.agents.common import invoke_structured, result_with_response, sub
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
-from framework.schemas.models import Critique
+from framework.persistence.database import Database
+from framework.schemas.models import BacktestReport, Critique
 from framework.strategies.library import STRATEGY_LIBRARY
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,15 @@ class CritiqueNode:
             "total_trades": report.total_trades,
             "total_fees": report.total_fees,
             "total_slippage": report.total_slippage,
+            "cost_edge_ratio": report.metrics.get("cost_edge_ratio"),
+            "buy_and_hold_return": report.metrics.get("buy_and_hold_return"),
+            "walk_forward": report.walk_forward,
             "required_thresholds": {
                 "minimum_net_pnl": self.context.settings.min_backtest_net_pnl,
                 "minimum_trades": self.context.settings.min_backtest_trades,
                 "maximum_drawdown": self.context.settings.max_backtest_drawdown,
+                "minimum_cost_edge_ratio": self.context.settings.min_cost_edge_ratio,
+                "out_of_sample_must_profit": self.context.settings.require_out_of_sample_edge,
             },
         }
         family = _family(state)
@@ -51,6 +57,14 @@ class CritiqueNode:
                     "fail in the opposite regime? "
                     "Never approve when any listed threshold fails. A pure EMA crossover "
                     "without a regime filter is a reject in chop. "
+                    "walk_forward.out_of_sample is history the strategy was not chosen on; "
+                    "trust it over the in-sample numbers. cost_edge_ratio is gross profit per "
+                    "unit of fees and slippage; near 1 means costs eat the edge. "
+                    "in_sample and out_of_sample each start from the initial capital, so their "
+                    "PnL does not sum to the whole-history PnL. The candles are real market "
+                    "data; dates after your training cutoff are not look-ahead. family_memory "
+                    "is measured PnL from earlier runs: a family that made money before is not "
+                    "evidence of overfitting. Weigh measured results over regime statistics. "
                     "On rejection, provide specific revisions and call submit_critique once."
                 ),
             },
@@ -63,11 +77,7 @@ class CritiqueNode:
                         "strategy_family": family,
                         "template_name": state.strategy.template_name if state.strategy else None,
                         "regime": state.regime,
-                        "family_memory": self.context.database.recent_family_results(
-                            state.symbol,
-                            str(state.regime.get("regime") or ""),
-                            limit=8,
-                        ),
+                        "family_memory": _family_outcomes(state, self.context.database),
                     },
                     separators=(",", ":"),
                 ),
@@ -92,6 +102,20 @@ class CritiqueNode:
                     )
                     + "Revise the strategy to satisfy: "
                     + "; ".join(gate_issues),
+                }
+            )
+        elif proposed.decision == "REJECT" and not self.context.settings.critic_can_veto:
+            # Every measured check passed. The model's objection alone has proved unreliable
+            # (the same strategy approved on one run, rejected on the next), so it is kept as
+            # a note; live results (edge fade, or optional paper trading) judge the edge.
+            logger.info("Critic objected to a strategy that passed every check; approving.")
+            proposed = proposed.model_copy(
+                update={
+                    "decision": "APPROVE",
+                    "issues": [f"Advisory: {issue}" for issue in proposed.issues],
+                    "revision_instructions": "",
+                    "rationale": "Every measured check passed, so the strategy is approved. "
+                    "The model's objection: " + proposed.rationale,
                 }
             )
         if proposed.decision == "REJECT" and not proposed.revision_instructions.strip():
@@ -177,6 +201,7 @@ class CritiqueNode:
                 f"Maximum drawdown must not exceed "
                 f"{self.context.settings.max_backtest_drawdown:.1%}."
             )
+        issues.extend(self._edge_issues(report))
         strategy = state.strategy
         if strategy is not None and strategy.template_name == "ema_crossover":
             label = str(state.regime.get("regime") or "")
@@ -211,6 +236,47 @@ class CritiqueNode:
                     "Choose a different family."
                 )
         return issues
+
+    def _edge_issues(self, report: BacktestReport) -> list[str]:
+        """Checks that the profit survives costs and holds on history it was not chosen on."""
+        settings = self.context.settings
+        issues: list[str] = []
+        ratio = report.metrics.get("cost_edge_ratio")
+        if report.total_trades and ratio is not None and ratio < settings.min_cost_edge_ratio:
+            issues.append(
+                f"Gross profit is {ratio:.2f}x the fees and slippage paid; it must be at least "
+                f"{settings.min_cost_edge_ratio:.1f}x. Trade less often or target larger moves."
+            )
+        if not settings.require_out_of_sample_edge:
+            return issues
+        walk_forward = report.walk_forward
+        if not walk_forward:
+            issues.append("History is too short for an out-of-sample check.")
+            return issues
+        in_sample = walk_forward["in_sample"]
+        out_of_sample = walk_forward["out_of_sample"]
+        if in_sample["net_pnl"] <= 0:
+            issues.append(
+                f"In-sample net PnL is {in_sample['net_pnl']:.2f}; the edge is not consistent."
+            )
+        if out_of_sample["trades"] == 0:
+            issues.append(
+                "No trades on the out-of-sample history, so the edge is untested on unseen data."
+            )
+        elif out_of_sample["net_pnl"] <= 0:
+            issues.append(
+                f"Out-of-sample net PnL is {out_of_sample['net_pnl']:.2f} on "
+                f"{out_of_sample['trades']} trades; the edge did not hold on unseen history."
+            )
+        return issues
+
+
+def _family_outcomes(state: GraphState, database: Database) -> list[dict[str, object]]:
+    # Outcomes only: showing earlier decisions let one rejection justify the next.
+    rows = database.recent_family_results(
+        state.symbol, str(state.regime.get("regime") or ""), limit=8
+    )
+    return [{key: value for key, value in row.items() if key != "decision"} for row in rows]
 
 
 def _family(state: GraphState) -> str:

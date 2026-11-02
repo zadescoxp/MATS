@@ -94,6 +94,15 @@ def _timeframe_seconds(timeframe: str) -> int:
 _PROMPT_EXCLUDED_KEYS = {"pair_candles", "funding_history", "recent_trades", "orderbook"}
 
 
+def _funding_point(item: Any) -> Any:
+    """One funding settlement as time and rate; funding rows store 1 + rate as the close."""
+    if isinstance(item, dict) and {"timestamp", "close"} <= item.keys():
+        item = OHLCVBar.model_validate(item)
+    if not isinstance(item, OHLCVBar):
+        return item
+    return {"timestamp": item.timestamp.isoformat(), "funding_rate": round(item.close - 1, 8)}
+
+
 def prompt_market_context(
     market_context: dict[str, Any], raw_data: dict[str, list[OHLCVBar]]
 ) -> dict[str, Any]:
@@ -113,7 +122,7 @@ def prompt_market_context(
         }
     funding = market_context.get("funding_history")
     if isinstance(funding, list) and funding:
-        context["recent_funding"] = funding[-5:]
+        context["recent_funding"] = [_funding_point(item) for item in funding[-5:]]
     orderbook = market_context.get("orderbook")
     if isinstance(orderbook, dict):
         context["orderbook_top"] = {

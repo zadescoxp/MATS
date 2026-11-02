@@ -8,6 +8,7 @@ import ccxt
 
 from framework.config.settings import Settings
 from framework.schemas.models import AccountBalance, OrderExecutionResult, OrderSnapshot
+from framework.tools.markets import is_perpetual
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ class ExecutionTools:
         *,
         dry_run: bool = True,
         idempotency_key: str,
+        borrow: bool = False,
+        reduce_only: bool = False,
     ) -> OrderExecutionResult:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
@@ -96,9 +99,19 @@ class ExecutionTools:
 
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
         params: dict[str, Any] = {"orderLinkId": link_id}
-        if order_type == "market":
-            # Bybit spot market buys default to quote-currency qty; size is in base units.
-            params["marketUnit"] = "baseCoin"
+        if is_perpetual(symbol):
+            if borrow:
+                raise ValueError("Perpetual orders use margin; spot borrowing does not apply")
+            if reduce_only:
+                # An exit can only shrink the position, never flip it into the other side.
+                params["reduceOnly"] = True
+        else:
+            if borrow:
+                # Bybit Unified spot margin: borrow the shortfall of this order.
+                params["isLeverage"] = 1
+            if order_type == "market":
+                # Bybit spot market buys default to quote-currency qty; size is in base units.
+                params["marketUnit"] = "baseCoin"
         started_at = self._monotonic()
         try:
             order = self.exchange.create_order(
@@ -111,7 +124,7 @@ class ExecutionTools:
             )
         except ccxt.DuplicateOrderId:
             logger.warning("Order idempotency key already exists; retrieving existing order.")
-            order = self.exchange.fetch_order(None, symbol, {"orderLinkId": link_id})
+            order = self._fetch_order(None, symbol, {"orderLinkId": link_id})
 
         orders = [order]
         current = order
@@ -122,10 +135,10 @@ class ExecutionTools:
                     self.exchange.cancel_order(current["id"], symbol)
                 except ccxt.OrderNotFound:
                     pass
-                current = self.exchange.fetch_order(current["id"], symbol)
+                current = self._fetch_order(current["id"], symbol)
                 break
             self._sleep(self.settings.execution_poll_interval_seconds)
-            current = self.exchange.fetch_order(current["id"], symbol)
+            current = self._fetch_order(current["id"], symbol)
             orders.append(current)
 
         filled = float(current.get("filled") or 0)
@@ -159,11 +172,28 @@ class ExecutionTools:
         )
         return result
 
-    def cancel_order(self, order_id: str, symbol: str) -> OrderSnapshot:
-        return _normalize_order(self.exchange.cancel_order(order_id, symbol), symbol)
+    def cancel_order(self, order_id: str, symbol: str, *, trigger: bool = False) -> OrderSnapshot:
+        params = _trigger_params(symbol, trigger)
+        if params:
+            reply = self.exchange.cancel_order(order_id, symbol, params)
+        else:
+            reply = self.exchange.cancel_order(order_id, symbol)
+        if not reply.get("status"):
+            # Bybit's cancel reply carries only IDs; the order itself says if it is canceled.
+            reply = self._fetch_order(order_id, symbol, params)
+        return _normalize_order(reply, symbol)
 
-    def get_order(self, order_id: str, symbol: str) -> OrderSnapshot:
-        return _normalize_order(self.exchange.fetch_order(order_id, symbol), symbol)
+    def get_order(self, order_id: str, symbol: str, *, trigger: bool = False) -> OrderSnapshot:
+        return _normalize_order(
+            self._fetch_order(order_id, symbol, _trigger_params(symbol, trigger)), symbol
+        )
+
+    def _fetch_order(
+        self, order_id: str | None, symbol: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        # On Unified accounts ccxt only looks an order up by ID when told the order is among
+        # the account's latest 500, which a just-placed or still-protecting order always is.
+        return self.exchange.fetch_order(order_id, symbol, {"acknowledged": True, **(params or {})})
 
     def place_protective_stop(
         self,
@@ -212,17 +242,28 @@ class ExecutionTools:
         )
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
         # Spot conditional orders infer their direction; ccxt rejects triggerDirection on spot.
-        params = {
+        params: dict[str, Any] = {
             "orderLinkId": link_id,
             "triggerPrice": trigger_price,
             "triggerBy": "LastPrice",
         }
+        if is_perpetual(symbol):
+            # A long's stop sells as the price falls; a short's stop buys as it rises.
+            params["triggerDirection"] = "descending" if side == "sell" else "ascending"
+            params["reduceOnly"] = True
         try:
             order = self.exchange.create_order(symbol, "market", side, amount, None, params)
         except ccxt.DuplicateOrderId:
-            order = self.exchange.fetch_order(None, symbol, {"orderLinkId": link_id})
+            order = self._fetch_order(None, symbol, {"orderLinkId": link_id})
+        if not order.get("status") and order.get("id"):
+            # Bybit's create reply carries only IDs; confirm the stop is resting before it
+            # is trusted. A failed lookup leaves it unconfirmed, so the caller flattens.
+            try:
+                order = self._fetch_order(order["id"], symbol, _trigger_params(symbol, True))
+            except Exception:
+                logger.warning("Protective stop could not be confirmed.", exc_info=True)
         result = OrderExecutionResult(
-            status=order.get("status", "open"),
+            status=order.get("status") or "unknown",
             orders=[_normalize_order(order, symbol)],
         )
         logger.info("Protective stop response received (status=%s).", result.status)
@@ -231,6 +272,41 @@ class ExecutionTools:
     def get_open_orders(self, symbol: str | None = None) -> list[OrderSnapshot]:
         orders = self.exchange.fetch_open_orders(symbol)
         return [_normalize_order(order, symbol or order.get("symbol", "")) for order in orders]
+
+    def position_size(self, symbol: str) -> float:
+        """Contracts held in a perpetual position on Bybit right now (0 when flat)."""
+        if not is_perpetual(symbol):
+            raise ValueError("Only perpetual markets have exchange positions")
+        positions = self.exchange.fetch_positions([symbol])
+        return sum(
+            abs(float(position.get("contracts") or 0))
+            for position in positions
+            if position.get("symbol") == symbol
+        )
+
+    def spot_margin_enabled(self) -> bool:
+        """True when spot margin is switched on for the account (it is never switched here)."""
+        response = self.exchange.privateGetV5SpotMarginTradeState()
+        return str((response.get("result") or {}).get("spotMarginMode")) == "1"
+
+    def repay_borrowed(self, coin: str) -> bool:
+        """Repay the coin's floating-rate loan from its free balance, without conversions.
+
+        Bybit refuses repayments from minute 04:00 to 05:30 of every hour; callers retry.
+        """
+        if not self.settings.bybit_testnet:
+            raise ValueError("Live mainnet execution is disabled; Bybit testnet is required")
+        response = self.exchange.request(
+            "v5/account/no-convert-repay",
+            "private",
+            "POST",
+            {"coin": coin, "repaymentType": "FLEXIBLE"},
+        )
+        result = response.get("result")
+        status = result.get("resultStatus") if isinstance(result, dict) else None
+        succeeded = str(response.get("retCode")) == "0" and status in {"SU", "P", None}
+        logger.info("Loan repay requested (coin=%s, status=%s).", coin, status)
+        return succeeded
 
     def get_balance(self) -> AccountBalance:
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
@@ -246,9 +322,15 @@ class ExecutionTools:
                 for key, value in balance.items()
                 if key not in {"free", "used", "total", "info"} and isinstance(value, dict)
             },
+            info=balance.get("info") if isinstance(balance.get("info"), dict) else {},
         )
         logger.info("Account balance received (currencies=%d).", len(result.total))
         return result
+
+
+def _trigger_params(symbol: str, trigger: bool) -> dict[str, Any]:
+    # Spot conditional orders live in Bybit's StopOrder list; contract queries see them all.
+    return {"trigger": True} if trigger and not is_perpetual(symbol) else {}
 
 
 def _normalize_order(order: dict[str, Any], symbol: str) -> OrderSnapshot:
@@ -257,7 +339,8 @@ def _normalize_order(order: dict[str, Any], symbol: str) -> OrderSnapshot:
         symbol=order.get("symbol") or symbol,
         type=order.get("type"),
         side=order.get("side"),
-        status=order.get("status", "unknown"),
+        # Bybit's create reply has status None until the order is looked up.
+        status=order.get("status") or "unknown",
         amount=order.get("amount"),
         price=order.get("price"),
         average=order.get("average"),

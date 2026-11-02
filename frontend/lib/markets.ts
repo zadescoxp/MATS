@@ -66,8 +66,55 @@ export const COIN_SYMBOLS = MARKETS.map((market) => market.symbol);
 
 const NAMES = new Map(MARKETS.map((market) => [market.symbol, market.name]));
 
+/** Spot buys and holds the coin; a perpetual is the USDT-settled contract that can short. */
+export type MarketType = "spot" | "perpetual";
+
+/** A Bybit market from `/api/markets`. Perpetual symbols end in `:SETTLE`, e.g. `BTC/USDT:USDT`. */
+export interface ListedMarket {
+  symbol: string;
+  base: string;
+  quote: string;
+  type: MarketType;
+}
+
+export function isPerpetual(symbol: string): boolean {
+  return symbol.includes(":");
+}
+
+export function spotSymbol(symbol: string): string {
+  return symbol.split(":")[0] ?? symbol;
+}
+
+export function perpetualSymbol(symbol: string): string {
+  const spot = spotSymbol(symbol);
+  return `${spot}:${spot.split("/")[1] ?? "USDT"}`;
+}
+
+/** `BTC/USDT` for spot, `BTC/USDT perp` for the perpetual. */
+export function displaySymbol(symbol: string): string {
+  return isPerpetual(symbol) ? `${spotSymbol(symbol)} perp` : symbol;
+}
+
+/** Well-known coins first, in the order MARKETS lists them; then alphabetical. */
+const POPULARITY = new Map(MARKETS.map((market, index) => [market.symbol, index]));
+
+export function compareMarkets(left: ListedMarket, right: ListedMarket): number {
+  const leftRank = POPULARITY.get(spotSymbol(left.symbol)) ?? Number.MAX_SAFE_INTEGER;
+  const rightRank = POPULARITY.get(spotSymbol(right.symbol)) ?? Number.MAX_SAFE_INTEGER;
+  return leftRank - rightRank || left.symbol.localeCompare(right.symbol);
+}
+
+/** The built-in coins on both markets, used until Bybit's listing has loaded. */
+export const FALLBACK_MARKETS: ListedMarket[] = MARKETS.flatMap((market) => {
+  const [base = market.symbol, quote = "USDT"] = market.symbol.split("/");
+  return [
+    { symbol: market.symbol, base, quote, type: "spot" as const },
+    { symbol: perpetualSymbol(market.symbol), base, quote, type: "perpetual" as const },
+  ];
+});
+
 export function marketName(symbol: string): string {
-  return NAMES.get(symbol) ?? symbol.split("/")[0] ?? symbol;
+  return NAMES.get(spotSymbol(symbol)) ?? symbol.split("/")[0] ?? symbol;
 }
 
 export function marketAliases(): Record<string, string> {
@@ -76,4 +123,70 @@ export function marketAliases(): Record<string, string> {
     aliases[market.name.toLowerCase()] = market.symbol.split("/")[0] ?? market.symbol;
   }
   return aliases;
+}
+
+/** Logo image for a coin ticker, when one is known. */
+const COIN_LOGOS: Record<string, string> = {
+  BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.png",
+  ETH: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+  SOL: "https://cryptologos.cc/logos/solana-sol-logo.png",
+  BNB: "https://cryptologos.cc/logos/bnb-bnb-logo.png",
+  XRP: "https://cryptologos.cc/logos/xrp-xrp-logo.png",
+  DOGE: "https://cryptologos.cc/logos/dogecoin-doge-logo.png",
+  ADA: "https://cryptologos.cc/logos/cardano-ada-logo.png",
+  AVAX: "https://cryptologos.cc/logos/avalanche-avax-logo.png",
+  LINK: "https://cryptologos.cc/logos/chainlink-link-logo.png",
+  DOT: "https://cryptologos.cc/logos/polkadot-new-dot-logo.png",
+  TRX: "https://cryptologos.cc/logos/tron-trx-logo.png",
+  TON: "https://cryptologos.cc/logos/toncoin-ton-logo.png",
+  LTC: "https://cryptologos.cc/logos/litecoin-ltc-logo.png",
+  BCH: "https://cryptologos.cc/logos/bitcoin-cash-bch-logo.png",
+  ATOM: "https://cryptologos.cc/logos/cosmos-atom-logo.png",
+  NEAR: "https://cryptologos.cc/logos/near-protocol-near-logo.png",
+  APT: "https://cryptologos.cc/logos/aptos-apt-logo.png",
+  SUI: "https://cryptologos.cc/logos/sui-sui-logo.png",
+  SEI: "https://cryptologos.cc/logos/sei-sei-logo.png",
+  INJ: "https://cryptologos.cc/logos/injective-inj-logo.png",
+  TIA: "https://cryptologos.cc/logos/celestia-tia-logo.png",
+  FIL: "https://cryptologos.cc/logos/filecoin-fil-logo.png",
+  ICP: "https://cryptologos.cc/logos/internet-computer-icp-logo.png",
+  HBAR: "https://cryptologos.cc/logos/hedera-hbar-logo.png",
+  ETC: "https://cryptologos.cc/logos/ethereum-classic-etc-logo.png",
+  UNI: "https://cryptologos.cc/logos/uniswap-uni-logo.png",
+  AAVE: "https://cryptologos.cc/logos/aave-aave-logo.png",
+  MKR: "https://cryptologos.cc/logos/maker-mkr-logo.png",
+  LDO: "https://cryptologos.cc/logos/lido-dao-ldo-logo.png",
+  ARB: "https://cryptologos.cc/logos/arbitrum-arb-logo.png",
+  OP: "https://cryptologos.cc/logos/optimism-ethereum-op-logo.png",
+  STX: "https://cryptologos.cc/logos/stacks-stx-logo.png",
+  RUNE: "https://cryptologos.cc/logos/thorchain-rune-logo.png",
+  GRT: "https://cryptologos.cc/logos/the-graph-grt-logo.png",
+  IMX: "https://cryptologos.cc/logos/immutable-x-imx-logo.png",
+  SAND: "https://cryptologos.cc/logos/the-sandbox-sand-logo.png",
+  MANA: "https://cryptologos.cc/logos/decentraland-mana-logo.png",
+  PEPE: "https://cryptologos.cc/logos/pepe-pepe-logo.png",
+  SHIB: "https://cryptologos.cc/logos/shiba-inu-shib-logo.png",
+  BONK: "https://cryptologos.cc/logos/bonk1-bonk-logo.png",
+  WIF: "https://cryptologos.cc/logos/dogwifhat-wif-logo.png",
+  FLOKI: "https://cryptologos.cc/logos/floki-inu-floki-logo.png",
+  JUP: "https://cryptologos.cc/logos/jupiter-jup-logo.png",
+  PYTH: "https://cryptologos.cc/logos/pyth-network-pyth-logo.png",
+  ONDO: "https://cryptologos.cc/logos/ondo-ondo-logo.png",
+  ENA: "https://cryptologos.cc/logos/ethena-ena-logo.png",
+  TAO: "https://cryptologos.cc/logos/bittensor-tao-logo.png",
+  PENDLE: "https://cryptologos.cc/logos/pendle-pendle-logo.png",
+  CRV: "https://cryptologos.cc/logos/curve-dao-token-crv-logo.png",
+  POL: "https://cryptologos.cc/logos/polygon-matic-logo.png",
+  ALGO: "https://cryptologos.cc/logos/algorand-algo-logo.png",
+  XLM: "https://cryptologos.cc/logos/stellar-xlm-logo.png",
+  KAS: "https://cryptologos.cc/logos/kaspa-kas-logo.png",
+  ORDI: "https://cryptologos.cc/logos/ordi-ordi-logo.png",
+  WLD: "https://coin-images.coingecko.com/coins/images/31069/small/worldcoin.jpeg?1696529903",
+  FET: "https://coin-images.coingecko.com/coins/images/5681/small/ASI.png?1719827289",
+  USDT: "https://cryptologos.cc/logos/tether-usdt-logo.png",
+  USDC: "https://cryptologos.cc/logos/usd-coin-usdc-logo.png",
+};
+
+export function coinLogo(ticker: string): string | undefined {
+  return COIN_LOGOS[ticker.toUpperCase()];
 }

@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -12,6 +13,13 @@ from framework.schemas.models import (
 from framework.strategies.library import strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
+from framework.tools.account import coin_detail
+from framework.tools.markets import base_currency, is_perpetual
+from framework.tools.markets import quote_currency as quote_of
+
+# Concurrent live runs share one Bybit balance. One live entry at a time checks the free
+# balance and places its orders, so a second run sees what the first one spent.
+_LIVE_ORDER_LOCK = threading.Lock()
 
 
 class ExecutionNode:
@@ -48,12 +56,12 @@ class ExecutionNode:
             reason = "This exact strategy was previously stopped and cannot re-enter."
         elif signal.action not in {"long", "short"}:
             reason = signal.reason
-        elif signal.action == "short" and not settings.allow_short:
-            reason = "Short entry is disabled; the spot strategy will remain flat."
-        elif signal.action == "short" and not dry_run:
+        elif signal.action == "short" and not (
+            is_perpetual(state.symbol) and state.strategy.short_entries
+        ):
             reason = (
-                "The Bybit spot path cannot open a borrowed or derivative short; "
-                "the short signal is not sent as a sell order."
+                "This strategy does not open shorts (spot only sells what it holds); "
+                "it stays flat on the bearish signal."
             )
         elif not state.risk_assessment.approved or state.risk_assessment.position_size <= 0:
             reason = "Risk assessment sized this live signal at zero."
@@ -77,6 +85,19 @@ class ExecutionNode:
         }
 
     def _place_entry(
+        self,
+        state: GraphState,
+        signal: LiveSignal,
+        data: dict[str, Sequence[OHLCVBar]],
+        dry_run: bool,
+        fingerprint: str,
+    ) -> dict[str, ExecutionReport | LiveSignal | str]:
+        if dry_run:
+            return self._enter(state, signal, data, dry_run, fingerprint)
+        with _LIVE_ORDER_LOCK:
+            return self._enter(state, signal, data, dry_run, fingerprint)
+
+    def _enter(
         self,
         state: GraphState,
         signal: LiveSignal,
@@ -127,6 +148,44 @@ class ExecutionNode:
                 "status": "completed",
             }
 
+        perpetual = is_perpetual(state.symbol)
+        leverage = state.leverage or self.context.settings.spot_leverage
+        leverage = leverage if signal.action == "long" or perpetual else 1.0
+        borrow = False
+        if not dry_run and (signal.action == "long" or perpetual):
+            affordable, free_units = self._affordable_amount(state.symbol, signal.price, leverage)
+            if affordable < amount:
+                quote = quote_of(state.symbol)
+                self.context.database.log_event(
+                    state.run_id,
+                    "order_limited_by_balance",
+                    (
+                        f"Planned {amount:.8g} needs more {quote} than is free on Bybit; "
+                        f"buying {affordable:.8g} instead."
+                    ),
+                )
+                amount = affordable
+            if amount <= 0:
+                quote = quote_of(state.symbol)
+                return self._hold(
+                    state,
+                    signal,
+                    dry_run,
+                    f"Not enough {quote} is free on the Bybit account for this entry.",
+                )
+            # Perpetual positions are margined, so only spot entries borrow.
+            borrow = not perpetual and amount > free_units
+            if borrow:
+                self.context.database.log_event(
+                    state.run_id,
+                    "order_uses_leverage",
+                    (
+                        f"Buying {amount:.8g} at {leverage:g}x leverage; about "
+                        f"{(amount - free_units) * signal.price:,.2f} "
+                        f"{quote_of(state.symbol)} is borrowed and repaid after the exit."
+                    ),
+                )
+
         side = "buy" if signal.action == "long" else "sell"
         entry_bar = data[state.strategy.chosen_timeframe][-1].timestamp.isoformat()
         # One entry per bar; a re-armed strategy needs fresh keys for its next entry.
@@ -143,6 +202,7 @@ class ExecutionNode:
             "market",
             dry_run=dry_run,
             idempotency_key=f"{order_key}:spot-entry",
+            borrow=borrow,
         )
         orders = [_order_dict(order) for order in outcome.orders]
         errors = list(outcome.errors)
@@ -171,6 +231,9 @@ class ExecutionNode:
             protective_orders = stop_result.orders
             orders.extend(_order_dict(order) for order in protective_orders)
         elif outcome.status in {"filled", "partially_filled"} and filled > 0:
+            # Bybit takes spot buy fees in the coin, so less than `filled` may be held.
+            filled = self._held_after_fill(state.symbol, filled, signal.action)
+            position_amount = filled
             try:
                 stop_result = self.context.execution.place_protective_stop(
                     state.symbol,
@@ -212,6 +275,7 @@ class ExecutionNode:
                         "market",
                         dry_run=False,
                         idempotency_key=f"{order_key}:protective-failure-exit",
+                        reduce_only=perpetual,
                     )
                     emergency_orders = flatten.orders
                     orders.extend(_order_dict(order) for order in emergency_orders)
@@ -246,7 +310,7 @@ class ExecutionNode:
                 strategy_key=fingerprint,
                 strategy=state.strategy.model_dump(mode="json"),
                 side=signal.action,
-                amount=outcome.filled or amount,
+                amount=position_amount,
                 entry_price=entry_price,
                 stop_price=stop,
                 take_profit_price=(
@@ -259,6 +323,7 @@ class ExecutionNode:
                 entry_order_id=entry_order_id,
                 protective_order_id=protective_order_id,
                 entry_bar_timestamp=entry_bar,
+                leverage=leverage if borrow or perpetual else 1.0,
             )
             if emergency_flattened:
                 self.context.database.update_live_position(
@@ -276,7 +341,7 @@ class ExecutionNode:
                     state.run_id,
                     "Protective stop placement failed; position was immediately flattened.",
                 )
-            elif filled < (outcome.filled or amount):
+            elif filled < position_amount:
                 self.context.database.update_live_position(
                     state.run_id,
                     status="open",
@@ -306,6 +371,48 @@ class ExecutionNode:
             "live_signal": signal,
             "status": "completed",
         }
+
+    def _affordable_amount(self, symbol: str, price: float, leverage: float) -> tuple[float, float]:
+        """Units the account can buy (with any allowed borrowing) and units its cash covers."""
+        settings = self.context.settings
+        quote = quote_of(symbol)
+        balance = self.context.execution.get_balance()
+        free = balance.available(quote)
+        borrowable = 0.0
+        if is_perpetual(symbol):
+            # Margin covers 1/leverage of the position; nothing is borrowed.
+            free *= leverage
+        elif leverage > 1 and self.context.execution.spot_margin_enabled():
+            lendable = coin_detail(balance, quote, "availableToBorrow")
+            borrowable = min(free * (leverage - 1), lendable)
+        per_unit = price * (1 + settings.fee_rate_taker + settings.slippage_percent)
+        if per_unit <= 0:
+            return 0.0, 0.0
+        # A small margin keeps exchange rounding from tipping the order over the balance.
+        return max((free + borrowable) / per_unit * 0.999, 0.0), max(free / per_unit * 0.999, 0.0)
+
+    def _held_after_fill(self, symbol: str, filled: float, action: str) -> float:
+        if action != "long" or is_perpetual(symbol):
+            return filled  # contracts are not charged fees in the coin
+        base = base_currency(symbol)
+        try:
+            held = self.context.execution.get_balance().available(base)
+        except Exception:
+            return filled
+        return min(filled, held) if held > 0 else filled
+
+    def _hold(
+        self, state: GraphState, signal: LiveSignal, dry_run: bool, reason: str
+    ) -> dict[str, ExecutionReport | LiveSignal | str]:
+        report = ExecutionReport(
+            status="hold",
+            errors=[reason],
+            dry_run=dry_run,
+            live_signal=signal,
+            execution_result=f"No order placed: {reason}",
+        )
+        self._save_report(state, report)
+        return {"execution_result": report, "live_signal": signal, "status": "completed"}
 
     def _save_report(self, state: GraphState, report: ExecutionReport) -> None:
         self.context.database.save_execution(

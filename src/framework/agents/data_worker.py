@@ -6,9 +6,11 @@ from typing import Any
 from framework.config.settings import Settings
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
+from framework.schemas.models import OHLCVBar
 from framework.strategies.signals import LIVE_SIGNAL_BARS
 from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import collect_context, reference_pair
+from framework.tools.markets import is_perpetual, perpetual_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +91,24 @@ class DataWorkerNode:
         fetch_funding = getattr(self.context.market_data, "fetch_funding_history", None)
         if fetch_funding is not None:
             try:
-                funding = fetch_funding(state.symbol)
+                if is_perpetual(state.symbol):
+                    # Perpetual backtests charge funding over the whole research window.
+                    starts = [candles[0].timestamp for candles in data.values() if len(candles) > 0]
+                    since = int(min(starts).timestamp() * 1000) if starts else None
+                    funding = fetch_funding(state.symbol, since=since)
+                else:
+                    # Spot has no funding of its own; carry reads the perpetual's rate.
+                    funding = fetch_funding(perpetual_symbol(state.symbol))
             except Exception:
                 logger.warning("Funding history unavailable; continuing without it.", exc_info=True)
                 funding = []
             if funding:
-                market_context["funding_history"] = funding
+                # Stored as JSON like the pair candles: market context is serialized for
+                # model prompts and checkpoints.
+                market_context["funding_history"] = [
+                    item.model_dump(mode="json") if isinstance(item, OHLCVBar) else item
+                    for item in funding
+                ]
         if self.context.settings.include_orderbook:
             book = self.context.market_data.fetch_orderbook(state.symbol)
             market_context["orderbook"] = book.model_dump(mode="json")
