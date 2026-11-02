@@ -116,8 +116,8 @@ records:
   evaluator shared by backtests, risk assessment, execution, and the position monitor.
   It returns `action`, `reason`, `strength`, `price`, `stop`, and `strategy_over`.
 - The hard-coded, structured strategy library in `framework.strategies.library`
-  contains 13 templates in eight families: EMA crossover, Supertrend with an ATR filter,
-  and MACD with higher-timeframe bias (momentum); RSI pullback and z-score mean
+  contains 14 templates in eight families: EMA crossover, Supertrend with an ATR filter,
+  MACD with higher-timeframe bias, and 4h/1d time-series momentum (momentum); RSI pullback and z-score mean
   reversion; a pair-spread statistical arbitrage (relative value); Bollinger squeeze and
   volatility fade (volatility); confirmed breakout; funding carry; regime-gated trend;
   and two multi-timeframe templates (higher-timeframe trend with lower-timeframe timing,
@@ -126,6 +126,14 @@ records:
   higher timeframe in the same run. Each saved strategy JSON includes its
   `template_name` and exact parameter values. The model picks one measured candidate by
   `candidate_id`; arbitrary generated strategy code is never executed.
+- Strategy search (`framework.strategies.search`): each template also lists
+  `parameter_variants`. The builder signals each entry variant once and simulates its stop,
+  target, and time-stop variants on those signals, ranking them on the in-sample part of
+  the history only (`MATS_WALK_FORWARD_SPLIT`, default 70%). Templates measure in parallel
+  processes (`MATS_BACKTEST_WORKERS`), and the measurements are cached for the later
+  attempts of the same run. Only variants with an in-sample profit and a cost-edge ratio
+  (gross profit / fees and slippage) of at least `MATS_MIN_COST_EDGE_RATIO` are offered;
+  when none are, the run ends `rejected` with a "Staying in cash" diagnosis.
 - Library defaults use a 2% protective stop. EMA crossover exits on the opposite
   crossover; RSI pullback and Bollinger breakout use a 4% target; Supertrend trails at
   3 ATR; MACD-with-bias has a 48-bar time stop; and higher/lower-timeframe timing has
@@ -137,7 +145,10 @@ records:
   the last `LIVE_SIGNAL_BARS` (500) candles of every series, as live trading fetches, and
   never a candle from after that bar. This keeps backtests linear in history length and
   makes a backtested signal the one live trading would have produced. A crossover is
-  acted on at the next candle open to avoid look-ahead. Current spot backtests open long positions only; bearish signals
+  acted on at the next candle open to avoid look-ahead. Reports carry `walk_forward`:
+  in-sample and out-of-sample summaries (each starting flat with fresh capital), plus
+  `cost_edge_ratio` and `buy_and_hold_return` metrics. The critique rejects a strategy
+  that loses on either segment or whose cost-edge ratio is too low. Current spot backtests open long positions only; bearish signals
   close an open long, and do not simulate borrowed/derivative shorts. Fees and slippage
   are charged on entry and exit.
 - Template exits include the opposite signal, configured percentage stop, optional
@@ -256,6 +267,13 @@ ends `rejected` can be resumed with extra attempts (`resume(run_id, extra_attemp
 symbol gets a separate persisted run.
 
 ## Live strategy algorithm
+
+Before an algorithm's first live order it is forward tested
+(`framework.strategies.forward_test`): on each new closed candle the strategy is replayed
+over the candles that closed after its research history ended, the watcher shows status
+`paper`, and no order is placed. Once `MATS_FORWARD_TEST_TRADES` paper trades have closed
+with a net profit the run is marked as passed and trades live from then on; if they closed
+at a loss the strategy is retired. `MATS_FORWARD_TEST_TRADES=0` skips the forward test.
 
 When a dashboard run with dry-run off ends with an approved strategy,
 `DashboardService` starts an algorithm for it (`entry_watchers` row, 60-second loop):
