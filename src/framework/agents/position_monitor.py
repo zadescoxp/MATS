@@ -20,6 +20,7 @@ class PositionMonitor:
         *,
         external_exits: dict[str, tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
+        self.retry_pending_repays()
         positions = self.context.database.open_positions()
         if run_ids is not None:
             selected = {position["run_id"]: position for position in positions}
@@ -326,6 +327,33 @@ class PositionMonitor:
                 position["symbol"], position["strategy_key"], position["run_id"], reason
             )
             database.update_run_status(position["run_id"], "stopped")
+        if float(position.get("leverage") or 1) > 1:
+            self._repay(position["symbol"].split("/")[-1], position["run_id"])
+
+    def retry_pending_repays(self) -> None:
+        """Retry loans that could not be repaid at exit (e.g. Bybit's hourly blackout)."""
+        for pending in self.context.database.pending_repays():
+            self._repay(pending["coin"], pending["run_id"])
+
+    def _repay(self, coin: str, run_id: str | None) -> None:
+        database = self.context.database
+        if self.context.settings.dry_run:
+            return
+        try:
+            repaid = self.context.execution.repay_borrowed(coin)
+            error = None if repaid else "Bybit did not accept the repayment."
+        except Exception as exc:
+            repaid, error = False, str(exc)
+        if repaid:
+            database.clear_pending_repay(coin)
+            database.log_event(run_id, "loan_repaid", f"Repaid the borrowed {coin}.")
+        else:
+            database.add_pending_repay(coin, run_id, error or "Repayment failed.")
+            database.log_event(
+                run_id,
+                "repay_pending",
+                f"Could not repay borrowed {coin} yet ({error}); retrying on the next check.",
+            )
 
 
 def strategy_model(definition: dict[str, Any]) -> StrategyDefinition:
