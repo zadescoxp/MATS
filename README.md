@@ -24,8 +24,9 @@ Critique APPROVE → Risk → [optional Coder] → Execution → live strategy a
   but orders can only go to Bybit testnet; mainnet orders are rejected in code.
 - **No trade without approval.** Risk sizing and execution are unreachable until the
   critique approves a backtest that clears the net-of-cost thresholds.
-- **Spot, long only.** Short signals are never sent to the exchange. With
-  `MATS_ALLOW_SHORT=true` they can be simulated in dry-run.
+- **Spot or perpetual, per market.** Pick any Bybit spot pair (`BTC/USDT`) or USDT linear
+  perpetual (`BTC/USDT:USDT`); see [Markets](#markets). Spot only goes long. Perpetual
+  strategies also short, with reduce-only exits and stops so an exit can never flip sides.
 - **No borrowing unless you opt in.** Leverage is 1x by default; see [Leverage](#leverage).
 - **Only your real balance is traded.** Live orders are sized against what the Bybit account
   actually holds; see [Balances](#balances).
@@ -65,7 +66,9 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_INITIAL_CAPITAL` | `10000` | Capital for dry-run sizing and backtests |
 | `MATS_FEE_RATE_TAKER` / `MATS_SLIPPAGE_PERCENT` | `0.001` / `0.0005` | Costs charged on every backtest fill |
 | `MATS_MAX_RISK_PER_TRADE` / `MATS_MAX_ACCOUNT_EXPOSURE` | `0.01` / `0.25` | Risk agent sizing limits |
-| `MATS_SPOT_LEVERAGE` | `1` | Spot margin multiple for long entries (1 to 3; 1 = no borrowing) |
+| `MATS_SPOT_LEVERAGE` | `1` | Leverage, 1 to 3: spot borrows for long entries; perpetuals size up to this multiple of free margin |
+| `MATS_ALLOW_SHORT` | `true` | Perpetual strategies may open shorts (spot never shorts) |
+| `MATS_PERPETUAL_FEE_RATE_TAKER` / `_MAKER` | `0.00055` / `0.0002` | Perpetual fees used in backtests |
 | `MATS_EDGE_FADE_LOOKBACK` / `MATS_EDGE_FADE_MIN_TRADES` / `MATS_EDGE_FADE_MIN_EXPECTANCY` | `10` / `3` / `0` | When a live strategy is retired |
 | `MATS_DATABASE_PATH` | `./data/state.db` | Runs, steps, checkpoints, positions |
 | `MATS_CANDLE_CACHE_PATH` | `./data/candles.db` | Local candle cache |
@@ -190,6 +193,25 @@ so others can be added. Live trading only uses money the account actually holds:
   coin. A position sold outside MATS is recorded as closed without sending an order.
 
 Dry runs are simulated and do not need a balance.
+
+### Markets
+
+The start dialog lists every active Bybit spot pair and USDT/USDC linear perpetual (over
+1,300 markets), loaded from `GET /api/markets` and refreshed hourly. Choose Spot or
+Perpetual, then search. On the CLI, pass `--symbol BTC/USDT` for spot or
+`--symbol BTC/USDT:USDT` for the perpetual.
+
+- **Spot** buys the coin and sells what it holds. A bearish signal closes the long and the
+  strategy waits in cash.
+- **Perpetual** trades the linear contract. With `MATS_ALLOW_SHORT=true` (the default) a
+  bearish signal opens a short, so a falling market is tradable too. Backtests charge
+  perpetual fees and every 8-hour funding payment over the whole history (longs pay positive
+  funding, shorts receive it). Live entries carry a reduce-only protective stop; exits are
+  reduce-only and sized from the open position on Bybit. MATS never changes the contract
+  leverage or position mode on Bybit: use one-way mode, and set the contract leverage at
+  least as high as the run's leverage.
+- Research candles come from mainnet, which lists more markets than testnet. A live start
+  is refused for a market testnet does not list.
 
 ### Leverage
 
@@ -344,7 +366,9 @@ and raw exchange payloads are never logged.
 
 - **Run time:** deeper history makes the strategy builder slower on short timeframes
   (about 20 to 40 seconds per timeframe per attempt on this machine).
-- **Spot only:** no margin, borrowing, or derivatives; shorts are simulation-only.
+- **Perpetuals:** USDT/USDC linear contracts only (no inverse or dated futures), one-way
+  position mode, and the contract leverage is whatever is set on Bybit. Live perpetual
+  orders have only been checked against captured requests, not a testnet fill yet.
 - **Testnet only:** mainnet execution is deliberately disabled.
 
 ## Tests and checks
