@@ -1,5 +1,6 @@
 import logging
 
+from framework.agents.strategy_builder import strategy_series
 from framework.core.context import AgentContext
 from framework.core.state import GraphState
 from framework.tools.cost_model import CostAssumptions
@@ -22,7 +23,15 @@ class BacktestNode:
             if state.account_equity is not None
             else self.context.settings.initial_capital
         )
-        report = self.context.backtester.run(state.strategy, candles, initial_capital=capital)
+        strategy = state.strategy
+        # The same series the builder measured with: without the higher timeframe or the
+        # reference pair, multi-timeframe and pair templates would never signal.
+        series = strategy_series(
+            state, strategy.chosen_timeframe, strategy.template_name, dict(strategy.parameters)
+        )
+        report = self.context.backtester.run(
+            strategy, candles, data=series or dict(state.raw_data), initial_capital=capital
+        )
         strategy_id = f"{state.run_id}-v{state.revision_count}"
         backtest_id = strategy_id
         costs = CostAssumptions(
@@ -42,7 +51,7 @@ class BacktestNode:
             "Backtest complete (trades=%d, net_pnl=%.4f, return=%.2f%%, max_drawdown=%.2f%%).",
             report.total_trades,
             report.net_pnl,
-            report.net_return_pct,
-            report.max_drawdown_pct,
+            report.net_return_pct * 100,
+            report.max_drawdown_pct * 100,
         )
         return {"backtest_report": report}
