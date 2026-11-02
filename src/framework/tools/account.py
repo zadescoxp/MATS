@@ -21,6 +21,10 @@ class AssetHolding(BaseModel):
 
 
 class AccountSnapshot(BaseModel):
+    # Which venue the balances come from; each connected venue gets its own snapshot.
+    venue: str = "bybit"
+    venue_name: str = "Bybit"
+    source: str = "Bybit API · Unified account wallet balance"
     fetched_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     connected: bool = True
     testnet: bool = True
