@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     require_out_of_sample_edge: bool = True
     # Gross profit must be at least this multiple of the fees and slippage paid.
     min_cost_edge_ratio: float = Field(default=2.0, ge=0)
+    # When every measured check passes, the model's critique is advisory and the strategy
+    # goes on to the forward test. True lets the model's REJECT veto it anyway.
+    critic_can_veto: bool = False
     # Processes that measure strategy candidates in parallel; 1 measures in-process.
     backtest_workers: int = Field(default=4, ge=1, le=32)
     # Closed paper trades on candles after approval before an algorithm may place live
