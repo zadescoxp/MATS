@@ -52,6 +52,7 @@ class ExecutionTools:
         *,
         dry_run: bool = True,
         idempotency_key: str,
+        borrow: bool = False,
     ) -> OrderExecutionResult:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
@@ -96,6 +97,9 @@ class ExecutionTools:
 
         link_id = hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]
         params: dict[str, Any] = {"orderLinkId": link_id}
+        if borrow:
+            # Bybit Unified spot margin: borrow the shortfall of this order.
+            params["isLeverage"] = 1
         if order_type == "market":
             # Bybit spot market buys default to quote-currency qty; size is in base units.
             params["marketUnit"] = "baseCoin"
@@ -231,6 +235,30 @@ class ExecutionTools:
     def get_open_orders(self, symbol: str | None = None) -> list[OrderSnapshot]:
         orders = self.exchange.fetch_open_orders(symbol)
         return [_normalize_order(order, symbol or order.get("symbol", "")) for order in orders]
+
+    def spot_margin_enabled(self) -> bool:
+        """True when spot margin is switched on for the account (it is never switched here)."""
+        response = self.exchange.privateGetV5SpotMarginTradeState()
+        return str((response.get("result") or {}).get("spotMarginMode")) == "1"
+
+    def repay_borrowed(self, coin: str) -> bool:
+        """Repay the coin's floating-rate loan from its free balance, without conversions.
+
+        Bybit refuses repayments from minute 04:00 to 05:30 of every hour; callers retry.
+        """
+        if not self.settings.bybit_testnet:
+            raise ValueError("Live mainnet execution is disabled; Bybit testnet is required")
+        response = self.exchange.request(
+            "v5/account/no-convert-repay",
+            "private",
+            "POST",
+            {"coin": coin, "repaymentType": "FLEXIBLE"},
+        )
+        result = response.get("result")
+        status = result.get("resultStatus") if isinstance(result, dict) else None
+        succeeded = str(response.get("retCode")) == "0" and status in {"SU", "P", None}
+        logger.info("Loan repay requested (coin=%s, status=%s).", coin, status)
+        return succeeded
 
     def get_balance(self) -> AccountBalance:
         if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
