@@ -34,6 +34,8 @@ from framework.tools.account import account_snapshot
 from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import news_sentiment
 from framework.tools.execution import ExecutionTools
+from framework.tools.market_data import MarketDataTools
+from framework.tools.markets import MarketListing, is_perpetual, quote_currency
 
 _ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 _ALLOWED_TIMEFRAMES = {
@@ -50,7 +52,8 @@ _ALLOWED_TIMEFRAMES = {
     "1d",
     "1w",
 }
-_SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
+# Spot pairs (BTC/USDT) and linear perpetuals settled in their quote coin (BTC/USDT:USDT).
+_SYMBOL = re.compile(r"^[A-Z0-9]{1,30}/([A-Z0-9]{2,10})(:\1)?$")
 _ENTRY_WATCH_INTERVAL_SECONDS = 60
 _ACCOUNT_REFRESH_SECONDS = 30
 # Timeframes at least one strategy template can trade; the console warns about the rest.
@@ -82,6 +85,7 @@ class DashboardService:
         self._stop_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._operations: dict[str, dict[str, str]] = {}
+        self._market_listing = MarketListing(lambda: MarketDataTools._make_exchange(self.settings))
         self._account: dict[str, Any] = {"connected": False}
         self._account_tools: tuple[str, ExecutionTools] | None = None
         self._restore_entry_watchers()
@@ -102,6 +106,7 @@ class DashboardService:
                 "timeframes": self.settings.timeframes,
                 "strategy_timeframes": _STRATEGY_TIMEFRAMES,
                 "spot_leverage": self.settings.spot_leverage,
+                "allow_short": self.settings.allow_short,
             }
             data["connections"] = self.connections.public(self._environment)
             data["account"] = self._account
@@ -113,8 +118,14 @@ class DashboardService:
             ]
         return data
 
+    def markets(self) -> dict[str, Any]:
+        return {"markets": self._market_listing.markets()}
+
     def start(self, payload: dict[str, Any]) -> dict[str, Any]:
         symbols = _symbols(payload.get("symbols"), self.settings.symbols)
+        unknown = [symbol for symbol in symbols if self._market_listing.known(symbol) is False]
+        if unknown:
+            raise ValueError(f"Not a Bybit spot or perpetual market: {', '.join(unknown)}.")
         timeframes = _timeframes(payload.get("timeframes"), self.settings.timeframes)
         account_equity = payload.get("account_equity")
         if account_equity is not None and (
@@ -153,8 +164,11 @@ class DashboardService:
             )
             if not effective_dry_run and not self.settings.kill_switch:
                 self._check_live_funds(symbols, account_equity)
-                if (leverage or self.settings.spot_leverage) > 1 and not (
-                    self._execution_tools().spot_margin_enabled()
+                spot_symbols = [symbol for symbol in symbols if not is_perpetual(symbol)]
+                if (
+                    spot_symbols
+                    and (leverage or self.settings.spot_leverage) > 1
+                    and not self._execution_tools().spot_margin_enabled()
                 ):
                     raise ValueError(
                         "Leverage needs spot margin, which is off on the Bybit account. Turn "
@@ -833,8 +847,19 @@ class DashboardService:
 
     def _check_live_funds(self, symbols: list[str], account_equity: Any) -> None:
         """Refuse a live start the Bybit account cannot pay for."""
-        balance = self._execution_tools().get_balance()
-        quotes = {symbol.split("/")[-1] for symbol in symbols}
+        tools = self._execution_tools()
+        balance = tools.get_balance()
+        # Testnet lists fewer markets than mainnet, where research candles come from.
+        listed = getattr(getattr(tools, "exchange", None), "markets", None)
+        if isinstance(listed, dict) and listed:
+            missing = [symbol for symbol in symbols if symbol not in listed]
+            if missing:
+                raise ValueError(
+                    f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not listed "
+                    "on Bybit testnet, so no live order could be placed. Start a dry run or "
+                    "pick another market."
+                )
+        quotes = {quote_currency(symbol) for symbol in symbols}
         for quote in sorted(quotes):
             free = balance.available(quote)
             if free <= 0:
@@ -853,7 +878,7 @@ class DashboardService:
         balance = self._execution_tools().get_balance()
         symbols_by_quote: dict[str, list[str]] = {}
         for symbol in symbols:
-            quote = symbol.split("/")[-1]
+            quote = quote_currency(symbol)
             symbols_by_quote.setdefault(quote, []).append(symbol)
         allocations: dict[str, float] = {}
         for quote, quote_symbols in symbols_by_quote.items():
@@ -1116,7 +1141,10 @@ def _symbols(value: Any, defaults: list[str]) -> list[str]:
         or not symbols
         or any(not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol) for symbol in symbols)
     ):
-        raise ValueError("symbols must be a non-empty list of pairs like BTC/USDT.")
+        raise ValueError(
+            "symbols must be a non-empty list of Bybit markets like BTC/USDT (spot) or "
+            "BTC/USDT:USDT (perpetual)."
+        )
     if len(set(symbols)) != len(symbols):
         raise ValueError("symbols must be unique.")
     return symbols
@@ -1167,6 +1195,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response(HTTPStatus.OK, self.service.state())
             elif route == "/api/events":
                 self._events()
+            elif route == "/api/markets":
+                self._json_response(HTTPStatus.OK, self.service.markets())
             else:
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "Not found."})
         except ValueError as exc:
