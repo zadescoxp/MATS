@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from framework.schemas.models import OHLCVBar, StrategyDefinition
 from framework.strategies.signals import LIVE_SIGNAL_BARS
 from framework.tools.market_data import MarketDataTools
+from framework.tools.markets import perpetual_symbol
 
 
 def fetch_strategy_ohlcv(
@@ -28,5 +29,5 @@ def fetch_strategy_ohlcv(
     if strategy.template_name == "carry_funding":
         funding = getattr(market_data, "fetch_funding_history", None)
         if funding is not None:
-            data["funding"] = funding(symbol)
+            data["funding"] = funding(perpetual_symbol(symbol))
     return data
