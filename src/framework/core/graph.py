@@ -69,7 +69,9 @@ class TradingFramework:
             database=self.database,
             llm=self.llm,
             market_data=self.market_data,
-            backtester=BacktestTool(costs, self.settings.initial_capital),
+            backtester=BacktestTool(
+                costs, self.settings.initial_capital, self.settings.walk_forward_split
+            ),
             execution=self.execution,
             coder_enabled=enable_coder,
         )
