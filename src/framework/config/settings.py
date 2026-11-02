@@ -65,9 +65,10 @@ class Settings(BaseSettings):
     critic_can_veto: bool = False
     # Processes that measure strategy candidates in parallel; 1 measures in-process.
     backtest_workers: int = Field(default=4, ge=1, le=32)
-    # Closed paper trades on candles after approval before an algorithm may place live
-    # orders; 0 trades live as soon as it is approved.
-    forward_test_trades: int = Field(default=3, ge=0, le=50)
+    # Optional paper trading: closed paper trades on candles after approval that must net a
+    # profit before an algorithm places live orders. Off (0) by default because it delays
+    # live entries and can miss profitable trades; runs can turn it on with paper_trades.
+    forward_test_trades: int = Field(default=0, ge=0, le=50)
     initial_capital: float = Field(default=10_000.0, gt=0)
     fee_rate_taker: float = Field(default=0.001, ge=0, lt=1)
     fee_rate_maker: float = Field(default=0.001, ge=0, lt=1)
