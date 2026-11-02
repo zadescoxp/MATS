@@ -1,3 +1,4 @@
+import type { ListedMarket } from "@/lib/markets";
 import type { DashboardState } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_MATS_API_URL ?? "http://127.0.0.1:8765";
@@ -9,6 +10,18 @@ export async function fetchState(): Promise<DashboardState> {
     throw new Error(body?.error ?? `Dashboard API returned ${response.status}.`);
   }
   return (await response.json()) as DashboardState;
+}
+
+/** Every Bybit spot pair and linear perpetual a run can trade. */
+export async function fetchMarkets(): Promise<ListedMarket[]> {
+  const response = await fetch(`${API_URL}/api/markets`, { cache: "no-store" });
+  const body = (await response.json().catch(() => null)) as
+    | { markets?: ListedMarket[]; error?: string }
+    | null;
+  if (!response.ok || !Array.isArray(body?.markets)) {
+    throw new Error(body?.error ?? `Market listing returned ${response.status}.`);
+  }
+  return body.markets;
 }
 
 export async function sendAction(
