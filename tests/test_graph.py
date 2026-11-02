@@ -92,9 +92,8 @@ class FakeLLM:
             ).model_dump(mode="json")
         elif name == "submit_strategy":
             request = json.loads(messages[-1]["content"])
-            candidate = next(
-                item for item in request["eligible_candidates"] if item["timeframe"] == "1h"
-            )
+            rows = request["eligible_candidates"]
+            candidate = next((item for item in rows if item["timeframe"] == "1h"), rows[0])
             payload = StrategyDefinition(
                 name="EMA trend",
                 description="Enter on a fast EMA crossover and manage risk with a stop.",
@@ -187,6 +186,11 @@ def _framework(
         max_revision_loops=max_revision_loops,
         min_strategy_bars=100,
         min_backtest_net_pnl=min_backtest_net_pnl,
+        # 120 one-way candles: too short for a walk-forward split or a cost-edge test.
+        require_out_of_sample_edge=False,
+        min_cost_edge_ratio=0,
+        backtest_workers=1,
+        forward_test_trades=0,
         retry_attempts=1,
         dry_run=False,
         kill_switch=True,
