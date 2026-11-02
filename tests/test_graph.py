@@ -344,6 +344,8 @@ def test_run_config_sets_its_own_attempt_limit(candles) -> None:
         assert "1 total attempts" in result.errors[-1]
         with pytest.raises(ValueError, match="max_revision_loops"):
             framework.run("BTC/USDT", {"max_revision_loops": 21})
+        with pytest.raises(ValueError, match="paper_trades"):
+            framework.run("BTC/USDT", {"paper_trades": 51})
     finally:
         framework.close()
         database.close()
