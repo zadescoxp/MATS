@@ -890,7 +890,9 @@ def test_account_snapshot_lists_holdings_by_value(tmp_path: Path, monkeypatch) -
     assert account["account_type"] == "UNIFIED"
     assert account["total_equity_usd"] == 1500
     assert [asset["asset"] for asset in account["assets"]] == ["USDT", "BTC"]
+    assert account["venue"] == "bybit" and account["venue_name"] == "Bybit"
     assert service.state()["account"] == account
+    assert service.state()["accounts"] == [account]
 
 
 def test_account_is_not_connected_without_credentials(tmp_path: Path) -> None:
@@ -905,7 +907,8 @@ def test_account_is_not_connected_without_credentials(tmp_path: Path) -> None:
     settings.bybit_api_key = None
     settings.bybit_api_secret = None
 
-    assert service.refresh_account()["account"] == {"connected": False}
+    assert service.refresh_account()["account"]["connected"] is False
+    assert service.state()["accounts"] == []
 
 
 def test_leveraged_live_start_is_refused_when_spot_margin_is_off(
