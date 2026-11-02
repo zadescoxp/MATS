@@ -191,10 +191,39 @@ class PositionMonitor:
                 )
 
         exit_side = "sell" if position["side"] == "long" else "buy"
+        exit_amount = float(position["amount"])
+        if position["side"] == "long":
+            # Sell only what the account holds: fees or a manual sale can leave less.
+            base = position["symbol"].split("/")[0]
+            held = self.context.execution.get_balance().available(base)
+            if held <= 0:
+                reason = (
+                    f"No {base} is held on Bybit any more; the position was closed outside MATS."
+                )
+                net_pnl = (signal.price - float(position["entry_price"])) * exit_amount
+                self._finish_trade(
+                    position,
+                    event_type="closed_outside_mats",
+                    reason=reason,
+                    bars_held=bars_held,
+                    net_pnl=net_pnl,
+                    exit_price=signal.price,
+                    amount=exit_amount,
+                    last_bar_timestamp=latest_bar_timestamp,
+                    stop_strategy=stop_strategy,
+                )
+                self.context.database.log_event(position["run_id"], "closed_outside_mats", reason)
+                return {
+                    "run_id": position["run_id"],
+                    "symbol": position["symbol"],
+                    "action": "closed_outside_mats",
+                    "reason": reason,
+                }
+            exit_amount = min(exit_amount, held)
         result = self.context.execution.place_order(
             position["symbol"],
             exit_side,
-            float(position["amount"]),
+            exit_amount,
             "market",
             dry_run=False,
             idempotency_key=(f"{position['run_id']}:position-exit:{position['bars_held']}"),
@@ -223,7 +252,8 @@ class PositionMonitor:
             else float(position["entry_price"]) - exit_price
         )
         net_pnl = pnl_per_unit * quantity_closed
-        residual = max(float(position["amount"]) - quantity_closed, 0.0)
+        # Measured against what was sold: coin taken as fees was never held.
+        residual = max(exit_amount - quantity_closed, 0.0)
         if residual == 0:
             self._finish_trade(
                 position,
