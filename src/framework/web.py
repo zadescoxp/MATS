@@ -29,6 +29,7 @@ from framework.strategies.algorithm import bar_already_evaluated
 from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.news_risk import NewsRisk, assess_news_risk
+from framework.tools.account import account_snapshot
 from framework.tools.candle_store import timeframe_ms
 from framework.tools.context_feed import news_sentiment
 from framework.tools.execution import ExecutionTools
@@ -50,6 +51,7 @@ _ALLOWED_TIMEFRAMES = {
 }
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}/[A-Z0-9]{2,20}$")
 _ENTRY_WATCH_INTERVAL_SECONDS = 60
+_ACCOUNT_REFRESH_SECONDS = 30
 # Timeframes at least one strategy template can trade; the console warns about the rest.
 _STRATEGY_TIMEFRAMES = sorted(
     {
@@ -79,6 +81,8 @@ class DashboardService:
         self._stop_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._operations: dict[str, dict[str, str]] = {}
+        self._account: dict[str, Any] = {"connected": False}
+        self._account_tools: tuple[str, ExecutionTools] | None = None
         self._restore_entry_watchers()
         logger.info(
             "Dashboard service ready (database=%s, dry_run=%s, kill_switch=%s).",
@@ -98,6 +102,7 @@ class DashboardService:
                 "strategy_timeframes": _STRATEGY_TIMEFRAMES,
             }
             data["connections"] = self.connections.public(self._environment)
+            data["account"] = self._account
             data["operations"] = list(self._operations.values())
             data["active_run_ids"] = [
                 run_id for run_id, thread in self._threads.items() if thread.is_alive()
@@ -143,6 +148,9 @@ class DashboardService:
                 ]
                 if active:
                     raise ValueError("A live run is already active.")
+
+            if not effective_dry_run and not self.settings.kill_switch:
+                self._check_live_funds(symbols, account_equity)
 
             equity_by_symbol: dict[str, float] = {}
             if len(symbols) > 1 and account_equity is not None:
@@ -748,8 +756,61 @@ class DashboardService:
         thread = self._threads.get(run_id)
         return bool(thread and thread.is_alive())
 
+    def start_account_refresh(self) -> None:
+        """Keep the Bybit balance snapshot fresh; started by the server, not by tests."""
+        threading.Thread(
+            target=self._account_loop, args=(), name="mats-account", daemon=True
+        ).start()
+
+    def refresh_account(self) -> dict[str, Any]:
+        self._refresh_account()
+        return {"account": self._account}
+
+    def _account_loop(self) -> None:
+        while True:
+            self._refresh_account()
+            time.sleep(_ACCOUNT_REFRESH_SECONDS)
+
+    def _refresh_account(self) -> None:
+        if not self.settings.bybit_api_key or not self.settings.bybit_api_secret:
+            self._account = {"connected": False}
+            return
+        try:
+            balance = self._execution_tools().get_balance()
+            snapshot = account_snapshot(balance, testnet=self.settings.bybit_testnet)
+            self._account = snapshot.model_dump(mode="json")
+        except Exception as exc:
+            logger.warning("Bybit account snapshot failed: %s", exc)
+            self._account = {**self._account, "connected": True, "error": str(exc)}
+
+    def _execution_tools(self) -> ExecutionTools:
+        """One client per set of credentials, so balance refreshes reuse loaded markets."""
+        key = self.settings.bybit_api_key.get_secret_value() if self.settings.bybit_api_key else ""
+        fingerprint = hashlib.sha256(f"{key}:{self.settings.bybit_testnet}".encode()).hexdigest()
+        if self._account_tools is None or self._account_tools[0] != fingerprint:
+            self._account_tools = (fingerprint, ExecutionTools(self.settings))
+        return self._account_tools[1]
+
+    def _check_live_funds(self, symbols: list[str], account_equity: Any) -> None:
+        """Refuse a live start the Bybit account cannot pay for."""
+        balance = self._execution_tools().get_balance()
+        quotes = {symbol.split("/")[-1] for symbol in symbols}
+        for quote in sorted(quotes):
+            free = balance.available(quote)
+            if free <= 0:
+                raise ValueError(
+                    f"No {quote} is available on the Bybit account, so no live order "
+                    f"could be placed. Deposit {quote} or start a dry run."
+                )
+            if account_equity is not None and float(account_equity) > free:
+                raise ValueError(
+                    f"Capital {float(account_equity):,.2f} is more than the {free:,.2f} {quote} "
+                    "available on Bybit. Lower the capital or leave it blank to use the "
+                    "available balance."
+                )
+
     def _allocate_live_equity(self, symbols: list[str]) -> dict[str, float]:
-        balance = ExecutionTools(self.settings).get_balance()
+        balance = self._execution_tools().get_balance()
         symbols_by_quote: dict[str, list[str]] = {}
         for symbol in symbols:
             quote = symbol.split("/")[-1]
@@ -1135,6 +1196,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not isinstance(run_ids, list) or any(not isinstance(item, str) for item in run_ids):
                 raise ValueError("run_ids must be a list of strings.")
             return self.service.flatten(run_ids, payload.get("confirmed"))
+        if action == "refresh_account":
+            return self.service.refresh_account()
         if action == "toggle":
             return self.service.toggle(
                 _required_string(payload, "name"), payload.get("enabled"), payload.get("confirmed")
@@ -1235,6 +1298,7 @@ def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     service = DashboardService(settings)
+    service.start_account_refresh()
 
     class BoundDashboardHandler(DashboardHandler):
         def __init__(self, *args: Any, **kwargs: Any):
