@@ -61,6 +61,14 @@ def account_snapshot(balance: AccountBalance, *, testnet: bool) -> AccountSnapsh
     )
 
 
+def coin_detail(balance: AccountBalance, coin: str, field: str) -> float:
+    """A per-coin number from Bybit's Unified account payload, e.g. borrowAmount."""
+    for item in _unified_account(balance.info).get("coin") or []:
+        if item.get("coin") == coin:
+            return max(_number(item.get(field)) or 0.0, 0.0)
+    return 0.0
+
+
 def _unified_account(info: dict[str, Any]) -> dict[str, Any]:
     accounts = (info.get("result") or {}).get("list") or []
     return accounts[0] if accounts and isinstance(accounts[0], dict) else {}
