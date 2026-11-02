@@ -135,6 +135,8 @@ export interface DashboardState {
   active_run_ids: string[];
   connections?: ConnectionsState;
   account?: AccountSnapshot;
+  /** One snapshot per connected venue. */
+  accounts?: AccountSnapshot[];
 }
 
 export interface SavedModel {
@@ -176,6 +178,11 @@ export interface AssetHolding {
 /** The connected Bybit account, refreshed by the API every 30 seconds. */
 export interface AccountSnapshot {
   connected: boolean;
+  /** Venue id, e.g. "bybit", and its display name. */
+  venue?: string;
+  venue_name?: string;
+  /** Where the numbers come from, e.g. "Bybit API · Unified account wallet balance". */
+  source?: string;
   fetched_at?: string;
   testnet?: boolean;
   account_type?: string | null;
