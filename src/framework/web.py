@@ -26,6 +26,7 @@ from framework.core.state import GraphState
 from framework.persistence.candle_series import is_series_ref
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
+from framework.strategies.forward_test import forward_test
 from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.news_risk import NewsRisk, assess_news_risk
@@ -711,8 +712,11 @@ class DashboardService:
             and state.risk_assessment is not None
             and state.risk_assessment.approved
         )
+        forward_ok = self._forward_test_ok(worker, database, run_id, state, is_new_bar)
         if not is_new_bar:
             execution_detail = "No new candle; entry execution is held to prevent duplicate orders."
+        elif not forward_ok:
+            execution_detail = "Paper trading until the forward test passes; no live order."
         elif actionable and news_risk.block_entry:
             execution_detail = f"Entry blocked by news risk: {news_risk.reason}"
         else:
@@ -729,6 +733,7 @@ class DashboardService:
         if (
             is_new_bar
             and actionable
+            and forward_ok
             and not news_risk.block_entry
             and not self.settings.dry_run
             and not self.settings.kill_switch
@@ -738,7 +743,7 @@ class DashboardService:
         entered = any(position["run_id"] == run_id for position in database.open_positions())
         database.update_entry_watcher(
             run_id,
-            status="in_position" if entered else "watching",
+            status="in_position" if entered else "watching" if forward_ok else "paper",
             signal=signal.model_dump(mode="json"),
             last_bar=bar_key,
             error=None,
@@ -750,6 +755,42 @@ class DashboardService:
                 "The strategy algorithm placed an entry and is now managing the position.",
             )
         return state
+
+    def _forward_test_ok(
+        self, worker: Any, database: Any, run_id: str, state: GraphState, is_new_bar: bool
+    ) -> bool:
+        """Whether this algorithm may trade live: its paper trades since approval paid off."""
+        required = self.settings.forward_test_trades
+        if required == 0 or database.forward_test_passed(run_id):
+            return True
+        strategy = state.strategy
+        research = state.raw_data.get(strategy.chosen_timeframe) if strategy else None
+        if strategy is None or not research or not is_new_bar:
+            return False
+        result = forward_test(
+            worker.context.backtester,
+            worker.context.market_data,
+            state.symbol,
+            strategy,
+            research[-1].timestamp,
+            required,
+            (
+                state.account_equity
+                if state.account_equity is not None
+                else self.settings.initial_capital
+            ),
+        )
+        if result.verdict == "passed":
+            database.mark_forward_test_passed(run_id)
+            database.log_event(run_id, "forward_test_passed", result.detail)
+            return True
+        if result.verdict == "failed":
+            database.mark_strategy_stopped(
+                state.symbol, strategy_fingerprint(strategy), run_id, result.detail
+            )
+            database.update_run_status(run_id, "stopped")
+        database.log_event(run_id, "forward_test", result.detail)
+        return False
 
     def _run_is_active(self, run_id: str) -> bool:
         thread = self._threads.get(run_id)
