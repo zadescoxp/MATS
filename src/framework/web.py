@@ -100,6 +100,7 @@ class DashboardService:
                 "symbols": self.settings.symbols,
                 "timeframes": self.settings.timeframes,
                 "strategy_timeframes": _STRATEGY_TIMEFRAMES,
+                "spot_leverage": self.settings.spot_leverage,
             }
             data["connections"] = self.connections.public(self._environment)
             data["account"] = self._account
@@ -126,6 +127,13 @@ class DashboardService:
         model_id = payload.get("model_id")
         if model_id is not None and not isinstance(model_id, str):
             raise ValueError("model_id must be a string.")
+        leverage = payload.get("leverage")
+        if leverage is not None and (
+            isinstance(leverage, bool)
+            or not isinstance(leverage, int | float)
+            or not 1 <= leverage <= 3
+        ):
+            raise ValueError("leverage must be a number from 1 to 3.")
         max_attempts = payload.get("max_attempts")
         if max_attempts is not None and (
             isinstance(max_attempts, bool)
@@ -151,6 +159,13 @@ class DashboardService:
 
             if not effective_dry_run and not self.settings.kill_switch:
                 self._check_live_funds(symbols, account_equity)
+                if (leverage or self.settings.spot_leverage) > 1 and not (
+                    self._execution_tools().spot_margin_enabled()
+                ):
+                    raise ValueError(
+                        "Leverage needs spot margin, which is off on the Bybit account. Turn "
+                        "it on in Bybit (it asks you to pass a short quiz) or start at 1x."
+                    )
 
             equity_by_symbol: dict[str, float] = {}
             if len(symbols) > 1 and account_equity is not None:
@@ -170,6 +185,8 @@ class DashboardService:
                 }
                 if max_attempts is not None:
                     config["max_revision_loops"] = max_attempts - 1
+                if leverage is not None:
+                    config["leverage"] = float(leverage)
                 if symbol in equity_by_symbol:
                     config["account_equity"] = equity_by_symbol[symbol]
                 elif account_equity is not None:
@@ -635,6 +652,7 @@ class DashboardService:
                     database.log_event(run_id, "algorithm_retired", stop_reason)
                     return
                 try:
+                    PositionMonitor(worker.context).retry_pending_repays()
                     news_risk = assess_news_risk(_live_sentiment(state.symbol))
                     position = next(
                         (item for item in database.open_positions() if item["run_id"] == run_id),
