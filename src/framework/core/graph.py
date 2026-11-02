@@ -132,7 +132,13 @@ class TradingFramework:
     ) -> GraphState:
         options = config or {}
         unknown = set(options).difference(
-            {"timeframes", "account_equity", "dashboard_batch_id", "max_revision_loops"}
+            {
+                "timeframes",
+                "account_equity",
+                "dashboard_batch_id",
+                "max_revision_loops",
+                "leverage",
+            }
         )
         if unknown:
             raise ValueError(f"Unsupported run configuration keys: {', '.join(sorted(unknown))}")
@@ -155,6 +161,13 @@ class TradingFramework:
             or not 0 <= max_revision_loops <= 20
         ):
             raise ValueError("max_revision_loops must be an integer from 0 to 20")
+        leverage = options.get("leverage")
+        if leverage is not None and (
+            isinstance(leverage, bool)
+            or not isinstance(leverage, int | float)
+            or not 1 <= leverage <= 3
+        ):
+            raise ValueError("leverage must be a number from 1 to 3")
         run_id = run_id or str(uuid.uuid4())
         state = GraphState(
             run_id=run_id,
@@ -162,6 +175,7 @@ class TradingFramework:
             timeframes_to_consider=list(timeframes),
             account_equity=options.get("account_equity"),
             max_revision_loops=max_revision_loops,
+            leverage=None if leverage is None else float(leverage),
         )
         logger.info(
             "Run queued (timeframes=%s, dry_run=%s, kill_switch=%s).",
@@ -190,6 +204,9 @@ class TradingFramework:
         }
         config_snapshot["timeframes_to_consider"] = list(timeframes)
         config_snapshot["account_equity"] = options.get("account_equity")
+        config_snapshot["leverage"] = (
+            self.settings.spot_leverage if leverage is None else float(leverage)
+        )
         config_snapshot["max_revision_loops"] = (
             self.settings.max_revision_loops if max_revision_loops is None else max_revision_loops
         )
