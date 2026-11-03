@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,7 +29,7 @@ from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
 from framework.strategies.forward_test import forward_test
 from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
-from framework.strategies.market_data import fetch_strategy_ohlcv
+from framework.strategies.market_data import fetch_strategy_ohlcv, next_close
 from framework.strategies.news_risk import NewsRisk, assess_news_risk
 from framework.tools.account import account_snapshot
 from framework.tools.candle_store import timeframe_ms
@@ -55,6 +56,10 @@ _ALLOWED_TIMEFRAMES = {
 # Spot pairs (BTC/USDT) and linear perpetuals settled in their quote coin (BTC/USDT:USDT).
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,30}/([A-Z0-9]{2,10})(:\1)?$")
 _ENTRY_WATCH_INTERVAL_SECONDS = 60
+# Bybit publishes a closed candle a moment after the close; check just after that.
+_CANDLE_CLOSE_GRACE_SECONDS = 5
+# A failed check (e.g. a candle lookup) is retried soon so a fresh candle is not skipped.
+_CHECK_RETRY_SECONDS = 15
 _ACCOUNT_REFRESH_SECONDS = 30
 # Timeframes at least one strategy template can trade; the console warns about the rest.
 _STRATEGY_TIMEFRAMES = sorted(
@@ -617,8 +622,10 @@ class DashboardService:
 
         Each interval the loop either manages the open position (exits, news risk) or,
         when flat, re-checks the strategy signal and risk plan and enters on a new closed
-        candle. Ordinary exits re-arm the strategy; it only retires when its live edge
-        fades, it is flattened manually, or the operator stops it.
+        candle. Checks are timed to land just after each candle close, as the backtest
+        trades, and a failed check is retried within seconds. Ordinary exits re-arm the
+        strategy; it only retires when its live edge fades, it is flattened manually, or the
+        operator stops it.
         """
         worker = None
         database = None
@@ -657,6 +664,7 @@ class DashboardService:
                     database.update_entry_watcher(run_id, status="stopped", error=stop_reason)
                     database.log_event(run_id, "algorithm_retired", stop_reason)
                     return
+                failed = False
                 try:
                     PositionMonitor(worker.context).retry_pending_repays()
                     news_risk = assess_news_risk(_live_sentiment(state.symbol))
@@ -669,10 +677,11 @@ class DashboardService:
                     else:
                         state = self._check_entry(worker, database, run_id, state, news_risk)
                 except Exception as exc:
+                    failed = True
                     database.update_entry_watcher(run_id, error=str(exc))
                     database.log_event(run_id, "entry_watcher_check_failed", str(exc), error=exc)
                     logger.exception("Entry watcher check failed for run %s", run_id)
-                stop_event.wait(interval_seconds)
+                stop_event.wait(_next_check_wait(interval_seconds, state, failed=failed))
             database.update_entry_watcher(run_id, status="stopped")
             database.log_event(run_id, "entry_watcher_stopped", "Entry watcher stopped.")
         except Exception as exc:
@@ -738,7 +747,9 @@ class DashboardService:
         )
         forward_ok = self._forward_test_ok(worker, database, run_id, state, is_new_bar)
         if not is_new_bar:
-            execution_detail = "No new candle; entry execution is held to prevent duplicate orders."
+            execution_detail = (
+                "This candle was already evaluated; the next entry check is at the next close."
+            )
         elif not forward_ok:
             execution_detail = "Paper trading until the forward test passes; no live order."
         elif actionable and news_risk.block_entry:
@@ -749,7 +760,7 @@ class DashboardService:
             run_id,
             "algorithm_check",
             (
-                f"Minute check on bar {bar_key or 'unknown'}: "
+                f"Check on the candle closed {bar_key}: "
                 f"{signal.action}{price_detail}. "
                 f"{getattr(signal, 'reason', '')} {execution_detail}"
             ),
@@ -1067,17 +1078,40 @@ def _live_sentiment(symbol: str) -> dict[str, Any] | None:
 
 
 def _closed_bar_key(worker: Any, state: Any) -> str | None:
+    """Close time of the newest closed strategy candle; raises if candles are unavailable.
+
+    A lookup failure is not treated as "no new candle": the check fails and is retried, so
+    the entry on a fresh close is not skipped.
+    """
     strategy = getattr(state, "strategy", None)
     symbol = getattr(state, "symbol", None)
     market = getattr(getattr(worker, "context", None), "market_data", None)
     timeframe = getattr(strategy, "chosen_timeframe", None)
     if strategy is None or not symbol or market is None or not timeframe:
         return None
-    try:
-        data = fetch_strategy_ohlcv(market, symbol, strategy)
-        return data[timeframe][-1].timestamp.isoformat()
-    except Exception:
-        return None
+    candles = fetch_strategy_ohlcv(market, symbol, strategy)[timeframe]
+    if not candles:
+        raise RuntimeError(f"No closed {timeframe} candles are available for {symbol}.")
+    length = timeframe_ms(timeframe) or 0
+    return (candles[-1].timestamp + timedelta(milliseconds=length)).isoformat()
+
+
+def _next_check_wait(
+    interval_seconds: float, state: Any, *, failed: bool = False, now: datetime | None = None
+) -> float:
+    """Seconds until the next check: the usual interval, cut short to land just after the
+    next candle close, or a quick retry after a failed check."""
+    wait = float(interval_seconds)
+    if failed:
+        wait = min(wait, _CHECK_RETRY_SECONDS)
+    strategy = getattr(state, "strategy", None)
+    timeframe = getattr(strategy, "chosen_timeframe", None)
+    now = now or datetime.now(UTC)
+    close = next_close(timeframe, now) if isinstance(timeframe, str) else None
+    if close is not None:
+        until_close = (close - now).total_seconds() + _CANDLE_CLOSE_GRACE_SECONDS
+        wait = min(wait, until_close)
+    return max(1.0, wait)
 
 
 def _watcher_bar(database: Any, run_id: str) -> str | None:
