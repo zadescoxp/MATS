@@ -12,13 +12,7 @@ from framework.config.settings import Settings
 from framework.core.context import AgentContext
 from framework.core.recovery import AgentResult
 from framework.core.state import GraphState
-from framework.persistence.selection_memory import (
-    arm_stats,
-    record_arm_outcomes,
-    record_decision,
-)
 from framework.schemas.models import StrategyChoice, StrategyDefinition
-from framework.strategies.bandit import prior_bonus
 from framework.strategies.library import (
     REFERENCE_EXAMPLES,
     STRATEGY_LIBRARY,
@@ -45,17 +39,7 @@ class StrategyBuilderNode:
         if not state.analyst_findings:
             raise ValueError("Strategy builder requires analyst findings")
 
-        settings = self.context.settings
-        regime_label = str(_regime(state).get("regime") or "unknown")
-        # Read the prior before this run's own outcomes are added to it.
-        arms = (
-            arm_stats(self.context.database, market_type(state.symbol), regime_label)
-            if settings.bandit_memory
-            else {}
-        )
-        candidates, coverage, measured = self._candidate_strategies(state)
-        if settings.bandit_memory:
-            self._remember_outcomes(state, regime_label, measured)
+        candidates, coverage = self._candidate_strategies(state)
         previous_key = _strategy_key(state.strategy) if state.strategy else None
         tried = {
             _strategy_key(StrategyDefinition.model_validate(definition))
@@ -66,7 +50,7 @@ class StrategyBuilderNode:
         if previous_key:
             tried.add(previous_key)
         candidates = [item for item in candidates if _strategy_key(item["strategy"]) not in tried]
-        candidates = _shortlist(candidates, settings, arms)
+        candidates = _shortlist(candidates)
         logger.info(
             "Measured strategy candidates (eligible=%d, timeframes=%d).",
             len(candidates),
@@ -99,7 +83,6 @@ class StrategyBuilderNode:
                     "cost_edge_ratio": item["in_sample"]["cost_edge_ratio"],
                     "win_rate": item["in_sample"]["win_rate"],
                     "variants_tested": item["variants_tested"],
-                    **_learning_fields(item, settings, arms),
                 }
                 for item in candidates
             ],
@@ -169,12 +152,7 @@ class StrategyBuilderNode:
                     "eligible row and apply the critique instructions. "
                     "market says what the run trades: spot strategies only go long and sit "
                     "in cash on bearish signals; perpetual strategies with short_entries also "
-                    "go short on bearish signals, so a falling market can be an opportunity. "
-                    "edge_score, when present, is the in-sample per-trade t-statistic minus a "
-                    "penalty for the variants searched: higher means more consistent evidence. "
-                    "track_record, when present, is how this template and timeframe scored on "
-                    "unseen history in earlier runs in this regime (runs, mean_unseen_score); "
-                    "rows are ordered by edge_score plus that record."
+                    "go short on bearish signals, so a falling market can be an opportunity."
                 ),
             },
             {
@@ -189,15 +167,8 @@ class StrategyBuilderNode:
                         },
                         "regime": regime,
                         "reference_examples": REFERENCE_EXAMPLES,
-                        # The bandit's track records replace verdict-based family memory.
-                        **(
-                            {}
-                            if settings.bandit_memory
-                            else {
-                                "family_memory": self.context.database.recent_family_results(
-                                    state.symbol, str(regime.get("regime") or ""), limit=8
-                                )
-                            }
+                        "family_memory": self.context.database.recent_family_results(
+                            state.symbol, str(regime.get("regime") or ""), limit=8
                         ),
                         "external_context": _external_brief(state),
                         "strategy_library": strategy_library_summary(),
@@ -258,11 +229,6 @@ class StrategyBuilderNode:
             and item["take_profit_pct"] == strategy.take_profit_pct
             and item["position_fraction"] == strategy.position_fraction
         )
-        if settings.decision_log:
-            # Written after the model chose, so the unseen-history scores never reach it.
-            diagnostics["selection_check"] = self._log_decision(
-                state, regime_label, strategy, diagnostics["selected_candidate"], candidates
-            )
         logger.info(
             "Strategy selected (template=%s, timeframe=%s, match=%s, candidate=%s).",
             strategy.template_name,
@@ -298,7 +264,7 @@ class StrategyBuilderNode:
 
     def _candidate_strategies(
         self, state: GraphState
-    ) -> tuple[list[dict[str, object]], dict[str, dict[str, object]], list[dict[str, object]]]:
+    ) -> tuple[list[dict[str, object]], dict[str, dict[str, object]]]:
         settings = self.context.settings
         capital = (
             state.account_equity if state.account_equity is not None else settings.initial_capital
@@ -335,68 +301,7 @@ class StrategyBuilderNode:
                 )
                 continue
             candidates.append(item)
-        return candidates, coverage, measured
-
-    def _remember_outcomes(
-        self, state: GraphState, regime: str, measured: list[dict[str, object]]
-    ) -> None:
-        """Add every measured template's unseen-history score to the bandit's records."""
-        outcomes = [
-            (
-                item["strategy"].template_name,
-                item["strategy"].chosen_timeframe,
-                float(item["outcome_score"]),
-            )
-            for item in measured
-            if item.get("outcome_score") is not None
-        ]
-        if outcomes:
-            record_arm_outcomes(
-                self.context.database, state.run_id, market_type(state.symbol), regime, outcomes
-            )
-
-    def _log_decision(
-        self,
-        state: GraphState,
-        regime: str,
-        strategy: StrategyDefinition,
-        selected: dict[str, object],
-        offered: list[dict[str, object]],
-    ) -> dict[str, object]:
-        """Record the choice and its regret: the best offered unseen score minus its own."""
-        chosen = next(item for item in offered if item["candidate_id"] == selected["candidate_id"])
-        scored = [item for item in offered if item.get("outcome_score") is not None]
-        best = max(scored, key=lambda item: item["outcome_score"], default=None)
-        chosen_score = chosen.get("outcome_score")
-        check: dict[str, object] = {
-            "candidate_id": chosen["candidate_id"],
-            "chosen_rank": offered.index(chosen) + 1,
-            "offered": len(offered),
-            "chosen_score": chosen_score,
-            "best_score": best["outcome_score"] if best else None,
-            "best_template": best["strategy"].template_name if best else None,
-            "best_timeframe": best["strategy"].chosen_timeframe if best else None,
-            "regret": (
-                best["outcome_score"] - chosen_score
-                if best is not None and chosen_score is not None
-                else None
-            ),
-        }
-        record_decision(
-            self.context.database,
-            {
-                **check,
-                "run_id": state.run_id,
-                "attempt": state.revision_count,
-                "symbol": state.symbol,
-                "market": market_type(state.symbol),
-                "regime": regime,
-                "model": self.context.settings.model_for("strategy").model,
-                "template_name": strategy.template_name,
-                "timeframe": strategy.chosen_timeframe,
-            },
-        )
-        return check
+        return candidates, coverage
 
     def _measure(
         self, state: GraphState, capital: float
@@ -472,9 +377,6 @@ class StrategyBuilderNode:
                             series=_signal_series(series, timeframe, entries),
                             capital=capital,
                             min_trades=settings.min_backtest_trades,
-                            ranking=settings.selection_score,
-                            search_weight=settings.score_search_weight,
-                            overfit_weight=settings.score_overfit_weight,
                         ),
                     )
                 )
@@ -719,27 +621,16 @@ def _strategy_key(
     )
 
 
-def _shortlist(
-    candidates: list[dict[str, object]],
-    settings: Settings,
-    arms: dict[tuple[str, str], dict[str, float]] | None = None,
-) -> list[dict[str, object]]:
-    if settings.selection_score == "edge":
-        ordered = sorted(
-            candidates,
-            key=lambda item: (_ranking_score(item, settings, arms or {}), -item["max_drawdown"]),
-            reverse=True,
-        )
-    else:
-        ordered = sorted(
-            candidates,
-            key=lambda item: (
-                item["net_pnl"],
-                -item["max_drawdown"],
-                item["trades"],
-            ),
-            reverse=True,
-        )
+def _shortlist(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            item["net_pnl"],
+            -item["max_drawdown"],
+            item["trades"],
+        ),
+        reverse=True,
+    )
     selected: list[dict[str, object]] = []
     counts: dict[str, int] = {}
     for item in ordered:
@@ -750,40 +641,6 @@ def _shortlist(
         selected.append(item)
         counts[timeframe] = counts.get(timeframe, 0) + 1
     return selected
-
-
-def _ranking_score(
-    item: dict[str, object], settings: Settings, arms: dict[tuple[str, str], dict[str, float]]
-) -> float:
-    """Edge score from in-sample history, plus the bandit's prior from earlier runs."""
-    score = float(item.get("selection_score") or 0.0)
-    if settings.bandit_memory:
-        strategy = item["strategy"]
-        score += prior_bonus(
-            arms.get((strategy.template_name, strategy.chosen_timeframe)),
-            weight=settings.bandit_weight,
-            exploration=settings.bandit_exploration,
-            prior_strength=settings.bandit_prior_strength,
-        )
-    return score
-
-
-def _learning_fields(
-    item: dict[str, object], settings: Settings, arms: dict[tuple[str, str], dict[str, float]]
-) -> dict[str, object]:
-    """In-sample edge score and past track record for the model; never unseen results."""
-    fields: dict[str, object] = {}
-    if settings.selection_score == "edge" and item.get("selection_score") is not None:
-        fields["edge_score"] = round(float(item["selection_score"]), 3)
-    if settings.bandit_memory:
-        strategy = item["strategy"]
-        record = arms.get((strategy.template_name, strategy.chosen_timeframe))
-        fields["track_record"] = (
-            {"runs": int(record["runs"]), "mean_unseen_score": round(record["mean"], 3)}
-            if record
-            else {"runs": 0}
-        )
-    return fields
 
 
 def _regime(state: GraphState) -> dict[str, object]:
