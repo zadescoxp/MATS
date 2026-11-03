@@ -50,7 +50,7 @@ class StrategyBuilderNode:
         if previous_key:
             tried.add(previous_key)
         candidates = [item for item in candidates if _strategy_key(item["strategy"]) not in tried]
-        candidates = _shortlist(candidates)
+        candidates = _shortlist(candidates, most_active=state.test_mode)
         logger.info(
             "Measured strategy candidates (eligible=%d, timeframes=%d).",
             len(candidates),
@@ -124,6 +124,11 @@ class StrategyBuilderNode:
             if state.critique and state.critique.decision == "REJECT"
             else "Choose the best evidence-supported candidate."
         )
+        if state.test_mode:
+            instructions = (
+                "Testnet test mode: the goal is frequent trades to exercise order handling, "
+                "not profit. Choose the candidate with the most closed trades."
+            )
         regime = _regime(state)
         messages = [
             {
@@ -291,7 +296,8 @@ class StrategyBuilderNode:
                     {"template_name": strategy.template_name, "reason": stop_reason}
                 )
                 continue
-            if not _has_edge(item, settings.min_cost_edge_ratio):
+            # Test mode trades without an edge, to exercise orders on the testnet.
+            if not state.test_mode and not _has_edge(item, settings.min_cost_edge_ratio):
                 info.setdefault("no_in_sample_edge", []).append(
                     {
                         "template_name": strategy.template_name,
@@ -621,13 +627,16 @@ def _strategy_key(
     )
 
 
-def _shortlist(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+def _shortlist(
+    candidates: list[dict[str, object]], *, most_active: bool = False
+) -> list[dict[str, object]]:
+    """The best candidates per timeframe; in test mode, the ones that trade most often."""
     ordered = sorted(
         candidates,
         key=lambda item: (
-            item["net_pnl"],
-            -item["max_drawdown"],
-            item["trades"],
+            (item["trades"], item["net_pnl"], -item["max_drawdown"])
+            if most_active
+            else (item["net_pnl"], -item["max_drawdown"], item["trades"])
         ),
         reverse=True,
     )
