@@ -1,8 +1,6 @@
 import argparse
-import json
 
 from framework.core.graph import TradingFramework
-from framework.persistence.selection_memory import selection_report
 
 
 def main() -> None:
@@ -57,11 +55,6 @@ def main() -> None:
         help="Store old runs' candles once and reclaim space. Stop mats-web first.",
     )
     parser.add_argument(
-        "--selection-report",
-        action="store_true",
-        help="Print how well strategy choices did on unseen history (regret) and live.",
-    )
-    parser.add_argument(
         "--reset-stopped-strategies",
         action="store_true",
         help="Clear stopped-strategy checkpoints for the selected symbol(s).",
@@ -90,8 +83,6 @@ def main() -> None:
                 f"Rewrote {result['rows_rewritten']} rows; database "
                 f"{result['bytes_before'] / 1e6:.1f} MB -> {result['bytes_after'] / 1e6:.1f} MB."
             )
-        elif arguments.selection_report:
-            print(json.dumps(selection_report(framework.database), indent=2))
         elif arguments.monitor_open_positions:
             print(framework.monitor_open_positions())
         elif arguments.resume is not None:
