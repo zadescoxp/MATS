@@ -149,6 +149,7 @@ class TradingFramework:
                 "max_revision_loops",
                 "leverage",
                 "paper_trades",
+                "test_mode",
             }
         )
         if unknown:
@@ -186,6 +187,11 @@ class TradingFramework:
             or not 0 <= paper_trades <= 50
         ):
             raise ValueError("paper_trades must be an integer from 0 to 50")
+        test_mode = options.get("test_mode", False)
+        if not isinstance(test_mode, bool):
+            raise ValueError("test_mode must be a boolean")
+        if test_mode and not self.settings.bybit_testnet:
+            raise ValueError("Test mode only runs on the Bybit testnet")
         run_id = run_id or str(uuid.uuid4())
         state = GraphState(
             run_id=run_id,
@@ -195,6 +201,7 @@ class TradingFramework:
             max_revision_loops=max_revision_loops,
             leverage=None if leverage is None else float(leverage),
             paper_trades=paper_trades,
+            test_mode=test_mode,
         )
         logger.info(
             "Run queued (timeframes=%s, dry_run=%s, kill_switch=%s).",
