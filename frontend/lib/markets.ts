@@ -1,3 +1,5 @@
+import bybitLogos from "@/lib/coin-logos.json";
+
 export interface Market {
   symbol: string;
   name: string;
@@ -187,6 +189,10 @@ const COIN_LOGOS: Record<string, string> = {
   USDC: "https://cryptologos.cc/logos/usd-coin-usdc-logo.png",
 };
 
+/** Every other coin Bybit lists; rebuilt by scripts/update_coin_logos.py. */
+const BYBIT_LOGOS: Record<string, string> = bybitLogos;
+
 export function coinLogo(ticker: string): string | undefined {
-  return COIN_LOGOS[ticker.toUpperCase()];
+  const key = ticker.toUpperCase();
+  return COIN_LOGOS[key] ?? BYBIT_LOGOS[key];
 }
