@@ -1,5 +1,7 @@
 import logging
 import threading
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -10,6 +12,7 @@ from pydantic import BaseModel
 from framework.config.settings import Settings
 from framework.schemas.models import OHLCVBar
 from framework.tools.candle_store import CandleCache, CandleStore, timeframe_ms
+from framework.tools.exchange_errors import is_transient_exchange_error
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,8 @@ class OrderBookSnapshot(BaseModel):
     timestamp: int | None = None
 
 
+_PAGE_ATTEMPTS = 3
+_PAGE_RETRY_SECONDS = 1.0
 _SHARED_STORES: dict[str, CandleStore] = {}
 _SHARED_STORES_LOCK = threading.Lock()
 
@@ -57,8 +62,10 @@ class MarketDataTools:
         exchange: Any | None = None,
         *,
         candle_store: CandleStore | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self.settings = settings
+        self._sleep = sleep
         owns_exchange = exchange is None
         self.exchange = exchange or self._make_exchange(settings)
         if candle_store is None and owns_exchange:
@@ -133,9 +140,25 @@ class MarketDataTools:
     def _fetch_page(
         self, symbol: str, timeframe: str, since: int, until: int, limit: int
     ) -> list[list[float]]:
-        return self.exchange.fetch_ohlcv(
-            symbol, timeframe=timeframe, since=since, limit=limit, params={"until": until}
-        )
+        # One page of a long download; a temporary Bybit error is retried here instead of
+        # failing the whole step and starting the download over.
+        for attempt in range(_PAGE_ATTEMPTS):
+            try:
+                return self.exchange.fetch_ohlcv(
+                    symbol, timeframe=timeframe, since=since, limit=limit, params={"until": until}
+                )
+            except Exception as exc:
+                if attempt + 1 >= _PAGE_ATTEMPTS or not is_transient_exchange_error(exc):
+                    raise
+                logger.warning(
+                    "Candle page failed (timeframe=%s, attempt %d/%d); retrying: %s",
+                    timeframe,
+                    attempt + 1,
+                    _PAGE_ATTEMPTS,
+                    exc,
+                )
+                self._sleep(_PAGE_RETRY_SECONDS * (attempt + 1))
+        raise AssertionError("unreachable")
 
     def _now_ms(self) -> int:
         return int(self.exchange.milliseconds())
