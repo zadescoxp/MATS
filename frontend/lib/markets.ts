@@ -92,6 +92,16 @@ export function perpetualSymbol(symbol: string): string {
   return `${spot}:${spot.split("/")[1] ?? "USDT"}`;
 }
 
+/** Bybit's own symbol: BTC/USDT and BTC/USDT:USDT are both BTCUSDT, told apart by category. */
+export function bybitSymbol(symbol: string): string {
+  return spotSymbol(symbol).replace("/", "");
+}
+
+/** The Bybit v5 market category for REST and WebSocket requests. */
+export function bybitCategory(symbol: string): "spot" | "linear" {
+  return isPerpetual(symbol) ? "linear" : "spot";
+}
+
 /** `BTC/USDT` for spot, `BTC/USDT perp` for the perpetual. */
 export function displaySymbol(symbol: string): string {
   return isPerpetual(symbol) ? `${spotSymbol(symbol)} perp` : symbol;
