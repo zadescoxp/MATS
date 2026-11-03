@@ -209,6 +209,29 @@ fingerprints are persisted so resume/new runs do not silently reopen a retired s
 `mats --symbol BTC/USDT --reset-stopped-strategies` explicitly clears stopped
 fingerprints for that symbol.
 
+## Strategy selection learning
+
+Optional, and each piece switches off on its own (`MATS_SELECTION_SCORE=net_pnl`,
+`MATS_DECISION_LOG=false`, `MATS_BANDIT_MEMORY=false`).
+
+- `framework.strategies.scoring`: per-trade net return is `net_pnl / entry_notional`.
+  `selection_score` is the in-sample t-statistic (mean / std x sqrt(n), capped at 10, with
+  std floored at 0.5% and per-trade Sharpe capped at 2) minus `search_weight x ln(variants)`.
+  `outcome_score` is the same on unseen history minus `overfit_weight x max(0, in-sample
+  per-trade Sharpe - unseen per-trade Sharpe) x sqrt(unseen trades)`.
+- `strategies/search.measure_template` ranks variants by t-statistic when `ranking="edge"`,
+  then simulates only the winner on the unseen segment and returns `selection_score`,
+  `unseen`, and `outcome_score`. Ranking never reads the unseen segment.
+- `persistence/selection_memory`: `strategy_arms` (Welford mean and variance of unseen
+  scores per market type, regime, template, timeframe; once per run via
+  `strategy_arm_runs`) and `selection_decisions` (one row per attempt with chosen and best
+  unseen scores and regret). `selection_report` joins critiques and `strategy_trades`.
+- `strategies/bandit.prior_bonus`: `weight x (runs / (runs + prior_strength) x mean +
+  exploration / sqrt(runs + 1))`, added to the edge score when ordering the shortlist.
+- The builder reads the arm prior before adding the current run's outcomes, shows the model
+  `edge_score` and `track_record` (never unseen results), and logs the decision after the
+  model chooses, as `strategy_diagnostics.selection_check`.
+
 ## Model routing
 
 `LLMClient.invoke_with_tools(messages, tools, model_config)` uses LiteLLM's
