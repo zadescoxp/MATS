@@ -9,6 +9,7 @@ from typing import Any
 
 from framework.persistence.candle_series import SCHEMA as CANDLE_SERIES_SCHEMA
 from framework.persistence.candle_series import CandleSeriesStore
+from framework.persistence.selection_memory import SCHEMA as SELECTION_MEMORY_SCHEMA
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -208,6 +209,7 @@ class Database:
                 self.connection.execute("PRAGMA busy_timeout = 30000")
                 self.connection.executescript(SCHEMA)
                 self.connection.executescript(CANDLE_SERIES_SCHEMA)
+                self.connection.executescript(SELECTION_MEMORY_SCHEMA)
                 step_columns = {
                     row["name"] for row in self.connection.execute("PRAGMA table_info(agent_steps)")
                 }
