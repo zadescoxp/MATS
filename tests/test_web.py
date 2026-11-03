@@ -172,7 +172,7 @@ def test_dashboard_resumes_stopped_entry_watcher(tmp_path: Path, monkeypatch) ->
     ("previous_bar", "expected_calls", "expected_detail"),
     [
         (None, ["risk", "execution"], "New candle"),
-        ("bar-1", ["risk"], "No new candle"),
+        ("bar-1", ["risk"], "already evaluated"),
     ],
 )
 def test_entry_watcher_checks_every_interval_without_repeating_same_bar_execution(
@@ -289,7 +289,7 @@ def test_entry_watcher_checks_every_interval_without_repeating_same_bar_executio
     assert calls == expected_calls
     check_events = [event for event in logged_events if event[0] == "algorithm_check"]
     assert len(check_events) == 1
-    assert "Minute check on bar bar-1" in check_events[0][1]
+    assert "Check on the candle closed bar-1" in check_events[0][1]
     assert "at 100" in check_events[0][1]
     assert expected_detail in check_events[0][1]
 
