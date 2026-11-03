@@ -1,5 +1,7 @@
 from typing import Any
 
+import pytest
+
 from framework.config.settings import Settings
 from framework.tools.market_data import MarketDataTools
 
@@ -154,3 +156,50 @@ def test_long_requests_page_even_with_the_cache_disabled(monkeypatch) -> None:
 
     assert len(candles) == 2500
     assert len(calls) == 3  # Bybit returns at most 1000 candles per request
+
+
+def test_bybit_system_errors_are_retried_but_bad_requests_are_not() -> None:
+    import ccxt
+
+    from framework.core.recovery import _is_transient
+    from framework.tools.exchange_errors import is_transient_exchange_error
+
+    system = ccxt.ExchangeError(
+        'bybit {"retCode":10016,"retMsg":"svc error: Get kline failed","result":{}}'
+    )
+    for error in (system, ccxt.RateLimitExceeded("slow down"), ccxt.ExchangeNotAvailable("x")):
+        assert is_transient_exchange_error(error) and _is_transient(error)
+    for error in (
+        ccxt.BadSymbol("bybit does not have market symbol TON/USDT"),
+        ValueError("10016"),
+    ):
+        assert not is_transient_exchange_error(error)
+
+
+def test_a_failed_candle_page_is_retried_before_the_download_fails() -> None:
+    import ccxt
+
+    class FlakyExchange:
+        calls = 0
+
+        def fetch_ohlcv(self, symbol, timeframe, since, limit, params):
+            self.calls += 1
+            if self.calls == 1:
+                raise ccxt.ExchangeError('bybit {"retCode":10016,"retMsg":"svc error"}')
+            return [[since, 1, 1, 1, 1, 1]]
+
+    sleeps: list[float] = []
+    exchange = FlakyExchange()
+    tools = MarketDataTools(Settings(), exchange=exchange, candle_store=None, sleep=sleeps.append)
+
+    assert tools._fetch_page("BTC/USDT:USDT", "1h", 0, 3_600_000, 1) == [[0, 1, 1, 1, 1, 1]]
+    assert exchange.calls == 2 and sleeps == [1.0]
+
+    class BrokenExchange:
+        def fetch_ohlcv(self, *args, **kwargs):
+            raise ccxt.BadSymbol("bybit does not have market symbol TON/USDT")
+
+    broken = MarketDataTools(Settings(), exchange=BrokenExchange(), sleep=sleeps.append)
+    with pytest.raises(ccxt.BadSymbol):
+        broken._fetch_page("TON/USDT", "1h", 0, 3_600_000, 1)
+    assert sleeps == [1.0]  # a bad symbol is not retried
