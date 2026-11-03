@@ -32,6 +32,9 @@ class GraphState(BaseModel):
     leverage: float | None = Field(default=None, ge=1.0, le=3.0)
     # Per-run paper trades required before live orders; None uses MATS_FORWARD_TEST_TRADES.
     paper_trades: int | None = Field(default=None, ge=0, le=50)
+    # Testnet only: trade the most active measured strategy even without an edge after
+    # costs, to exercise orders, stops, and exits. Off by default; refused on mainnet.
+    test_mode: bool = False
     risk_assessment: RiskAssessment | None = None
     live_signal: LiveSignal | None = None
     generated_code: str | None = None
