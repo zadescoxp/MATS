@@ -239,7 +239,8 @@ def test_forward_test_paper_trades_only_candles_after_approval() -> None:
 
     assert passed.verdict == "passed" and passed.bars == 60 and passed.net_pnl > 0
     assert passed.closed_trades == 6
-    assert market.limits == [61 + 500 + 2]  # bars since approval plus the live window
+    # bars since approval, the live window, and the forming candle that is dropped
+    assert market.limits == [61 + 500 + 2 + 1]
     assert failed.verdict == "failed" and failed.net_pnl < 0
     assert pending.verdict == "pending" and pending.closed_trades == 6
 
