@@ -974,7 +974,16 @@ def _read_snapshot(database_path: Path) -> dict[str, Any]:
                    ORDER BY s.run_id, s.version"""
             )
         ]
+        # Selection checks (regret on unseen history), when the decision log is kept.
+        try:
+            selection = {
+                (row["run_id"], row["attempt"]): dict(row)
+                for row in connection.execute("SELECT * FROM selection_decisions")
+            }
+        except sqlite3.OperationalError:  # a database created before the decision log
+            selection = {}
         for item in strategies:
+            item["selection"] = selection.get((item["run_id"], item["version"]))
             for key, source in (
                 ("strategy", "definition_json"),
                 ("report", "report_json"),
