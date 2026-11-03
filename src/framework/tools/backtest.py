@@ -1,7 +1,7 @@
 import math
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -15,6 +15,7 @@ from framework.schemas.models import (
     TradeRecord,
 )
 from framework.strategies.signals import LIVE_SIGNAL_BARS, candle_frame, evaluate_live_signal
+from framework.tools.candle_store import timeframe_ms
 from framework.tools.cost_model import CostAssumptions, reprice_trade_list
 
 # Each walk-forward segment needs this many bars, or the report has no walk-forward split.
@@ -102,6 +103,7 @@ class BacktestTool:
             raise ValueError("Candles must be time-ordered")
         others: dict[str, Any] = {}
         timestamps: dict[str, list[datetime]] = {}
+        primary_length = timedelta(milliseconds=timeframe_ms(strategy.chosen_timeframe) or 0)
         for timeframe, series in (data or {}).items():
             if timeframe == strategy.chosen_timeframe:
                 continue
@@ -109,7 +111,11 @@ class BacktestTool:
                 (_normalize_candle(candle) for candle in series),
                 key=lambda candle: candle.timestamp,
             )
-            timestamps[timeframe] = [candle.timestamp for candle in ordered]
+            # A higher-timeframe candle is only known once it has closed, so it is keyed
+            # by its close time; same-length series (the pair) and funding by their time.
+            length = timeframe_ms(timeframe)  # None for the pair and funding series
+            shift = timedelta(milliseconds=length) - primary_length if length else timedelta(0)
+            timestamps[timeframe] = [candle.timestamp + shift for candle in ordered]
             # Funding rows are read item by item, so only price series become frames.
             others[timeframe] = (
                 ordered if timeframe == "funding" or not ordered else candle_frame(ordered)
