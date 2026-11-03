@@ -583,6 +583,7 @@ export function Dashboard() {
   const [startLeverage, setStartLeverage] = useState(1);
   // Optional paper trading before live orders; off unless the user turns it on.
   const [startPaperTrading, setStartPaperTrading] = useState(false);
+  const [startTestMode, setStartTestMode] = useState(false);
   const [backtestVersion, setBacktestVersion] = useState<number | null>(null);
   const [executionStatusFilter, setExecutionStatusFilter] = useState("");
   const [command, setCommand] = useState("");
@@ -915,6 +916,7 @@ export function Dashboard() {
       leverage: startLeverage,
       // Always sent, so the toggle decides even when MATS_FORWARD_TEST_TRADES is set.
       paper_trades: startPaperTrading ? paperTradeCount(data?.settings.forward_test_trades) : 0,
+      test_mode: startTestMode,
     };
     if (equity.trim()) {
       const value = Number(equity.replace(/,/g, ""));
@@ -1005,6 +1007,7 @@ export function Dashboard() {
     if (data) setStartDryRun(data.settings.dry_run);
     if (data) setStartLeverage(data.settings.spot_leverage ?? 1);
     if (data) setStartPaperTrading((data.settings.forward_test_trades ?? 0) > 0);
+    setStartTestMode(false);
     setStartStep(0);
     setShowStart(true);
     setRailOpen(false);
@@ -1173,7 +1176,14 @@ export function Dashboard() {
               >
                 <CoinMark symbol={run.symbol} small />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-foreground">{displaySymbol(run.symbol)}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="truncate text-[13px] font-medium text-foreground">{displaySymbol(run.symbol)}</span>
+                    {run.config.test_mode === true && (
+                      <span className="shrink-0 rounded-full bg-negative/15 px-1.5 py-px text-[10px] font-medium text-negative">
+                        Test
+                      </span>
+                    )}
+                  </span>
                   <span className={cn("mt-0.5 block truncate text-[11px]", live ? "text-muted" : "text-muted-foreground")}>
                     {runSubtitle(run, entryWatchers)}
                   </span>
@@ -2488,6 +2498,9 @@ export function Dashboard() {
           paperTrading={startPaperTrading}
           setPaperTrading={setStartPaperTrading}
           paperTrades={paperTradeCount(data?.settings.forward_test_trades)}
+          testMode={startTestMode}
+          setTestMode={setStartTestMode}
+          testnet={data?.account?.testnet !== false}
           killSwitch={killSwitchEnabled}
           setKillSwitch={(enabled) => toggleSetting("kill_switch", enabled)}
           step={startStep}
@@ -2563,6 +2576,9 @@ function StartDialog({
   paperTrading,
   setPaperTrading,
   paperTrades,
+  testMode,
+  setTestMode,
+  testnet,
   killSwitch,
   setKillSwitch,
   step,
@@ -2595,6 +2611,10 @@ function StartDialog({
   setPaperTrading: (value: boolean) => void;
   /** Profitable paper trades required before live orders when paper trading is on. */
   paperTrades: number;
+  testMode: boolean;
+  setTestMode: (value: boolean) => void;
+  /** False when the connected Bybit account is mainnet; test mode is then unavailable. */
+  testnet: boolean;
   killSwitch: boolean;
   setKillSwitch: (value: boolean) => void;
   step: number;
@@ -3075,6 +3095,33 @@ function StartDialog({
                     </span>
                   </p>
                 </div>
+                {testnet && (
+                  <div className="py-3.5">
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium">Test mode</span>
+                        <span className={cn("mt-1 block text-[11px]", testMode ? "text-negative" : "text-muted")}>
+                          {testMode
+                            ? "On: trades the most active strategy even without an edge."
+                            : "Off: only strategies with a measured edge after costs trade."}
+                        </span>
+                      </span>
+                      <Switch
+                        checked={testMode}
+                        label={`Toggle testnet test mode; currently ${testMode ? "on" : "off"}`}
+                        onChange={setTestMode}
+                      />
+                    </div>
+                    <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground">
+                      <Info className="mt-px h-3 w-3 shrink-0" aria-hidden="true" />
+                      <span>
+                        Testnet only, for checking orders, stops, and exits. The edge checks are shown but do not
+                        block, so expect these strategies to lose money. Their trades are kept apart from real
+                        strategy history, and they keep trading until you stop them.
+                      </span>
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="mt-4 flex flex-wrap gap-1.5">
                 {selectedSymbols.map((symbol) => (
