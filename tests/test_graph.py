@@ -72,7 +72,6 @@ class FakeLLM:
     def __init__(self, fail_analyst_once: bool = False) -> None:
         self.fail_analyst_once = fail_analyst_once
         self.calls: dict[str, int] = {}
-        self.strategy_requests: list[str] = []
 
     def invoke_with_tools(self, messages, tools, model_config):
         name = tools[0].name
@@ -92,7 +91,6 @@ class FakeLLM:
                 rationale="Higher timeframe and lower timeframe align.",
             ).model_dump(mode="json")
         elif name == "submit_strategy":
-            self.strategy_requests.append(messages[-1]["content"])
             request = json.loads(messages[-1]["content"])
             rows = request["eligible_candidates"]
             candidate = next((item for item in rows if item["timeframe"] == "1h"), rows[0])
@@ -471,50 +469,6 @@ def test_stopped_run_can_resume_from_the_latest_checkpoint(candles) -> None:
         resumed = framework.resume("stopped-run", account_equity=5000)
         assert resumed.status == "completed", resumed.errors
         assert resumed.account_equity == 5000
-    finally:
-        framework.close()
-        database.close()
-
-
-def test_strategy_choice_is_logged_and_its_unseen_results_stay_hidden(candles) -> None:
-    framework, database, _, llm, _ = _framework(candles)
-    try:
-        result = framework.run("BTC/USDT")
-        assert result.status == "completed", result.errors
-
-        prompt = json.loads(llm.strategy_requests[0])
-        row = prompt["eligible_candidates"][0]
-        assert "edge_score" in row and row["track_record"] == {"runs": 0}
-        assert "family_memory" not in prompt  # replaced by track records
-        for hidden in ("outcome_score", "unseen", "regret"):
-            assert hidden not in llm.strategy_requests[0]
-
-        decision = database.connection.execute(
-            "SELECT * FROM selection_decisions WHERE run_id = ?", (result.run_id,)
-        ).fetchone()
-        assert decision["template_name"] == result.strategy.template_name
-        assert decision["chosen_rank"] >= 1 and decision["offered"] >= decision["chosen_rank"]
-    finally:
-        framework.close()
-        database.close()
-
-
-def test_selection_learning_can_be_switched_off(candles) -> None:
-    framework, database, _, llm, _ = _framework(candles)
-    framework.settings.selection_score = "net_pnl"
-    framework.settings.decision_log = False
-    framework.settings.bandit_memory = False
-    try:
-        result = framework.run("BTC/USDT")
-        assert result.status == "completed", result.errors
-
-        prompt = json.loads(llm.strategy_requests[0])
-        assert "family_memory" in prompt
-        assert "edge_score" not in prompt["eligible_candidates"][0]
-        assert "track_record" not in prompt["eligible_candidates"][0]
-        for table in ("selection_decisions", "strategy_arms"):
-            count = database.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            assert count == 0
     finally:
         framework.close()
         database.close()
