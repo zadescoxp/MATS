@@ -71,7 +71,6 @@ import {
 } from "@/lib/markets";
 import { parseRunRequest } from "@/lib/run-intent";
 import type {
-  SelectionCheck,
   AgentStep,
   DashboardState,
   DashboardTab,
@@ -360,44 +359,6 @@ function StatusBadge({ status }: { status: string }) {
       <span className={cn("h-1.5 w-1.5 rounded-full", dot, (normalized === "running" || normalized === "watching") && "agent-live")} />
       {status.replaceAll("_", " ")}
     </Badge>
-  );
-}
-
-/** How the model's pick did on unseen history against the best candidate it was offered. */
-function SelectionCheckCard({ check }: { check: SelectionCheck }) {
-  const score = (value: number | null) => (value === null ? "—" : value.toFixed(2));
-  const regret = check.regret;
-  const pickedBest = regret !== null && regret <= 1e-9;
-  return (
-    <div className="mt-6">
-      <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-sm font-medium">Selection check</h3>
-        <p className="text-[11px] text-muted-foreground">Scores are on unseen history; higher is better</p>
-      </div>
-      <div className="mt-3 grid gap-px overflow-hidden rounded-2xl bg-white/[0.06] sm:grid-cols-3">
-        <div className="bg-background px-3 py-3">
-          <p className="text-[11px] text-muted-foreground">Picked</p>
-          <p className="mt-1 text-sm tabular-nums">
-            #{check.chosen_rank} of {check.offered} · score {score(check.chosen_score)}
-          </p>
-          {check.model && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{check.model}</p>}
-        </div>
-        <div className="bg-background px-3 py-3">
-          <p className="text-[11px] text-muted-foreground">Best offered</p>
-          <p className="mt-1 text-sm tabular-nums">score {score(check.best_score)}</p>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-            {textValue(check.best_template, "—")} · {textValue(check.best_timeframe, "—")}
-          </p>
-        </div>
-        <div className="bg-background px-3 py-3">
-          <p className="text-[11px] text-muted-foreground">Regret</p>
-          <p className={cn("mt-1 text-sm tabular-nums", regret === null ? "text-muted" : pickedBest ? "text-positive" : "text-negative")}>
-            {regret === null ? "Not scored" : pickedBest ? "0 · picked the best" : score(regret)}
-          </p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">How far the pick fell short of the best</p>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -1743,7 +1704,6 @@ export function Dashboard() {
             )}
           </div>
         )}
-        {attempt.selection && <SelectionCheckCard check={attempt.selection} />}
         <div className="mt-8">
           <div className="flex items-baseline justify-between gap-3">
             <h3 className="text-sm font-medium">Price</h3>
