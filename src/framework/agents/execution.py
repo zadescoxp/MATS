@@ -10,7 +10,7 @@ from framework.schemas.models import (
     OHLCVBar,
     OrderSnapshot,
 )
-from framework.strategies.library import strategy_fingerprint
+from framework.strategies.library import live_strategy_key, strategy_fingerprint
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
 from framework.tools.account import coin_detail
@@ -39,11 +39,13 @@ class ExecutionNode:
             raise ValueError("Execution requires a sized risk plan")
         if state.strategy is None:
             raise ValueError("Execution requires an approved strategy")
+        if state.test_mode and not settings.bybit_testnet:
+            raise ValueError("A test-mode strategy never trades outside the Bybit testnet")
 
         data = fetch_strategy_ohlcv(self.context.market_data, state.symbol, state.strategy)
         signal = evaluate_live_signal(state.strategy, data)
         dry_run = settings.dry_run or settings.kill_switch
-        fingerprint = strategy_fingerprint(state.strategy)
+        fingerprint = live_strategy_key(strategy_fingerprint(state.strategy), state.test_mode)
         existing_position = self.context.database.open_positions(state.symbol)
 
         reason = signal.reason
