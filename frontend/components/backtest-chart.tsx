@@ -11,6 +11,8 @@ import {
 } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 
+import { bybitCategory, bybitSymbol } from "@/lib/markets";
+
 interface Candle {
   time: UTCTimestamp;
   open: number;
@@ -94,9 +96,6 @@ function parseHistoryRow(row: unknown): Candle | null {
   return { time: Math.floor(start / 1000) as UTCTimestamp, open, high, low, close, volume };
 }
 
-function coinSymbol(symbol: string): string {
-  return symbol.replace("/", "").replace(":", "");
-}
 
 function readTrades(trades: Array<Record<string, unknown>>): TradeMark[] {
   return trades.flatMap((trade) => {
@@ -130,8 +129,8 @@ async function fetchCandles(
   let end = endSec === null ? undefined : endSec * 1000;
   for (let page = 0; page < 6; page += 1) {
     const query = new URLSearchParams({
-      category: "spot",
-      symbol: coinSymbol(symbol),
+      category: bybitCategory(symbol),
+      symbol: bybitSymbol(symbol),
       interval,
       limit: "1000",
     });
