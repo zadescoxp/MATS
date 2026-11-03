@@ -27,6 +27,21 @@ export interface StrategyAttempt {
   decision: string | null;
   issues: string[] | null;
   revision_instructions: string | null;
+  /** How the chosen candidate scored on unseen history against the best one offered. */
+  selection?: SelectionCheck | null;
+}
+
+/** One logged strategy choice; scores are t-statistic units on unseen history. */
+export interface SelectionCheck {
+  candidate_id: string;
+  chosen_rank: number;
+  offered: number;
+  model: string | null;
+  chosen_score: number | null;
+  best_score: number | null;
+  best_template: string | null;
+  best_timeframe: string | null;
+  regret: number | null;
 }
 
 export interface Execution {
