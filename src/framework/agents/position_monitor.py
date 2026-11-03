@@ -3,6 +3,7 @@ from typing import Any
 
 from framework.core.context import AgentContext
 from framework.schemas.models import OrderSnapshot, StrategyDefinition
+from framework.strategies.library import is_test_mode_key
 from framework.strategies.market_data import fetch_strategy_ohlcv
 from framework.strategies.signals import evaluate_live_signal
 from framework.tools.markets import base_currency, is_perpetual, quote_currency
@@ -93,7 +94,12 @@ class PositionMonitor:
             "trough_price": min([position["entry_price"], *(bar.low for bar in held_bars)]),
         }
         signal = evaluate_live_signal(strategy, data, position_context)
-        edge_fade = self.edge_fade_reason(position["strategy_key"])
+        # Test-mode strategies are expected to lose; only a manual stop or flatten ends them.
+        edge_fade = (
+            None
+            if is_test_mode_key(position["strategy_key"])
+            else self.edge_fade_reason(position["strategy_key"])
+        )
         # Only a lost edge or a manual flatten retires the strategy; ordinary exits re-arm it.
         stop_strategy = False
         if force:
