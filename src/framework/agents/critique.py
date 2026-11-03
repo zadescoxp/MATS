@@ -90,7 +90,20 @@ class CritiqueNode:
             Critique,
             self.context.settings.model_for("critic"),
         )
-        if gate_issues:
+        if state.test_mode:
+            # Testnet test mode: the measured checks are reported, but do not block, so the
+            # run reaches live order handling. The strategy is not expected to make money.
+            notes = list(dict.fromkeys([*proposed.issues, *gate_issues]))
+            proposed = proposed.model_copy(
+                update={
+                    "decision": "APPROVE",
+                    "issues": [f"Test mode (not blocking): {issue}" for issue in notes],
+                    "revision_instructions": "",
+                    "rationale": "Testnet test mode: approved to exercise live order handling "
+                    "regardless of edge. " + proposed.rationale,
+                }
+            )
+        elif gate_issues:
             proposed = proposed.model_copy(
                 update={
                     "decision": "REJECT",
@@ -133,7 +146,9 @@ class CritiqueNode:
                 }
             )
         critique = Critique.model_validate(proposed)
-        if state.strategy is not None:
+        # Test-mode approvals ignore the edge checks, so they stay out of the family memory
+        # that real runs learn from.
+        if state.strategy is not None and not state.test_mode:
             self.context.database.record_family_result(
                 symbol=state.symbol,
                 family=family,
