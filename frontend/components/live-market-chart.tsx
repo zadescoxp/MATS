@@ -9,7 +9,7 @@ import {
 } from "lightweight-charts";
 import { AlertCircle, Radio, RefreshCw } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { isPerpetual, spotSymbol } from "@/lib/markets";
+import { bybitCategory, bybitSymbol } from "@/lib/markets";
 
 interface Candle {
   time: UTCTimestamp;
@@ -87,23 +87,14 @@ function parseHistoryRow(row: unknown): Candle | null {
   });
 }
 
-function coinSymbol(symbol: string): string {
-  // BTC/USDT and BTC/USDT:USDT are both BTCUSDT on Bybit; the category tells them apart.
-  return spotSymbol(symbol).replace("/", "");
-}
-
-function category(symbol: string): "spot" | "linear" {
-  return isPerpetual(symbol) ? "linear" : "spot";
-}
-
 async function fetchHistory(
   symbol: string,
   interval: string,
   signal: AbortSignal,
 ): Promise<Candle[]> {
   const query = new URLSearchParams({
-    category: category(symbol),
-    symbol: coinSymbol(symbol),
+    category: bybitCategory(symbol),
+    symbol: bybitSymbol(symbol),
     interval,
     limit: "300",
   });
@@ -278,7 +269,7 @@ export function LiveMarketChart({
     const connect = () => {
       if (!active) return;
       setConnection(reconnectDelay === 1_000 ? "connecting" : "reconnecting");
-      socket = new WebSocket(`wss://stream.bybit.com/v5/public/${category(symbol)}`);
+      socket = new WebSocket(`wss://stream.bybit.com/v5/public/${bybitCategory(symbol)}`);
 
       socket.onopen = () => {
         if (!active || !socket) return;
@@ -288,8 +279,8 @@ export function LiveMarketChart({
           JSON.stringify({
             op: "subscribe",
             args: [
-              `kline.${selectedTimeframe.interval}.${coinSymbol(symbol)}`,
-              `tickers.${coinSymbol(symbol)}`,
+              `kline.${selectedTimeframe.interval}.${bybitSymbol(symbol)}`,
+              `tickers.${bybitSymbol(symbol)}`,
             ],
           }),
         );
