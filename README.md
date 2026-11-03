@@ -61,9 +61,6 @@ All settings use the `MATS_` prefix and can live in `.env`. The most useful ones
 | `MATS_WALK_FORWARD_SPLIT` / `MATS_REQUIRE_OUT_OF_SAMPLE_EDGE` | `0.7` / `true` | Share of history strategies are chosen on; the rest must also be profitable |
 | `MATS_MIN_COST_EDGE_RATIO` | `2` | Gross profit must be at least this multiple of fees and slippage |
 | `MATS_CRITIC_CAN_VETO` | `false` | Let the model's critique reject a strategy that passed every measured check |
-| `MATS_SELECTION_SCORE` | `edge` | Rank variants and candidates by the edge score (`edge`) or by profit then drawdown (`net_pnl`) |
-| `MATS_DECISION_LOG` | `true` | Record every strategy choice with its regret on unseen history |
-| `MATS_BANDIT_MEMORY` | `true` | Learn each regime/template/timeframe's unseen score across runs and use it to order candidates |
 | `MATS_BACKTEST_WORKERS` | `4` | Processes that measure strategy variants in parallel |
 | `MATS_FORWARD_TEST_TRADES` | `0` | Optional paper trading: profitable paper trades required before live orders (0 = off; runs can turn it on in the start dialog) |
 | `MATS_INITIAL_CAPITAL` | `10000` | Capital for dry-run sizing and backtests |
@@ -161,32 +158,6 @@ console's **Strategy attempts** option or `mats --max-attempts N`. When the crit
 every attempt, the run ends as `rejected`, which is shown as a notice rather than an error.
 From there you can try two more attempts on the same run, reopen the start dialog with the
 run's settings, or dismiss it (CLI: `mats --resume RUN_ID --extra-attempts N`).
-
-### Strategy selection learning
-
-Three switchable pieces make strategy selection learn from measured outcomes. They live in
-the database, so they carry over across sessions and models:
-
-- **Edge score** (`MATS_SELECTION_SCORE=edge`): candidates are ranked by the in-sample
-  t-statistic of their per-trade net returns, minus `MATS_SCORE_SEARCH_WEIGHT x ln(variants
-  searched)`. A consistent edge over many trades beats one lucky trade, and searching harder
-  is not rewarded. Drawdown, trade count, and cost cover stay pass/fail gates.
-- **Decision log** (`MATS_DECISION_LOG`): after the model picks, every offered candidate's
-  score on the unseen 30% is compared. The choice's *regret* is the best offered score
-  minus its own; the unseen score also charges `MATS_SCORE_OVERFIT_WEIGHT` for any drop in
-  per-trade edge from in-sample. The model never sees these numbers. The Backtest tab shows
-  a Selection check, and `mats --selection-report` prints regret overall and per model, how
-  often the top-ranked candidate was picked, and the live results of approved runs.
-- **Bandit memory** (`MATS_BANDIT_MEMORY`): each regime, template, and timeframe keeps a
-  running mean of its unseen score over runs. Candidates are ordered by edge score plus a
-  prior (`MATS_BANDIT_WEIGHT`), shrunk toward zero until `MATS_BANDIT_PRIOR_STRENGTH` runs of
-  evidence exist, with an exploration bonus (`MATS_BANDIT_EXPLORATION`) for arms tried
-  rarely. The model sees each row's `track_record`, which replaces the old verdict-based
-  family memory in its prompt.
-
-Turning all three off restores the earlier behaviour. One caution: the bandit learns from
-unseen-history scores, and later runs on overlapping history reuse that history for the
-critique's check. Live results remain the only check memory cannot influence.
 
 ## Live trading on testnet
 
