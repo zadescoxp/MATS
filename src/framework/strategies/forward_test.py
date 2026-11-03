@@ -43,7 +43,7 @@ def forward_test(
     length = timeframe_ms(strategy.chosen_timeframe) or 60_000
     elapsed = max(0, math.ceil((now - approved_at).total_seconds() * 1000 / length))
     limit = min(elapsed + LIVE_SIGNAL_BARS + 2, _MAX_BARS)
-    data = fetch_strategy_ohlcv(market_data, symbol, strategy, limit=limit)
+    data = fetch_strategy_ohlcv(market_data, symbol, strategy, limit=limit, now=now)
     # Only closed candles: the one still forming could reverse before it closes.
     candles = [
         candle
