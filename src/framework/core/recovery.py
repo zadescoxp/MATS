@@ -9,6 +9,7 @@ from typing import Any
 from framework.core.context import AgentContext
 from framework.core.logging_config import bind_log_context
 from framework.core.state import GraphState
+from framework.tools.exchange_errors import is_transient_exchange_error
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,7 @@ def _is_transient(error: Exception) -> bool:
         or any(token in name for token in ("timeout", "network", "ratelimit", "connection"))
         or "httpx" in module
         or ("ccxt" in module and any(token in name for token in ("network", "timeout")))
+        or is_transient_exchange_error(error)
     )
 
 
