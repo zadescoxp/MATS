@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,6 +64,23 @@ class Settings(BaseSettings):
     # When every measured check passes, the model's critique is advisory and the strategy
     # goes on to the forward test. True lets the model's REJECT veto it anyway.
     critic_can_veto: bool = False
+    # Strategy selection learning; each piece can be switched off on its own.
+    # How variants and candidates are ranked: "edge" is the per-trade t-statistic with a
+    # penalty for how many variants were searched; "net_pnl" is profit, then drawdown.
+    selection_score: Literal["edge", "net_pnl"] = "edge"
+    # Score on unseen history: points lost per unit the edge fell from in-sample, and per
+    # log of variants searched (both in t-statistic units).
+    score_overfit_weight: float = Field(default=0.5, ge=0, le=10)
+    score_search_weight: float = Field(default=0.5, ge=0, le=10)
+    # Record every strategy choice with its regret: how far the chosen candidate's score on
+    # unseen history fell short of the best candidate offered.
+    decision_log: bool = True
+    # Remember each regime/template/timeframe's unseen-history score across runs and models,
+    # and use it to order the candidates offered (edge ranking only).
+    bandit_memory: bool = True
+    bandit_weight: float = Field(default=0.5, ge=0, le=10)
+    bandit_exploration: float = Field(default=0.5, ge=0, le=10)
+    bandit_prior_strength: float = Field(default=5.0, gt=0, le=100)
     # Processes that measure strategy candidates in parallel; 1 measures in-process.
     backtest_workers: int = Field(default=4, ge=1, le=32)
     # Optional paper trading: closed paper trades on candles after approval that must net a
