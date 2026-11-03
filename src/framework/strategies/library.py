@@ -524,3 +524,19 @@ def strategy_fingerprint(strategy: StrategyDefinition) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+TEST_MODE_KEY_PREFIX = "test:"
+
+
+def live_strategy_key(fingerprint: str, test_mode: bool) -> str:
+    """The key live positions, trades, and stops are kept under.
+
+    Test-mode runs get their own namespace, so their trades never count toward a real
+    strategy's edge fade and their stops never block a real run.
+    """
+    return f"{TEST_MODE_KEY_PREFIX}{fingerprint}" if test_mode else fingerprint
+
+
+def is_test_mode_key(strategy_key: str) -> bool:
+    return strategy_key.startswith(TEST_MODE_KEY_PREFIX)
