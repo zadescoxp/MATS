@@ -28,7 +28,11 @@ from framework.persistence.candle_series import is_series_ref
 from framework.persistence.database import Database
 from framework.strategies.algorithm import bar_already_evaluated
 from framework.strategies.forward_test import forward_test
-from framework.strategies.library import STRATEGY_LIBRARY, strategy_fingerprint
+from framework.strategies.library import (
+    STRATEGY_LIBRARY,
+    live_strategy_key,
+    strategy_fingerprint,
+)
 from framework.strategies.market_data import fetch_strategy_ohlcv, next_close
 from framework.strategies.news_risk import NewsRisk, assess_news_risk
 from framework.tools.account import account_snapshot
@@ -161,6 +165,11 @@ class DashboardService:
             or not 0 <= paper_trades <= 50
         ):
             raise ValueError("paper_trades must be an integer from 0 to 50.")
+        test_mode = payload.get("test_mode", False)
+        if not isinstance(test_mode, bool):
+            raise ValueError("test_mode must be a boolean.")
+        if test_mode and not self.settings.bybit_testnet:
+            raise ValueError("Test mode only runs on the Bybit testnet.")
         max_attempts = payload.get("max_attempts")
         if max_attempts is not None and (
             isinstance(max_attempts, bool)
@@ -210,6 +219,8 @@ class DashboardService:
                     config["leverage"] = float(leverage)
                 if paper_trades is not None:
                     config["paper_trades"] = paper_trades
+                if test_mode:
+                    config["test_mode"] = True
                 if symbol in equity_by_symbol:
                     config["account_equity"] = equity_by_symbol[symbol]
                 elif account_equity is not None:
@@ -642,7 +653,7 @@ class DashboardService:
                 or state.strategy is None
             ):
                 raise ValueError(f"Watcher run {run_id} has no approved strategy to monitor.")
-            fingerprint = strategy_fingerprint(state.strategy)
+            fingerprint = _live_key(state)
             paused_reason: str | None = None
 
             while not stop_event.is_set():
@@ -720,14 +731,11 @@ class DashboardService:
     def _check_entry(
         self, worker: Any, database: Any, run_id: str, state: GraphState, news_risk: NewsRisk
     ) -> GraphState:
-        if state.strategy is not None:
-            fade = PositionMonitor(worker.context).edge_fade_reason(
-                strategy_fingerprint(state.strategy)
-            )
+        # Test-mode strategies are expected to lose, so their edge never fades them out.
+        if state.strategy is not None and not getattr(state, "test_mode", False):
+            fade = PositionMonitor(worker.context).edge_fade_reason(_live_key(state))
             if fade:
-                database.mark_strategy_stopped(
-                    state.symbol, strategy_fingerprint(state.strategy), run_id, fade
-                )
+                database.mark_strategy_stopped(state.symbol, _live_key(state), run_id, fade)
                 database.update_run_status(run_id, "stopped")
                 return state
         bar_key = _closed_bar_key(worker, state)
@@ -822,9 +830,7 @@ class DashboardService:
             database.log_event(run_id, "forward_test_passed", result.detail)
             return True
         if result.verdict == "failed":
-            database.mark_strategy_stopped(
-                state.symbol, strategy_fingerprint(strategy), run_id, result.detail
-            )
+            database.mark_strategy_stopped(state.symbol, _live_key(state), run_id, result.detail)
             database.update_run_status(run_id, "stopped")
         database.log_event(run_id, "forward_test", result.detail)
         return False
@@ -1067,6 +1073,13 @@ def _paused_reason(settings: Settings) -> str | None:
     if settings.dry_run:
         return "Paused: dry-run is on. Turn it off to let this strategy trade on testnet."
     return None
+
+
+def _live_key(state: Any) -> str:
+    """The strategy's live bookkeeping key; test-mode runs keep theirs apart."""
+    return live_strategy_key(
+        strategy_fingerprint(state.strategy), bool(getattr(state, "test_mode", False))
+    )
 
 
 def _live_sentiment(symbol: str) -> dict[str, Any] | None:
